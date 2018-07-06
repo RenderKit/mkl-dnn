@@ -20,6 +20,8 @@
 #include "jit_uni_pooling.hpp"
 #include "type_helpers.hpp"
 #include "nstl.hpp"
+#include "utils.hpp"
+using namespace mkldnn::impl::utils;
 
 namespace mkldnn {
 namespace impl {
@@ -64,14 +66,17 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward() {
         (*kernel_)(&arg);
     };
 
-#   pragma omp parallel for collapse(3) schedule(static)
-    for (int n = 0; n < jpp.mb; ++n) {
-        for (int b_c = 0; b_c < jpp.nb_c; ++b_c) {
-            for (int oh = 0; oh < jpp.oh; ++oh) {
+    size_t work = jpp.mb * jpp.nb_c * jpp.oh;
+    tbb::parallel_for(tbb::blocked_range<size_t>(0,work),
+        [&](const tbb::blocked_range<size_t> r)
+        {
+            int n, b_c, oh;
+            nd_iterator_init(r.begin(), n, jpp.mb, b_c, jpp.nb_c, oh, jpp.oh);
+            for (size_t i = r.begin(); i != r.end(); ++i) {
                 ker(n, b_c, oh);
+                nd_iterator_step(n, jpp.mb, b_c, jpp.nb_c, oh, jpp.oh);
             }
-        }
-    }
+        });
 }
 
 template <cpu_isa_t isa>

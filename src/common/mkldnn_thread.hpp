@@ -29,6 +29,12 @@ inline int omp_get_thread_num() { return 0; }
 inline int omp_in_parallel() { return 0; }
 #endif
 
+#include "tbb/parallel_for.h"
+#include "tbb/blocked_range.h"
+#include "tbb/task_arena.h"
+#include "tbb/parallel_reduce.h"
+
+
 /* MSVC still supports omp 2.0 only */
 #if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
 #   define collapse(x)
