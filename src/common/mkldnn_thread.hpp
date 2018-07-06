@@ -33,6 +33,7 @@ inline int omp_in_parallel() { return 0; }
 #include "tbb/blocked_range.h"
 #include "tbb/task_arena.h"
 #include "tbb/parallel_reduce.h"
+#define omp_get_max_threads() tbb::this_task_arena::max_concurrency()
 
 
 /* MSVC still supports omp 2.0 only */
