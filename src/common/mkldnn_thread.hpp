@@ -26,7 +26,7 @@
 #include "tbb/parallel_reduce.h"
 
 inline int omp_get_max_threads() { return tbb::this_task_arena::max_concurrency(); }
-inline int omp_get_num_threads() { return 1; }
+inline int omp_get_num_threads() { return tbb::this_task_arena::max_concurrency(); }
 inline int omp_get_thread_num() { return tbb::this_task_arena::current_thread_index(); }
 inline int omp_in_parallel() { return 0; }
 
