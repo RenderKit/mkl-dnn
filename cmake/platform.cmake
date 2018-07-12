@@ -89,8 +89,8 @@ endif()
 
 if(UNIX OR APPLE OR MINGW)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-        # Link Intel libraries statically (except for iomp5)
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -liomp5 -static-intel")
+        # Link Intel libraries statically
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-intel")
         # Tell linker to not complain about missing static libraries
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -diag-disable:10237")
     endif()
