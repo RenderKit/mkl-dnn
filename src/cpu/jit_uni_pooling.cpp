@@ -76,7 +76,7 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward() {
                 ker(n, b_c, oh);
                 nd_iterator_step(n, jpp.mb, b_c, jpp.nb_c, oh, jpp.oh);
             }
-        });
+        }, tbb::static_partitioner());
 }
 
 template <cpu_isa_t isa>

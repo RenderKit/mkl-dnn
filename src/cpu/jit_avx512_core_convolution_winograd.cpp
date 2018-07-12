@@ -349,7 +349,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                         K_blk2, jcp.dimK_block);
 
                 }
-        });
+        }, tbb::static_partitioner());
         }
 
         {
@@ -380,7 +380,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                             ofm2, jcp.oc_block * jcp.oc_reg_block,
                             ifm2, jcp.ic_block * jcp.ic_reg_block);
                     }
-        });
+        }, tbb::static_partitioner());
         }
 
         {
@@ -410,7 +410,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                         oi, alpha,
                         M_blk1, jcp.dimM_nb_block);
                 }
-        });
+        }, tbb::static_partitioner());
         }
 
         {
@@ -435,7 +435,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                             M_blk1, jcp.dimM_nb_block,
                             M_blk2, jcp.dimM_block * jcp.dimM_reg_block);
                 }
-        });
+        }, tbb::static_partitioner());
         }
 }
 
@@ -518,25 +518,15 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
                         ofm2, jcp.oc_block * jcp.oc_reg_block,
                         ifm2, jcp.ic_block * jcp.ic_reg_block);
             }
-        });
+        }, tbb::static_partitioner());
     }
 
-    int nthr = tbb::this_task_arena::max_concurrency();
-    auto pfunc = [&](int ithr) {
+    tbb::parallel_for(tbb::blocked_range<int>(0, jcp.tile_block),
+        [&](const tbb::blocked_range<int>& r)
+    {
+    int ithr = omp_get_thread_num();
 
-    // static distribution
-    int blocksize = jcp.tile_block / nthr;
-    int rem = jcp.tile_block % nthr;
-    int lb, ub;
-    if (ithr < rem) {
-        lb = ithr * (blocksize+1);
-        ub = lb + blocksize;
-    }
-    else {
-        lb = ithr * blocksize + rem;
-        ub = lb + blocksize - 1;
-    }
-    for (int tile_block = lb; tile_block <= ub; tile_block++) {
+    for (int tile_block = r.begin(); tile_block < r.end(); tile_block++) {
         for (int K_blk1 = 0; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
             for (int K_blk2 = 0; K_blk2 < jcp.dimK_block; K_blk2++) {
 
@@ -577,10 +567,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
             }
         }
     }
-    };
-    tbb::parallel_for(tbb::blocked_range<int>(0,nthr),
-        [&](const tbb::blocked_range<int>& r) { pfunc(r.begin()); },
-        tbb::static_partitioner());
+    }, tbb::static_partitioner());
 }
 
 template void
