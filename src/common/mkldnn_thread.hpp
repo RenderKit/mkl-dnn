@@ -20,20 +20,15 @@
 #include "utils.hpp"
 #include "z_magic.hpp"
 
-#if defined(_OPENMP)
-#include <omp.h>
-#else // defined(_OPENMP)
-inline int omp_get_max_threads() { return 1; }
-inline int omp_get_num_threads() { return 1; }
-inline int omp_get_thread_num() { return 0; }
-inline int omp_in_parallel() { return 0; }
-#endif
-
 #include "tbb/parallel_for.h"
 #include "tbb/blocked_range.h"
 #include "tbb/task_arena.h"
 #include "tbb/parallel_reduce.h"
-#define omp_get_max_threads() tbb::this_task_arena::max_concurrency()
+
+inline int omp_get_max_threads() { return tbb::this_task_arena::max_concurrency(); }
+inline int omp_get_num_threads() { return 1; }
+inline int omp_get_thread_num() { return 0; }
+inline int omp_in_parallel() { return 0; }
 
 
 /* MSVC still supports omp 2.0 only */
