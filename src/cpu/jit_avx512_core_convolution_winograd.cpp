@@ -328,6 +328,15 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             jcp.dimN_block, jcp.dimK_nb_block,
             jcp.dimK_block, jcp.dimN_reg_block, jcp.dimK_reg_block);
 
+
+    const bool want_padded_bias = jcp.with_bias
+        && jcp.oc_without_padding != jcp.oc;
+    float last_slice_bias[simd_w] = {0};
+    if (want_padded_bias) {
+        for (int oc = 0; oc < jcp.oc_without_padding % jcp.oc_simd_block; ++oc)
+            last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
+    }
+
         {
         size_t work = jcp.mb * jcp.dimK_nb_block * jcp.dimK_block;
         tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
@@ -424,13 +433,18 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                     M_blk1, jcp.dimM_nb_block,
                     M_blk2, jcp.dimM_block * jcp.dimM_reg_block);
                 for (size_t i = r.begin(); i != r.end(); ++i) {
-                      output_transform_data(img, jcp, p_ops,
-                        &(M(0, M_blk1, 0, 0, 0, M_blk2, 0, 0)),
-                        &(output(img,M_blk1 * jcp.dimM_block
-                            * jcp.dimM_reg_block + M_blk2, 0, 0, 0)),
-                        &(bias(M_blk1 * jcp.dimM_block * jcp.dimM_reg_block
-                            + M_blk2, 0)));
-                        nd_iterator_step(
+                    const int M_blk =
+                        M_blk1 * jcp.dimM_block  * jcp.dimM_reg_block + M_blk2;
+
+                    float *bias_ptr = want_padded_bias
+                        && M_blk == jcp.dimM / jcp.dimM_simd_block - 1
+                        ? last_slice_bias : &bias(M_blk, 0);
+
+                    output_transform_data(img, jcp, p_ops,
+                            &(M(0, M_blk1, 0, 0, 0, M_blk2, 0, 0)),
+                            &(output(img, M_blk, 0, 0, 0)), bias_ptr);
+
+                    nd_iterator_step(
                             img, jcp.mb,
                             M_blk1, jcp.dimM_nb_block,
                             M_blk2, jcp.dimM_block * jcp.dimM_reg_block);
@@ -489,6 +503,13 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
             jcp.dimK_nb_block, jcp.dimK_block,
             jcp.dimN_reg_block, jcp.dimK_reg_block);
 
+    const bool want_padded_bias = jcp.with_bias
+        && jcp.oc_without_padding != jcp.oc;
+    float last_slice_bias[simd_w] = {0};
+    if (want_padded_bias) {
+        for (int oc = 0; oc < jcp.oc_without_padding % jcp.oc_simd_block; ++oc)
+            last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
+    }
 
     {
     size_t work = jcp.nb_oc * jcp.nb_ic * 
@@ -555,15 +576,16 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
         for (int M_blk1 = 0; M_blk1 < jcp.dimM_nb_block; M_blk1++) {
             for (int M_blk2 = 0; M_blk2 < jcp.dimM_block * jcp.dimM_reg_block;
                   M_blk2++) {
-                float *bias_ptr = is_fwd
-                    ? &(bias(M_blk1 * jcp.dimM_block * jcp.dimM_reg_block
-                        + M_blk2, 0))
-                    : NULL;
-                  output_transform_tileblock_data(tile_block, jcp, p_ops,
+                const int M_blk =
+                    M_blk1 * jcp.dimM_block  * jcp.dimM_reg_block + M_blk2;
+
+                float *bias_ptr = want_padded_bias
+                    && M_blk == jcp.dimM / jcp.dimM_simd_block - 1
+                    ? last_slice_bias : &bias(M_blk, 0);
+
+                output_transform_tileblock_data(tile_block, jcp, p_ops,
                         &(M(ithr, M_blk1, 0, 0, 0, M_blk2, 0, 0)),
-                        &(output(0, M_blk1 * jcp.dimM_block
-                            * jcp.dimM_reg_block + M_blk2, 0, 0, 0)),
-                        bias_ptr);
+                        &(output(0, M_blk, 0, 0, 0)), bias_ptr);
             }
         }
     }
@@ -723,7 +745,6 @@ _execute_backward_weights_SDGtWo() {
             jcp.mb, jcp.oc / simd_w, jcp.oh, jcp.ow, simd_w);
     array_offset_calculator<float, 6> diff_weights((float *)this->memory(0),
             jcp.oc / simd_w, jcp.ic / simd_w, jcp.kh, jcp.kw, simd_w, simd_w);
-    array_offset_calculator<float, 1> diff_bias((float *)this->memory(1), jcp.oc);
 
     array_offset_calculator<float, 8> Us((float *)(scratchpad_->U_ptr()),
             0, alpha, alpha,
@@ -864,7 +885,8 @@ _execute_backward_weights_SDGtWo() {
             for (int i = 0; i < nthreads; ++i) {
                 input_ptrs[i] = input_base + jcp.oc * i;
             }
-            array_sum(nthreads, output, jcp.oc, input_ptrs, false);
+            array_sum(nthreads, output, jcp.oc_without_padding, input_ptrs,
+                    false);
         }
     }
 }
@@ -1076,15 +1098,18 @@ _execute_backward_weights_S_D_Giot_W() {
             float* pbias = &(diff_bias(ofm1 * simd_w));
             float *pbias_prv = &(diff_bias_prv(0, ofm1 * simd_w));
 
+            const int blk_sz = ofm1 == jcp.oc / simd_w - 1
+                ? jcp.oc_without_padding - ofm1 * simd_w : simd_w;
+
             PRAGMA_OMP_SIMD()
-            for (int ofm2 = 0; ofm2 < simd_w; ++ofm2) {
+            for (int ofm2 = 0; ofm2 < blk_sz; ++ofm2) {
                 pbias[ofm2] = pbias_prv[ofm2];
             }
 
             for (int ithr = 1; ithr < nthreads; ++ithr) {
                 pbias_prv = &(diff_bias_prv(ithr, ofm1 * simd_w));
                 PRAGMA_OMP_SIMD()
-                for (int ofm2 = 0; ofm2 < simd_w; ++ofm2) {
+                for (int ofm2 = 0; ofm2 < blk_sz; ++ofm2) {
                     pbias[ofm2] += pbias_prv[ofm2];
                 }
             }

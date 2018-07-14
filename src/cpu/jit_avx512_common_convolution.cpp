@@ -88,7 +88,6 @@ void _jit_avx512_common_convolution_fwd_t
     const memory_desc_wrapper src_d(conf_.src_pd());
     const memory_desc_wrapper dst_d(conf_.dst_pd());
     const memory_desc_wrapper weights_d(conf_.weights_pd(0));
-    const memory_desc_wrapper bias_d(conf_.weights_pd(1));
 
     const auto &jcp = kernel_->jcp;
     assert(jcp.nb_oc % jcp.nb_oc_blocking == 0);
@@ -101,6 +100,12 @@ void _jit_avx512_common_convolution_fwd_t
         nthr = jcp.aligned_threads;
     else
         nthr = omp_get_max_threads();
+
+    if (conf_.want_padded_bias()) {
+        for (int oc = 0; oc < jcp.oc_without_padding; ++oc)
+            padded_bias_[oc] = bias[oc];
+        bias = padded_bias_;
+    }
 
 #pragma omp parallel num_threads(nthr)
     {
@@ -140,7 +145,7 @@ void _jit_avx512_common_convolution_fwd_t
                 int ih_s = -jcp.t_pad + oh_s * jcp.stride_h;
                 int oh_e = oh_s + work_rem > jcp.oh ? jcp.oh : oh_s + work_rem;
 
-                auto bias_w = bias ? bias + bias_d.blk_off(g_oc) : 0;
+                auto bias_w = bias ? bias + g_oc : nullptr;
                 auto dst_w = dst + dst_d.blk_off(n, g_ocb, oh_s);
                 auto src_w = src + src_d.blk_off(n, g_icb + icb_l2, ih_s);
                 auto wht_w = weights + wht_blk_off(weights_d, g, ocb, icb_l2);
@@ -350,6 +355,8 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
         size_t wht_h_stride = wht_blk_off(weights_d, 0, 0, 0, 1);
         size_t wht_oc_stride = wht_blk_off(weights_d, 0, 1);
 
+        bool is_fast_path = jcp.dilate_h == 0 && jcp.stride_h == 1;
+
         for (int ocb_l2 = 0; ocb_l2 < jcp.nb_oc; ocb_l2 += jcp.nb_oc_L2) {
             start = start_copy;
             int n{0}, g{0}, icc{0}, ih_s{0};
@@ -379,7 +386,7 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
                       ocb < min(jcp.nb_oc, ocb_l2 + jcp.nb_oc_L2); ++ocb) {
                     for (int ij = ih_s; ij < ih_e; ++ij) {
                         int oj, k_len, k_lo;
-                        if (jcp.stride_h == 1) { // fast path
+                        if (is_fast_path) { // dilate == 0 && stride == 1
                             int i_t_overflow = max(0, jcp.kh - 1 - ij
                                 - jcp.t_pad);
                             int i_b_overflow = max(0, jcp.kh - jcp.ih + ij
@@ -387,15 +394,25 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
                             k_len = jcp.kh - i_t_overflow - i_b_overflow;
                             k_lo = i_b_overflow;
                             oj = ij + jcp.t_pad - i_b_overflow;
-                        } else {
-                            int b_pad = jcp.stride_h * (jcp.oh - 1) + jcp.kh
-                                - jcp.ih - jcp.t_pad;
+                        } else if (jcp.dilate_h != 0) { // stride == 1
+                            int dilate_h = jcp.dilate_h + 1;
+                            // Note: use div_up to account for "holes" in filter
+                            int i_t_overflow
+                                = div_up(max(0, (jcp.kh - 1) * dilate_h
+                                        - ij - jcp.t_pad), dilate_h);
+                            int i_b_overflow
+                                = div_up(max(0, (jcp.kh - 1) * dilate_h + 1
+                                        - jcp.ih + ij - jcp.b_pad), dilate_h);
+                            k_len = jcp.kh - i_t_overflow - i_b_overflow;
+                            k_lo = i_b_overflow;
+                            oj = ij + jcp.t_pad - i_b_overflow * dilate_h;
+                        } else { // dilate == 0
                             int i_t_overflow = max(0, (jcp.kh - 1 - ij
                                 - jcp.t_pad) / jcp.stride_h);
                             int i_b_overflow = max(0, (jcp.kh - jcp.ih + ij
-                                - b_pad) / jcp.stride_h);
+                                - jcp.b_pad) / jcp.stride_h);
                             int overflow_kh_hi = jcp.kh - 1 - abs((jcp.ih - 1
-                                + b_pad - ij) % jcp.stride_h);
+                                + jcp.b_pad - ij) % jcp.stride_h);
                             int overflow_kh_lo = (ij + jcp.t_pad)
                                 % jcp.stride_h;
 
@@ -468,6 +485,9 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
         size_t wht_d_stride = wht_blk_off(weights_d, 0, 0, 0, 1);
         size_t wht_oc_stride = wht_blk_off(weights_d, 0, 1);
 
+        bool is_fast_path_d = jcp.dilate_d == 0 && jcp.stride_d == 1;
+        bool is_fast_path_h = jcp.dilate_h == 0 && jcp.stride_h == 1;
+
         for (int ocb_l2 = 0; ocb_l2 < jcp.nb_oc; ocb_l2 += jcp.nb_oc_L2) {
             start = start_copy;
             int n{0}, g{0}, icc{0}, ih_s{0}, id_s{0};
@@ -489,8 +509,8 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
 
                 int work_rem = end - start;
                 int ih_e = ih_s + work_rem > jcp.ih ? jcp.ih : ih_s + work_rem;
-                int d_len=0, d_lo=0, d_oj=0;
-                if (jcp.stride_d == 1) { // fast path
+                int d_len = 0, d_lo = 0, d_oj = 0;
+                if (is_fast_path_d) { // dilate == 0 && stride == 1
                     int d_t_overflow = max(0, jcp.kd - 1 - id_s
                             - jcp.f_pad);
                     int d_b_overflow = max(0, jcp.kd - jcp.id + id_s
@@ -498,15 +518,23 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
                     d_len = jcp.kd - d_t_overflow - d_b_overflow;
                     d_lo = d_b_overflow;
                     d_oj = id_s + jcp.f_pad - d_b_overflow;
-                } else {
-                    int b_pad = jcp.stride_d * (jcp.od - 1) + jcp.kd
-                        - jcp.id - jcp.f_pad;
+                } else if (jcp.dilate_d != 0) { // stride == 1
+                    int dilate_d = jcp.dilate_d + 1;
+                    // Note: use div_up to account for "holes" in filter
+                    int d_t_overflow = div_up(max(0, (jcp.kd - 1) * dilate_d
+                                - id_s - jcp.f_pad), dilate_d);
+                    int d_b_overflow = div_up(max(0, (jcp.kd - 1) * dilate_d + 1
+                                - jcp.id + id_s - jcp.back_pad), dilate_d);
+                    d_len = jcp.kd - d_t_overflow - d_b_overflow;
+                    d_lo = d_b_overflow;
+                    d_oj = id_s + jcp.f_pad - d_b_overflow * dilate_d;
+                } else { // dilate == 0
                     int d_t_overflow = max(0, (jcp.kd - 1 - id_s
                                 - jcp.f_pad) / jcp.stride_d);
                     int d_b_overflow = max(0, (jcp.kd - jcp.id + id_s
-                                - b_pad) / jcp.stride_d);
+                                - jcp.back_pad) / jcp.stride_d);
                     int overflow_kd_hi = jcp.kd - 1 - abs((jcp.id - 1
-                                + b_pad - id_s) % jcp.stride_d);
+                                + jcp.back_pad - id_s) % jcp.stride_d);
                     int overflow_kd_lo = (id_s + jcp.f_pad)
                         % jcp.stride_d;
 
@@ -530,7 +558,7 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
                       ocb < min(jcp.nb_oc, ocb_l2 + jcp.nb_oc_L2); ++ocb) {
                     for (int ij = ih_s; ij < ih_e; ++ij) {
                         int oj, k_len, k_lo;
-                        if (jcp.stride_h == 1) { // fast path
+                        if (is_fast_path_h) { // dilate == 0 && stride == 1
                             int i_t_overflow = max(0, jcp.kh - 1 - ij
                                 - jcp.t_pad);
                             int i_b_overflow = max(0, jcp.kh - jcp.ih + ij
@@ -538,15 +566,25 @@ void jit_avx512_common_convolution_bwd_data_t<diff_dst_type, wei_type,
                             k_len = jcp.kh - i_t_overflow - i_b_overflow;
                             k_lo = i_b_overflow;
                             oj = ij + jcp.t_pad - i_b_overflow;
-                        } else {
-                            int b_pad = jcp.stride_h * (jcp.oh - 1) + jcp.kh
-                                - jcp.ih - jcp.t_pad;
+                        } else if (jcp.dilate_h != 0) { // stride == 1
+                            int dilate_h = jcp.dilate_h + 1;
+                            // Note: use div_up to account for "holes" in filter
+                            int i_t_overflow
+                                = div_up(max(0, (jcp.kh - 1) * dilate_h
+                                        - ij - jcp.t_pad), dilate_h);
+                            int i_b_overflow
+                                = div_up(max(0, (jcp.kh - 1) * dilate_h + 1
+                                        - jcp.ih + ij - jcp.b_pad), dilate_h);
+                            k_len = jcp.kh - i_t_overflow - i_b_overflow;
+                            k_lo = i_b_overflow;
+                            oj = ij + jcp.t_pad - i_b_overflow * dilate_h;
+                        } else { // dilate == 0
                             int i_t_overflow = max(0, (jcp.kh - 1 - ij
                                 - jcp.t_pad) / jcp.stride_h);
                             int i_b_overflow = max(0, (jcp.kh - jcp.ih + ij
-                                - b_pad) / jcp.stride_h);
+                                - jcp.b_pad) / jcp.stride_h);
                             int overflow_kh_hi = jcp.kh - 1 - abs((jcp.ih - 1
-                                + b_pad - ij) % jcp.stride_h);
+                                + jcp.b_pad - ij) % jcp.stride_h);
                             int overflow_kh_lo = (ij + jcp.t_pad)
                                 % jcp.stride_h;
 
@@ -598,8 +636,9 @@ jit_avx512_common_convolution_bwd_weights_t(const pd_t *pd,
         const input_vector &inputs, const output_vector &outputs)
     : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd), kernel_(nullptr)
     , trans_kernel_(nullptr), trans_dst_kernel_(nullptr), acc_ker_(nullptr)
-    , reducer_bias_(nullptr), tr_src_(nullptr), tr_diff_dst_(nullptr)
-    , ws_reduction_(nullptr), tr_src_bctx_(nullptr),  tr_diff_dst_bctx_(nullptr)
+    , reducer_bias_(nullptr), padded_bias_(nullptr), tr_src_(nullptr)
+    , tr_diff_dst_(nullptr), ws_reduction_(nullptr), tr_src_bctx_(nullptr)
+    , tr_diff_dst_bctx_(nullptr)
 {
     const auto &j = conf_.jcp_;
     kernel_ = new jit_avx512_common_conv_bwd_weights_kernel_f32(j);
@@ -672,6 +711,9 @@ jit_avx512_common_convolution_bwd_weights_t(const pd_t *pd,
         reducer_bias_ = new cpu_reducer_t<diff_weights_type>(reduce_balancer_t(
                     nthr_, j.oc_block, j.ngroups * j.nb_oc, j.mb,
                     max_buffer_size));
+        if (conf_.want_padded_bias())
+            padded_bias_ = (diff_weights_data_t *)
+                malloc(sizeof(diff_weights_data_t) * j.oc, 64);
     }
 }
 
@@ -681,7 +723,8 @@ struct jit_avx512_common_convolution_bwd_weights_t<src_type, diff_dst_type,
     diff_weights_type>::thread_info_t {
     const src_data_t *src;
     const diff_dst_data_t *diff_dst;
-    const diff_weights_data_t *diff_weights, *diff_bias;
+    const diff_weights_data_t *diff_weights;
+    diff_weights_data_t *diff_bias;
 
     int ithr;
     int ithr_ic_b, ithr_oc_b, ithr_g, ithr_mb;
@@ -700,7 +743,9 @@ struct jit_avx512_common_convolution_bwd_weights_t<src_type, diff_dst_type,
         diff_dst = reinterpret_cast<const diff_dst_data_t *>(
             self->input_memory(1));
         diff_weights = reinterpret_cast<diff_weights_data_t *>(self->memory(0));
-        diff_bias = reinterpret_cast<diff_weights_data_t *>(self->memory(1));
+        diff_bias = self->conf_.want_padded_bias()
+            ? self->padded_bias_
+            : reinterpret_cast<diff_weights_data_t *>(self->memory(1));
 
         ithr_ic_b = ithr % self->nthr_ic_b_;
         ithr_oc_b = ithr / self->nthr_ic_b_ % self->nthr_oc_b_;
@@ -1255,7 +1300,7 @@ void jit_avx512_common_convolution_bwd_weights_t<src_type, diff_dst_type,
         }
     }
 
-    rb->reduce(ti->ithr, (diff_weights_data_t *)ti->diff_bias);
+    rb->reduce(ti->ithr, ti->diff_bias);
 }
 
 template <data_type_t src_type, data_type_t diff_dst_type,
@@ -1265,19 +1310,17 @@ void jit_avx512_common_convolution_bwd_weights_t<src_type, diff_dst_type,
 
     const auto &jcp = kernel_->jcp;
 
-    const int wei_size = jcp.ngroups * jcp.oc * jcp.ic * jcp.kh * jcp.kw
-        * jcp.kd;
+    const size_t wei_size = (size_t)jcp.ngroups * jcp.oc * jcp.ic * jcp.kh
+        * jcp.kw * jcp.kd;
     const int bia_size = jcp.ngroups * jcp.oc;
     const diff_weights_data_t *diff_bias_ws
-            = ws_reduction_ + (nthr_mb_ - 1) * wei_size;
+            = ws_reduction_ + (size_t)(nthr_mb_ - 1) * wei_size;
 
     #pragma omp barrier
     if (ti->ithr == 0)
     {
         for (int thr_mb = 1; thr_mb < nthr_mb_; ++thr_mb) {
-
-            acc_ker_->accumulate((diff_weights_data_t *)ti->diff_bias,
-                diff_bias_ws, bia_size);
+            acc_ker_->accumulate(ti->diff_bias, diff_bias_ws, bia_size);
             diff_bias_ws += bia_size;
         }
     }
@@ -1304,6 +1347,14 @@ void jit_avx512_common_convolution_bwd_weights_t<src_type, diff_dst_type,
             if (nthr_mb_ > 1) reduce_diff_weights_3d(&thread_info);
             if (conf_.with_bias()) compute_diff_bias_3d(&thread_info);
         }
+    }
+
+    /* TODO: put that into compute_diff_bias() */
+    if (conf_.want_padded_bias()) {
+        auto diff_bias_in
+            = reinterpret_cast<diff_weights_data_t *>(this->memory(1));
+        for (int oc = 0; oc < conf_.jcp_.oc_without_padding; ++oc)
+            diff_bias_in[oc] = this->padded_bias_[oc];
     }
 }
 

@@ -111,11 +111,9 @@ status_t mkldnn_memory_desc_init(memory_desc_t *memory_desc, int ndims,
     case OIhw8o8i:
     case OIhw16o16i:
     case IOhw16o16i:
-    case Oihw8o:
     case Oihw16o:
     case Ohwi8o:
     case Ohwi16o:
-    case OhIw16o4i:
     case goihw:
     case hwigo:
     case gOIhw8i8o:
@@ -127,13 +125,11 @@ status_t mkldnn_memory_desc_init(memory_desc_t *memory_desc, int ndims,
     case gOIhw8o8i:
     case gOIhw16o16i:
     case gIOhw16o16i:
-    case gOihw8o:
     case gOihw16o:
     case gOhwi8o:
     case gOhwi16o:
     case Goihw8g:
     case Goihw16g:
-    case gOhIw16o4i:
     case goidhw:
     case gOIdhw16i16o:
     case gOIdhw16o16i:
