@@ -66,11 +66,10 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward() {
         (*kernel_)(&arg);
     };
 
-    size_t work = jpp.mb * jpp.nb_c * jpp.oh;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0,work),
-        [&](const tbb::blocked_range<size_t> r)
-        {
-            int n, b_c, oh;
+    const size_t work_amount = jpp.mb * jpp.nb_c * jpp.oh;
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+        [&](const tbb::blocked_range<size_t>& r) {
+            int n{0}, b_c{0}, oh{0};
             nd_iterator_init(r.begin(), n, jpp.mb, b_c, jpp.nb_c, oh, jpp.oh);
             for (size_t i = r.begin(); i != r.end(); ++i) {
                 ker(n, b_c, oh);

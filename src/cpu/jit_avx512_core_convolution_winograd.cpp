@@ -337,11 +337,11 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
     }
 
-        {
-        size_t work = jcp.mb * jcp.dimK_nb_block * jcp.dimK_block;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
-            [&](const tbb::blocked_range<size_t> r) {
-                int img, K_blk1, K_blk2;
+    {
+        const size_t work_amount = jcp.mb * jcp.dimK_nb_block * jcp.dimK_block;
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+            [&](const tbb::blocked_range<size_t>& r) {
+                int img{0}, K_blk1{0}, K_blk2{0};
                 nd_iterator_init(r.begin(),
                     img, jcp.mb,
                     K_blk1, jcp.dimK_nb_block,
@@ -358,16 +358,16 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                         K_blk2, jcp.dimK_block);
 
                 }
-        }, tbb::static_partitioner());
-        }
+            }, tbb::static_partitioner());
+    }
 
-        {
-        size_t work = jcp.nb_oc * jcp.nb_ic * 
+    {
+        const size_t work_amount = jcp.nb_oc * jcp.nb_ic * 
             jcp.oc_block * jcp.oc_reg_block *
             jcp.ic_block * jcp.ic_reg_block;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
-            [&](const tbb::blocked_range<size_t> r) {
-                int ofm1, ifm1, ofm2, ifm2;
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+            [&](const tbb::blocked_range<size_t>& r) {
+                int ofm1{0}, ifm1{0}, ofm2{0}, ifm2{0};
                 nd_iterator_init(r.begin(),
                     ofm1, jcp.nb_oc,
                     ifm1, jcp.nb_ic,
@@ -389,19 +389,19 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                             ofm2, jcp.oc_block * jcp.oc_reg_block,
                             ifm2, jcp.ic_block * jcp.ic_reg_block);
                     }
-        }, tbb::static_partitioner());
-        }
+            }, tbb::static_partitioner());
+    }
 
-        {
-        size_t work = jcp.dimN_nb_block * alpha * alpha * jcp.dimM_nb_block;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
-            [&](const tbb::blocked_range<size_t> r) {
-            int N_blk1, oj, oi, M_blk1;
-            nd_iterator_init(r.begin(),
-                N_blk1,jcp.dimN_nb_block,
-                oj, alpha,
-                oi, alpha,
-                M_blk1, jcp.dimM_nb_block);
+    {
+        const size_t work_amount = jcp.dimN_nb_block * alpha * alpha * jcp.dimM_nb_block;
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+            [&](const tbb::blocked_range<size_t>& r) {
+                int N_blk1{0}, oj{0}, oi{0}, M_blk1{0};
+                nd_iterator_init(r.begin(),
+                    N_blk1,jcp.dimN_nb_block,
+                    oj, alpha,
+                    oi, alpha,
+                    M_blk1, jcp.dimM_nb_block);
                 for (size_t i = r.begin(); i != r.end(); ++i) {
                     for (int K_blk1 = 0; K_blk1 < jcp.dimK_nb_block; K_blk1++)
                     for (int N_blk2 = 0; N_blk2 < jcp.dimN_block; N_blk2++) {
@@ -419,15 +419,15 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                         oi, alpha,
                         M_blk1, jcp.dimM_nb_block);
                 }
-        }, tbb::static_partitioner());
-        }
+            }, tbb::static_partitioner());
+    }
 
-        {
-        size_t work = jcp.mb * jcp.dimM_nb_block *
+    {
+        const size_t work_amount = jcp.mb * jcp.dimM_nb_block *
             jcp.dimM_block * jcp.dimM_reg_block;
-        tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
-            [&](const tbb::blocked_range<size_t> r) {
-                int img, M_blk1, M_blk2;
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+            [&](const tbb::blocked_range<size_t>& r) {
+                int img{0}, M_blk1{0}, M_blk2{0};
                 nd_iterator_init(r.begin(),
                     img, jcp.mb,
                     M_blk1, jcp.dimM_nb_block,
@@ -449,8 +449,8 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                             M_blk1, jcp.dimM_nb_block,
                             M_blk2, jcp.dimM_block * jcp.dimM_reg_block);
                 }
-        }, tbb::static_partitioner());
-        }
+            }, tbb::static_partitioner());
+    }
 }
 
 template void
@@ -512,12 +512,12 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
     }
 
     {
-    size_t work = jcp.nb_oc * jcp.nb_ic * 
+    const size_t work_amount = jcp.nb_oc * jcp.nb_ic * 
         jcp.oc_block * jcp.oc_reg_block *
         jcp.ic_block * jcp.ic_reg_block;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, work),
-        [&](const tbb::blocked_range<size_t> r) {
-            int ofm1, ifm1, ofm2, ifm2;
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, work_amount),
+        [&](const tbb::blocked_range<size_t>& r) {
+            int ofm1{0}, ifm1{0}, ofm2{0}, ifm2{0};
             nd_iterator_init(r.begin(),
                 ofm1, jcp.nb_oc,
                 ifm1, jcp.nb_ic,
