@@ -20,9 +20,11 @@
 #include "cpu_memory.hpp"
 #include "type_helpers.hpp"
 
+/*
 #include "cpu/cpu_concat.hpp"
 #include "cpu/ref_concat.hpp"
 #include "cpu/simple_concat.hpp"
+*/
 
 namespace mkldnn {
 namespace impl {
@@ -33,11 +35,13 @@ using cpd_create_f = mkldnn::impl::engine_t::concat_primitive_desc_create_f;
 namespace {
 #define INSTANCE(...) __VA_ARGS__::pd_t::create
 static const cpd_create_f cpu_concat_impl_list[] = {
+    /*
     INSTANCE(simple_concat_t<data_type::f32>),
     INSTANCE(simple_concat_t<data_type::u8>),
     INSTANCE(simple_concat_t<data_type::s8>),
     INSTANCE(simple_concat_t<data_type::s32>),
     INSTANCE(ref_concat_t),
+    */
     nullptr,
 };
 #undef INSTANCE

@@ -114,6 +114,7 @@ private:
     jit_uni_pool_kernel_f32<isa> *kernel_;
 };
 
+/*
 template <cpu_isa_t isa>
 struct jit_uni_pooling_bwd_t: public cpu_primitive_t {
     struct pd_t: public cpu_pooling_bwd_pd_t {
@@ -198,6 +199,7 @@ private:
     pd_t conf_;
     jit_uni_pool_kernel_f32<isa> *kernel_;
 };
+*/
 
 }
 }

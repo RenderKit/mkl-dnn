@@ -276,6 +276,7 @@ using jit_avx512_core_convolution_winograd_fwd_t
 using jit_avx512_core_convolution_winograd_relu_t
         = _jit_avx512_core_convolution_winograd_fwd_t<true>;
 
+/*
 struct jit_avx512_core_convolution_winograd_bwd_data_t
         : _jit_avx512_core_convolution_winograd_t<false>,
         public cpu_primitive_t {
@@ -474,6 +475,7 @@ private:
     // Buffer required to store transforms in the frequency domain
     winograd::winograd_scratchpad_avx512_core_t *scratchpad_;
 };
+*/
 }
 }
 }

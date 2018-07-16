@@ -25,7 +25,7 @@
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
-#include "jit_avx512_common_convolution_winograd.hpp"
+//#include "jit_avx512_common_convolution_winograd.hpp"
 #include "jit_avx512_core_convolution_winograd.hpp"
 
 #ifndef _MSC_VER
@@ -599,6 +599,7 @@ template void
 _jit_avx512_core_convolution_winograd_t<false>::_execute_data_W_SGD(
         float *, float *, float *, float *);
 
+/*
 namespace {
 
 void subarray_sum(size_t num_arrs, float *output, size_t nelems,
@@ -1116,6 +1117,7 @@ _execute_backward_weights_S_D_Giot_W() {
         }
     }
 }
+*/
 
 }
 }

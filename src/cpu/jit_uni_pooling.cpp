@@ -124,7 +124,7 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward_3d() {
         (*kernel_)(&arg);
     };
 
-#   pragma omp parallel for collapse(3) schedule(static)
+//#   pragma omp parallel for collapse(3) schedule(static)
     for (int n = 0; n < jpp.mb; ++n) {
         for (int b_c = 0; b_c < jpp.nb_c; ++b_c) {
             for (int od = 0; od < jpp.od; ++od) {
@@ -141,7 +141,7 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward_3d() {
     }
 }
 
-
+/*
 template <cpu_isa_t isa>
 void jit_uni_pooling_bwd_t<isa>::execute_backward() {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
@@ -286,14 +286,15 @@ void jit_uni_pooling_bwd_t<isa>::execute_backward_3d() {
         }
     }
 }
+*/
 
 
 template struct jit_uni_pooling_fwd_t<sse42>;
-template struct jit_uni_pooling_bwd_t<sse42>;
+//template struct jit_uni_pooling_bwd_t<sse42>;
 template struct jit_uni_pooling_fwd_t<avx2>;
-template struct jit_uni_pooling_bwd_t<avx2>;
+//template struct jit_uni_pooling_bwd_t<avx2>;
 template struct jit_uni_pooling_fwd_t<avx512_common>;
-template struct jit_uni_pooling_bwd_t<avx512_common>;
+//template struct jit_uni_pooling_bwd_t<avx512_common>;
 
 }
 }
