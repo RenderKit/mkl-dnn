@@ -58,6 +58,7 @@ set(CMAKE_EXAMPLE_CCXX_FLAGS)   # EXAMPLE specifics
 set(CMAKE_TEST_CCXX_FLAGS)      # TESTS specifics
 
 include("cmake/platform.cmake")
+include("cmake/OpenMP.cmake")
 include("cmake/SDL.cmake")
 include("cmake/Doxygen.cmake")
 include("cmake/profiling.cmake")
