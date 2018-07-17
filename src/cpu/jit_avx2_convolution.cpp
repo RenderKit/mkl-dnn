@@ -119,15 +119,17 @@ void _jit_avx2_convolution_fwd_t<with_relu>::execute_forward() {
         }
     };
 
-#pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    const int nthr = omp_get_num_threads();
+    tbb::parallel_for(tbb::blocked_range<int>(0, nthr),
+        [&](const tbb::blocked_range<int>& r) {
+            ker(omp_get_thread_num(), nthr);
+        });
 }
 
 template void _jit_avx2_convolution_fwd_t<true>::execute_forward();
 template void _jit_avx2_convolution_fwd_t<false>::execute_forward();
 
+/*
 void jit_avx2_convolution_bwd_data_t::execute_backward_data() {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
@@ -163,7 +165,7 @@ void jit_avx2_convolution_bwd_data_t::execute_backward_data() {
                     const int simd_w = 8;
 
                     par_conv.src = &diff_src[diff_src_d.blk_off(n,
-                            /*jcp.ic == 3 ? 0 :*/
+                            //jcp.ic == 3 ? 0 :
                             g * jcp.nb_ic + jcp.nb_ic_blocking * icbb, ih, 0)];
                     par_conv.dst = &diff_dst[diff_dst_d.blk_off(
                             n, g * jcp.nb_oc + oc, oh, 0)];
@@ -232,12 +234,12 @@ void jit_avx2_convolution_bwd_weights_t::execute_backward_weights() {
 
         if (w_njobs == 0) return;
 
-        /* reduction dimension */
+        // reduction dimension
         int img_start{0}, img_end{0};
         balance211(jcp.mb, rw->balancer_.nthr_per_group_,
                 rw->balancer_.id_in_group(ithr), img_start, img_end);
 
-        /* jobs */
+        // jobs
         int g_start{0}, ocb_start{0}, icb_start{0};
         nd_iterator_init(w_job_start, g_start, jcp.ngroups, ocb_start,
                 jcp.nb_oc, icb_start, jcp.nb_ic);
@@ -254,7 +256,7 @@ void jit_avx2_convolution_bwd_weights_t::execute_backward_weights() {
                 par_conv.filt = &rw->get_local_ptr(ithr, diff_weights)[
                     w_job_loc * rw->balancer_.job_size_];
 
-                /* TODO: put dw <-- 0 in kernel */
+                // TODO: put dw <-- 0 in kernel
                 if (img == img_start)
                     array_set((data_t *)par_conv.filt, 0,
                             rw->balancer_.job_size_);
@@ -276,12 +278,12 @@ void jit_avx2_convolution_bwd_weights_t::execute_backward_weights() {
 
         if (b_njobs == 0) return;
 
-        /* reduction dimension */
+        // reduction dimension
         int img_start{0}, img_end{0};
         balance211(jcp.mb, rb->balancer_.nthr_per_group_,
                 rb->balancer_.id_in_group(ithr), img_start, img_end);
 
-        /* jobs */
+        // jobs
         int g_start{0}, ocb_start{0};
         nd_iterator_init(b_job_start, g_start, jcp.ngroups, ocb_start,
                 jcp.nb_oc);
@@ -321,6 +323,7 @@ void jit_avx2_convolution_bwd_weights_t::execute_backward_weights() {
             ker_bias(ithr, nthr);
     }
 }
+*/
 
 }
 }

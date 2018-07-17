@@ -109,6 +109,7 @@ private:
 using jit_avx2_convolution_fwd_t = _jit_avx2_convolution_fwd_t<false>;
 using jit_avx2_convolution_relu_t = _jit_avx2_convolution_fwd_t<true>;
 
+/*
 struct jit_avx2_convolution_bwd_data_t: public cpu_primitive_t {
     struct pd_t: public cpu_convolution_bwd_data_pd_t {
         pd_t(engine_t *engine,
@@ -242,7 +243,7 @@ struct jit_avx2_convolution_bwd_weights_t: public cpu_primitive_t {
         kernel_ = new jit_avx2_conv_bwd_weights_kernel_f32(conf_.jcp_);
 
         const int max_threads = omp_get_max_threads();
-        const size_t max_buffer_size = 1<<21; /* just a heuristic */
+        const size_t max_buffer_size = 1<<21; // just a heuristic
         const auto &j = conf_.jcp_;
         reducer_weights_ = new cpu_reducer_t<data_type::f32>(reduce_balancer_t(
                     max_threads, j.kh * j.kw * j.ic_block * j.oc_block,
@@ -268,6 +269,7 @@ private:
     jit_avx2_conv_bwd_weights_kernel_f32 *kernel_;
     cpu_reducer_t<data_type::f32> *reducer_weights_, *reducer_bias_;
 };
+*/
 
 }
 }
