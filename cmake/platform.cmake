@@ -22,18 +22,9 @@ if(platform_cmake_included)
 endif()
 set(platform_cmake_included true)
 
-add_definitions(-DMKLDNN_DLL -DMKLDNN_DLL_EXPORTS)
-
 # UNIT8_MAX-like macros are a part of the C99 standard and not a part of the
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
-
-option(MKLDNN_VERBOSE
-    "allows Intel(R) MKL-DNN be verbose whenever MKLDNN_VERBOSE
-    environment variable set to 1" ON) # enabled by default
-if(NOT MKLDNN_VERBOSE)
-    add_definitions(-DDISABLE_VERBOSE)
-endif()
 
 set(CMAKE_CCXX_FLAGS)
 set(DEF_ARCH_OPT_FLAGS)
