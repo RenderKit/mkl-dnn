@@ -117,10 +117,11 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
         }
     };
 
-#pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    const int nthr = omp_get_num_threads();
+    tbb::parallel_for(tbb::blocked_range<int>(0, nthr),
+        [&](const tbb::blocked_range<int>& r) {
+            ker(omp_get_thread_num(), nthr);
+        });
 }
 
 template void _jit_sse42_convolution_fwd_t<true>::execute_forward();
