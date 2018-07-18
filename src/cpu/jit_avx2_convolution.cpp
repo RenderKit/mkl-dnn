@@ -122,7 +122,8 @@ void _jit_avx2_convolution_fwd_t<with_relu>::execute_forward() {
     const int nthr = omp_get_num_threads();
     tbb::parallel_for(tbb::blocked_range<int>(0, nthr),
         [&](const tbb::blocked_range<int>& r) {
-            ker(omp_get_thread_num(), nthr);
+            for (int i = r.begin(); i != r.end(); ++i)
+                ker(i, nthr);
         });
 }
 
