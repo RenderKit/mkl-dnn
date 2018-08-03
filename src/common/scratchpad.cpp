@@ -18,8 +18,6 @@
 
 #include "scratchpad.hpp"
 
-#define MKLDNN_ENABLE_CONCURRENT_EXEC
-
 #ifdef __APPLE__
 // older XCode doesn't support thread_local
 #define THREAD_LOCAL __thread
@@ -87,14 +85,22 @@ struct global_scratchpad_t : public scratchpad_t {
     }
 
 private:
-    THREAD_LOCAL static char *scratchpad_;
-    THREAD_LOCAL static size_t size_;
-    THREAD_LOCAL static unsigned int reference_count_;
+    /*
+      Using thread-local here is unnecessary and even buggy! All threads
+      actually share the same scratchpad, which is created and queried only
+      on the main thread. If the scratchpad is queried on some thread other
+      than the one it was created on (e.g. the application calls the API from
+      multiple threads), thread-local causes a segfault because the scratchpad
+      is uninitialized on the current thread.
+    */
+    /*THREAD_LOCAL*/ static char *scratchpad_;
+    /*THREAD_LOCAL*/ static size_t size_;
+    /*THREAD_LOCAL*/ static unsigned int reference_count_;
 };
 
-THREAD_LOCAL char *global_scratchpad_t::scratchpad_ = nullptr;
-THREAD_LOCAL size_t global_scratchpad_t::size_ = 0;
-THREAD_LOCAL unsigned int global_scratchpad_t::reference_count_ = 0;
+/*THREAD_LOCAL*/ char *global_scratchpad_t::scratchpad_ = nullptr;
+/*THREAD_LOCAL*/ size_t global_scratchpad_t::size_ = 0;
+/*THREAD_LOCAL*/ unsigned int global_scratchpad_t::reference_count_ = 0;
 
 
 /*
