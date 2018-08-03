@@ -18,6 +18,8 @@
 
 #include "scratchpad.hpp"
 
+#define MKLDNN_ENABLE_CONCURRENT_EXEC
+
 #ifdef __APPLE__
 // older XCode doesn't support thread_local
 #define THREAD_LOCAL __thread
