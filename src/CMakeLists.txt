@@ -37,7 +37,10 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_SRC_CCXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_SRC_CCXX_FLAGS}")
 
 include_directories(${TBB_INCLUDE_DIR})
-list(APPEND EXTRA_LIBS ${TBB_LIBRARIES} pthread rt)
+list(APPEND EXTRA_LIBS ${TBB_LIBRARIES})
+if(NOT(WIN32))
+    list(APPEND EXTRA_LIBS pthread rt)
+endif()
 
 if(VTUNEROOT)
     include_directories(${VTUNEROOT}/include)
