@@ -38,8 +38,11 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_SRC_CCXX_FLAGS}")
 
 include_directories(${TBB_INCLUDE_DIR})
 list(APPEND EXTRA_LIBS ${TBB_LIBRARIES})
-if(NOT(WIN32))
-    list(APPEND EXTRA_LIBS pthread rt)
+if(UNIX)
+    list(APPEND EXTRA_LIBS pthread)
+    if(NOT(APPLE))
+        list(APPEND EXTRA_LIBS rt)
+    endif()
 endif()
 
 if(VTUNEROOT)
