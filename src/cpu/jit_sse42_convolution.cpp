@@ -28,6 +28,20 @@ using namespace mkldnn::impl::status;
 using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
+#define src_blk_off(f, n, c, h, w) \
+    (conf_.ndims() == 3) \
+    ? (f).blk_off(n, c, w) \
+    : (f).blk_off(n, c, h, w)
+
+#define wht_blk_off_(f, g, ...) \
+    conf_.with_groups() \
+    ? (f).blk_off(g, __VA_ARGS__) \
+    : (f).blk_off(__VA_ARGS__)
+#define wht_blk_off(f, g, oc, ic, kh, kw) \
+        conf_.ndims() == 3 \
+        ? wht_blk_off_(f, g, oc, ic, kw) \
+        : wht_blk_off_(f, g, oc, ic, kh, kw)
+
 template <bool with_relu>
 void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
@@ -45,7 +59,7 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
     int ocb_work = div_up(jcp.nb_oc, jcp.nb_oc_blocking);
     const size_t work_amount = jcp.mb * jcp.ngroups * ocb_work * jcp.oh;
 
-    auto ker = [&](const int ithr, const int nthr) {
+    parallel(0, [&](const int ithr, const int nthr) {
         size_t start{ 0 }, end{ 0 };
         balance211(work_amount, nthr, ithr, start, end);
 
@@ -77,17 +91,14 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
                     const int ih = nstl::max(ij - jcp.t_pad
                         + div_up(i_t_overflow,
                                  (jcp.dilate_h+1)) * (jcp.dilate_h + 1), 0);
-                    par_conv.src = &src[src_d.blk_off(n,
+                    par_conv.src = &src[src_blk_off(src_d, n,
                         jcp.ic == 3 ? 0 : _ic, ih, 0)];
 
-                    par_conv.dst = &dst[dst_d.blk_off(n, _oc, oh, 0)];
+                    par_conv.dst = &dst[src_blk_off(dst_d, n, _oc, oh, 0)];
 
                     const int wh = div_up(i_t_overflow, (jcp.dilate_h + 1));
-                    par_conv.filt = &weights[conf_.with_groups()
-                                        ? weights_d.blk_off(g, ocb,
-                                            jcp.ic == 3 ? 0 : icb, wh, 0)
-                                        : weights_d.blk_off(ocb,
-                                            jcp.ic == 3 ? 0 : icb, wh, 0)];
+                    par_conv.filt = &weights[wht_blk_off(weights_d, g, ocb,
+                        jcp.ic == 3 ? 0 : icb, wh, 0)];
 
                     if (icb == 0) {
                         if (bias)
@@ -115,14 +126,7 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
             }
             icbb += icb_step;
         }
-    };
-
-    const int nthr = omp_get_num_threads();
-    tbb::parallel_for(tbb::blocked_range<int>(0, nthr),
-        [&](const tbb::blocked_range<int>& r) {
-            for (int i = r.begin(); i != r.end(); ++i)
-                ker(i, nthr);
-        });
+    });
 }
 
 template void _jit_sse42_convolution_fwd_t<true>::execute_forward();

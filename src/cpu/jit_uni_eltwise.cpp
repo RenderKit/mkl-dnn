@@ -284,10 +284,13 @@ struct jit_uni_kernel_fwd_f32: public jit_uni_eltwise_kernel_f32,
         assert(prepare_const);
         (this->*prepare_const)();
 
-        cmp(reg_work_amount, simd_w);
-        jl("reminder_loop_start", T_NEAR);
+        Label reminder_loop_start, reminder_loop_end;
+        Label vectorized_loop_start, vectorized_loop_end;
 
-        L("vectorized_loop_start");
+        cmp(reg_work_amount, simd_w);
+        jl(reminder_loop_start, T_NEAR);
+
+        L(vectorized_loop_start);
 
         assert(vectorized_body);
         (this->*vectorized_body)();
@@ -297,14 +300,14 @@ struct jit_uni_kernel_fwd_f32: public jit_uni_eltwise_kernel_f32,
 
         sub(reg_work_amount, simd_w);
         cmp(reg_work_amount, simd_w);
-        jge("vectorized_loop_start", T_NEAR);
+        jge(vectorized_loop_start, T_NEAR);
 
-        L("vectorized_loop_end");
+        L(vectorized_loop_end);
 
-        L("reminder_loop_start");
+        L(reminder_loop_start);
 
         cmp(reg_work_amount, 0);
-        jle("reminder_loop_end", T_NEAR);
+        jle(reminder_loop_end, T_NEAR);
 
         assert(reminder_body);
         (this->*reminder_body)();
@@ -313,9 +316,9 @@ struct jit_uni_kernel_fwd_f32: public jit_uni_eltwise_kernel_f32,
         add(reg_to, sizeof(float));
 
         dec(reg_work_amount);
-        jmp("reminder_loop_start", T_NEAR);
+        jmp(reminder_loop_start, T_NEAR);
 
-        L("reminder_loop_end");
+        L(reminder_loop_end);
 
         postamble();
 
@@ -546,6 +549,8 @@ private:
     }
 
     void elu_vectorized_body() {
+        Label exit, early_exit;
+
         uni_vmovups(vmm_src, ptr[reg_from]);
         // compute mask
         if (isa < avx512_common) {
@@ -558,7 +563,7 @@ private:
             kmovw(reg_mask.cvt32(), k_mask);
         }
         cmp(reg_mask, isa == sse42 ? 0x0f : (isa == avx2 ? 0xff : 0xffff));
-        je("early_exit", T_NEAR);
+        je(early_exit, T_NEAR);
 
         // compute exponent
         uni_vmovups(Vmm(10), vmm_src);
@@ -574,15 +579,17 @@ private:
             vblendmps(vmm_dst | k_mask, vmm_dst, Vmm(10));
         // store result
         uni_vmovups(ptr[reg_to], vmm_dst);
-        jmp("exit", T_NEAR);
+        jmp(exit, T_NEAR);
 
-        L("early_exit");
+        L(early_exit);
         uni_vmovups(ptr[reg_to], vmm_src);
 
-        L("exit");
+        L(exit);
     }
 
     void elu_reminder_body() {
+        Label reminder_exit, reminder_early_exit;
+
         movss(xmm_src, ptr[reg_from]);
         // compute mask
         movss(xmm_mask, xmm_src);
@@ -591,7 +598,7 @@ private:
         // early exit if all elems positive
         movmskps(reg_mask, xmm_mask);
         cmp(reg_mask, 0x01);
-        je("reminder_early_exit", T_NEAR);
+        je(reminder_early_exit, T_NEAR);
 
         // compute exponent
         movss(Xmm(10), xmm_src);
@@ -603,12 +610,12 @@ private:
         blendvps(xmm_dst, Xmm(10));
         // store result
         movss(ptr[reg_to], xmm_dst);
-        jmp("reminder_exit", T_NEAR);
+        jmp(reminder_exit, T_NEAR);
 
-        L("reminder_early_exit");
+        L(reminder_early_exit);
         movss(ptr[reg_to], xmm_src);
 
-        L("reminder_exit");
+        L(reminder_exit);
     }
 
     void square_vectorized_body() {
@@ -666,6 +673,8 @@ private:
     }
 
     void sqrt_vectorized_body() {
+        Label early_exit;
+
         //load src
         uni_vmovups(vmm_src, ptr[reg_from]);
 
@@ -676,7 +685,7 @@ private:
         // early exit if all elems are negative
         uni_vmovmskps(reg_mask, vmm_mask);
         cmp(reg_mask, 0);
-        je("early_exit", T_NEAR);
+        je(early_exit, T_NEAR);
 
         // compute sqrt(x)
         uni_vsqrtps(vmm_src, vmm_src);
@@ -685,11 +694,13 @@ private:
         uni_vblendvps(vmm_dst, vmm_dst, vmm_src, vmm_mask);
 
         // store result
-        L("early_exit");
+        L(early_exit);
         uni_vmovups(ptr[reg_to], vmm_dst);
     }
 
     void sqrt_reminder_body() {
+        Label reminder_early_exit;
+
         // load src
         movss(xmm_src, ptr[reg_from]);
 
@@ -701,7 +712,7 @@ private:
         // early exit if all elements are negative
         movmskps(reg_mask, xmm_mask);
         cmp(reg_mask, 0);
-        je("reminder_early_exit", T_NEAR);
+        je(reminder_early_exit, T_NEAR);
 
         // compute sqrt(x)
         sqrtss(xmm_src, xmm_src);
@@ -710,7 +721,7 @@ private:
         blendvps(xmm_dst, xmm_src);
 
         // store result
-        L("reminder_early_exit");
+        L(reminder_early_exit);
         movss(ptr[reg_to], xmm_dst);
     }
 
@@ -817,7 +828,14 @@ private:
     }
 
     void soft_relu_vectorized() {
-        uni_vminps(Vmm(1), Vmm(1), ptr[imm_addr64 + 24 * vlen]);
+        // duplicate src
+        uni_vmovups(Vmm(9), Vmm(1));
+        // get vmm_mask = src > max logf
+        uni_vmovups(Vmm(3), ptr[imm_addr64 + 24 * vlen]);
+        uni_vmovups(vmm_mask, Vmm(1));
+        uni_vcmpgtps(vmm_mask, vmm_mask, Vmm(3));
+
+        uni_vminps(Vmm(1), Vmm(1), Vmm(3));
         uni_vmaxps(Vmm(1), Vmm(1), ptr[imm_addr64 + 25 * vlen]);
         uni_vmovups(Vmm(8), Vmm(1));
         // calculate exp(x)
@@ -886,6 +904,8 @@ private:
         uni_vmulps(Vmm(1), Vmm(1), ptr[imm_addr64 + 3 * vlen]);
         uni_vaddps(Vmm(8), Vmm(8), Vmm(1));
         uni_vaddps(Vmm(8), Vmm(8), Vmm(5));
+        // y = (x < max log f) ? soft_relu(x) : x
+        uni_vblendvps(Vmm(8), Vmm(8), Vmm(9), vmm_mask);
     }
 
     void soft_relu_vectorized_body() {
@@ -945,13 +965,14 @@ status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init() {
     bool ok = true && mayiuse(isa)
         && utils::one_of(desc()->prop_kind, prop_kind::forward_training,
                 prop_kind::forward_inference)
-        && utils::implication(isa > avx2, utils::one_of(desc()->alg_kind,
+        && utils::everyone_is(data_type::f32, desc()->data_desc.data_type)
+        && !has_zero_dim_memory()
+        && IMPLICATION(isa > avx2, utils::one_of(desc()->alg_kind,
                 eltwise_relu, eltwise_elu))
-        && utils::implication(isa == sse42 || isa == avx2, utils::one_of(
+        && IMPLICATION(isa == sse42 || isa == avx2, utils::one_of(
                     desc()->alg_kind, eltwise_relu, eltwise_tanh, eltwise_elu,
                     eltwise_square, eltwise_abs, eltwise_sqrt, eltwise_linear,
                     eltwise_bounded_relu, eltwise_soft_relu, eltwise_logistic))
-        && utils::everyone_is(data_type::f32, desc()->data_desc.data_type)
         && memory_desc_wrapper(src_pd()).is_dense()
         && attr()->has_default_values();
 
@@ -987,7 +1008,7 @@ void jit_uni_eltwise_fwd_t<isa>::execute_forward() {
     src += data_d.blocking_desc().offset_padding;
     dst += data_d.blocking_desc().offset_padding;
 
-    auto ker = [&](const int ithr, const int nthr) {
+    parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
 
         const int cache_line = 16;
@@ -1003,12 +1024,7 @@ void jit_uni_eltwise_fwd_t<isa>::execute_forward() {
         arg.work_amount = end - start;
         if (arg.work_amount)
             (*kernel_)(&arg);
-    };
-
-#   pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    });
 }
 
 template <cpu_isa_t isa>
@@ -1016,10 +1032,11 @@ status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init() {
     assert(engine()->kind() == engine_kind::cpu);
 
     bool ok = true
-        && mayiuse(isa)
         && desc()->prop_kind == prop_kind::backward_data
         && utils::one_of(desc()->alg_kind, alg_kind::eltwise_relu)
         && src_pd()->desc()->data_type == data_type::f32
+        && !has_zero_dim_memory()
+        && mayiuse(isa)
         && memory_desc_wrapper(src_pd()).is_dense()
         && memory_desc_wrapper(diff_dst_pd()) == memory_desc_wrapper(src_pd())
         && attr()->has_default_values();
@@ -1058,7 +1075,7 @@ void jit_uni_eltwise_bwd_t<isa>::execute_backward() {
     diff_dst += diff_data_d.blocking_desc().offset_padding;
     diff_src += diff_data_d.blocking_desc().offset_padding;
 
-    auto ker = [&](const int ithr, const int nthr) {
+    parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
 
         const int cache_line = 16;
@@ -1074,12 +1091,7 @@ void jit_uni_eltwise_bwd_t<isa>::execute_backward() {
         arg.work_amount = end - start;
         if (arg.work_amount)
             (*kernel_)(&arg);
-    };
-
-#   pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    });
 }
 
 template struct jit_uni_eltwise_fwd_t<sse42>;

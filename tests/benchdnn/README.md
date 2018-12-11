@@ -23,7 +23,7 @@ The usage:
 ```
 where:
 
- - `HARNESS` is either `conv` [default], `ip`, `reorder`, `bnorm`, `rnn` or `self`
+ - `HARNESS` is either `conv` [default], `ip`, `shuffle`, `reorder`, `bnorm`, `rnn` or `self`
 
  - `MODE` -- string that contains flags for benchmark mode. Use `C` or `c` for correctness (used by default), and `P` or `p` for performance
 
@@ -45,7 +45,7 @@ The usage:
 where *harness-knobs* are:
 
  - `--cfg={f32, u8s8u8s32, ...}` configuration (see below), default `f32`
- - `--dir={FWD_D (forward data), FWD_B (forward data + bias), BWD_D (backward data), BWD_W (backward weights), BWD_WB (backward weights + bias)}` direction, default `FWD_B`
+ - `--dir={FWD_D (forward data), FWD_B (forward data + bias),FWD_I (forward data inference), BWD_D (backward data), BWD_W (backward weights), BWD_WB (backward weights + bias)}` direction, default `FWD_B`
  - `--alg={DIRECT, WINO}` convolution algorithm, default DIRECT
  - `--merge={NONE, RELU}` merged primitive, default NONE (nothing merged)
  - `--attr="attr_str"` convolution attributes (see in the section below), default `""` (no attributes set)
@@ -114,9 +114,13 @@ configurations for **benchdnn**:
 | s32     | s16      | s16      | s32      | s32s16s16s32 | optimized for processors with support of 4vnni, backward wrt data only (aka BWD_D)
 | s16     | s32      | s16      | s32      | s16s32s16s32 | optimized for processors with support of 4vnni, backward wrt weights (aka BWD_W, BWD_WB)
 | u8      | s8       | f32      | s32      | u8s8f32s32   | optimized for processors with support of avx512vl, forward pass only (aka FWD_D, FWD_B)
-| u8      | s8       | s32      | s32      | u8s8s32s32   | same notes as for u8s8s32s32
-| u8      | s8       | s8       | s32      | u8s8s8s32    | same notes as for u8s8s32s32
-| u8      | s8       | u8       | s32      | u8s8u8s32    | same notes as for u8s8s32s32
+| u8      | s8       | s32      | s32      | u8s8s32s32   | same notes as for u8s8f32s32
+| u8      | s8       | s8       | s32      | u8s8s8s32    | same notes as for u8s8f32s32
+| u8      | s8       | u8       | s32      | u8s8u8s32    | same notes as for u8s8f32s32
+| s8      | s8       | f32      | s32      | s8s8f32s32   | same notes as for u8s8f32s32
+| s8      | s8       | s32      | s32      | s8s8s32s32   | same notes as for u8s8f32s32
+| s8      | s8       | s8       | s32      | s8s8s8s32    | same notes as for u8s8f32s32
+| s8      | s8       | u8       | s32      | s8s8u8s32    | same notes as for u8s8f32s32
 
 
 ## Performance measurements

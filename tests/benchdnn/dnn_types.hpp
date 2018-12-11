@@ -44,8 +44,10 @@ typedef int data_kind_t;
 enum {
     SRC = 0, WEI, BIA, DST, ACC,
     DATA, MEAN, VAR, SS,
+    GWEI,
     DAT_TOTAL };
 const char *data_kind2str(data_kind_t kind);
+data_kind_t fmt2data_kind(mkldnn_memory_format_t fmt);
 
 struct attr_t {
     enum round_mode_t {
@@ -106,6 +108,7 @@ const size_t max_attr_len = 128;
 int str2attr(attr_t *attr, const char *str);
 void attr2str(const attr_t *attr, char *buffer);
 
+mkldnn_memory_format_t get_default_format(int ndims, data_kind_t kind);
 mkldnn_primitive_attr_t create_mkldnn_attr(const attr_t &attr, int scale_cnt,
         int scale_mask, const float *scales);
 inline mkldnn_primitive_attr_t create_mkldnn_attr(const attr_t &attr,

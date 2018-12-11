@@ -91,8 +91,9 @@ struct prefetcher_t {
         int cache_latency;
         switch (cache_type_) {
         case L1: cache_latency = 14; break;
-        case L2: cache_latency = 250; break;
-        case L3: cache_latency = 250; break;
+        case L2:
+        case L3:
+        default: cache_latency = 250; break;
         }
 
         prefetch_distance_ = div_up(cache_latency, nb_cache_lines_to_prefetch_);
@@ -342,16 +343,13 @@ void _jit_avx512_common_conv_winograd_data_kernel_f32::gemm_loop_generate(
     };
 
     /* Preamble */
-    // register used to handle long fma encoding
-    push(reg_EVEX_max_8b_offt);
-    mov(reg_EVEX_max_8b_offt, 2 * EVEX_max_8b_offt);
+    preamble();
 
     /* kernel */
     inner_loops();
 
     /* Postamble */
-    pop(reg_EVEX_max_8b_offt);
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 
@@ -466,14 +464,14 @@ status_t set_wsched_DATA_W_SGD_avx512_common(jit_conv_winograd_conf_t &jcp) {
             int dimN_block, int current_best) {
         return check_L2_block_per_thread(jcp, dimN_block, 0.1, 1.3)
             && (dimN_block > current_best)
-            && ((jcp.dimN / dimN_block / jcp.dimN_reg_block) > 2 * omp_get_max_threads());
+            && ((jcp.dimN / dimN_block / jcp.dimN_reg_block) > 2 * mkldnn_get_max_threads());
     };
 
     jcp.dimN_block = get_divisor_satisfying_cond(
             jcp, jcp.dimN / jcp.dimN_reg_block, 1, test_cond_dimN_block);
 
     if (check_L2_block_per_thread(jcp, jcp.dimN_block, 0.1, 1.3)
-        && jcp.dimN/ jcp.dimN_block/ jcp.dimN_reg_block > 2 * omp_get_max_threads()) {
+        && jcp.dimN/ jcp.dimN_block/ jcp.dimN_reg_block > 2 * mkldnn_get_max_threads()) {
         jcp.dimN_nb_block = jcp.dimN / jcp.dimN_block / jcp.dimN_reg_block;
 
         /* ------------------- L1 blocking for GEMM --------------*/
@@ -639,12 +637,12 @@ bool jit_avx512_common_conv_winograd_fwd_kernel_f32::post_ops_ok(
         return true; // no post_ops
     case 1:
         return true // relu or sum
-                && implication(jcp.with_relu, is_sum(0))
-                && implication(!jcp.with_relu, is_relu(0) || is_sum(0));
+                && IMPLICATION(jcp.with_relu, is_sum(0))
+                && IMPLICATION(!jcp.with_relu, is_relu(0) || is_sum(0));
     case 2:
         return true // sum->relu or relu->sum
-                && implication(jcp.with_relu, is_sum(0) && is_relu(1))
-                && implication(!jcp.with_relu, false
+                && IMPLICATION(jcp.with_relu, is_sum(0) && is_relu(1))
+                && IMPLICATION(!jcp.with_relu, false
                                    || (is_sum(0) && is_relu(1))
                                    || (is_relu(0) && is_sum(1)));
     case 3:
@@ -741,13 +739,15 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::transpose_ker_gener
         }
     };
 
+    preamble();
     int curr = 0;
     for (int j = 0; j < alpha; j++) {
         for (int i = 0; i < alpha; i++) {
             int origB_offset = (j * alpha + i) * jcp.dimK_4fma;
-            int transB_offset = (j * alpha + i) * jcp.dimK_nb_block *
+            size_t transB_offset = (size_t)(j * alpha + i) * jcp.dimK_nb_block *
                 jcp.dimN_block * jcp.dimK_block * jcp.dimK_reg_block *
-                jcp.dimK_4fma * jcp.dimN_reg_block;
+                jcp.dimK_4fma * jcp.dimN_reg_block * sizeof(float);
+            mov(reg_transB_idx, transB_offset);
             for (int tb = 0; tb < jcp.dimK_4fma; tb+=4) {
                 /*double buffering to hide load latencies*/
                 int next = (curr + 4) % 8;
@@ -771,24 +771,24 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::transpose_ker_gener
                 vunpcklpd(Zmm(8), Zmm(curr), Zmm(curr + 1));
                 vunpckhpd(Zmm(9), Zmm(curr), Zmm(curr + 1));
 
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + tb * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * tb * jcp.dimN_reg_block],
                         Zmm(curr+2));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 1) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 1) * jcp.dimN_reg_block],
                         Zmm(curr+3));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 2) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 2) * jcp.dimN_reg_block],
                         Zmm(8));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 3) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 3) * jcp.dimN_reg_block],
                         Zmm(9));
                 curr = next;
 
             }
         }
     }
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::gemm_loop_generate(
@@ -955,16 +955,12 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::gemm_loop_generate(
 
     /* Preamble */
     // register used to handle long fma encoding
-    push(reg_EVEX_max_8b_offt);
-    push(reg_dimK_block_loop_cnt);
-    mov(reg_EVEX_max_8b_offt, 2 * EVEX_max_8b_offt);
+    preamble();
     mov(reg_srcA, reg_srcA_const);
     inner_loops();
 
     /* Postamble */
-    pop(reg_dimK_block_loop_cnt);
-    pop(reg_EVEX_max_8b_offt);
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 
@@ -1195,7 +1191,7 @@ bool set_wsched_WEI_SDGt_W_avx512_common(jit_conv_winograd_conf_t &jcp)
                 && (jcp.ntiles / tile_block) % tile_block_ur == 0
                 && is_in_L2_range(thread_size, TC2, TC2_max)
                 && is_in_L2_range(L2_reuse, C2, C2_max)
-                && tile_block > T * omp_get_max_threads()
+                && tile_block > T * mkldnn_get_max_threads()
                 && nb_oc_simd_block % nb_oc == 0
                 && nb_ic_simd_block % nb_ic == 0
                 && is_in_L1_range(L1_reuse, C1, C1_max);
@@ -1267,7 +1263,7 @@ bool set_wsched_WEI_SDGtWo_avx512_common(jit_conv_winograd_conf_t &jcp)
                 && (jcp.ntiles / tile_block) % tile_block_ur == 0
                 && is_in_L2_range(thread_size, TC2, TC2_max)
                 && is_in_L2_range(L2_reuse, C2, C2_max)
-                && tile_block > T * omp_get_max_threads()
+                && tile_block > T * mkldnn_get_max_threads()
                 && nb_oc_simd_block % nb_oc == 0
                 && nb_ic_simd_block % nb_ic == 0
                 && is_in_L1_range(L1_reuse, C1, C1_max);
@@ -1330,7 +1326,7 @@ bool set_wsched_WEI_S_D_Giot_W_avx512_common(jit_conv_winograd_conf_t &jcp)
                 && nb_ic_simd_block % nb_ic == 0
                 && is_in_L2_range(L2_reuse, C2, C2_max)
                 && is_in_L1_range(L1_reuse, C1, C1_max)
-                && work_amount > T * omp_get_max_threads();
+                && work_amount > T * mkldnn_get_max_threads();
     };
 
     for (T = T0; T >= T_min; --T) {

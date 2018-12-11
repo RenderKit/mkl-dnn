@@ -52,11 +52,12 @@ struct _jit_avx2_convolution_fwd_t: public cpu_primitive_t {
                 && utils::one_of(this->cdesc_().prop_kind, forward_training,
                         forward_inference)
                 && this->cdesc_().alg_kind == alg_kind::convolution_direct
+                && !this->has_zero_dim_memory()
                 && utils::everyone_is(data_type::f32,
                         this->cdesc_().src_desc.data_type,
                         this->cdesc_().weights_desc.data_type,
                         this->cdesc_().dst_desc.data_type)
-                && utils::implication(this->with_bias(),
+                && IMPLICATION(this->with_bias(),
                         data_type::f32 == this->cdesc_().bias_desc.data_type);
             if (!ok) return status::unimplemented;
 
@@ -72,15 +73,22 @@ struct _jit_avx2_convolution_fwd_t: public cpu_primitive_t {
         virtual status_t set_default_params() override {
             using namespace memory_format;
 
-            const bool flat = this->IC() == 3;
+            const int simd_w = 8;
+            const bool flat = this->IC() < simd_w;
             if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(flat ? nchw : nChw8c));
+                CHECK(this->src_pd_.set_format(flat
+                    ? utils::pick(this->ndims() - 3, ncw, nchw, ncdhw)
+                    : utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->dst_pd_.desc()->format == any)
-                CHECK(this->dst_pd_.set_format(nChw8c));
+                CHECK(this->dst_pd_.set_format(
+                    utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->weights_pd_.desc()->format == any)
                 CHECK(this->weights_pd_.set_format(this->with_groups()
-                            ? (flat ? gOhwi8o : gOIhw8i8o)
-                            : (flat ? Ohwi8o : OIhw8i8o)));
+                    ? utils::pick(2 * this->ndims() - 6 + flat, gOIw8i8o,
+                        gOwi8o, gOIhw8i8o, gOhwi8o, gOIdhw8i8o, gOdhwi8o)
+                    : utils::pick(2 * this->ndims() - 6 + flat, OIw8i8o, Owi8o,
+                        OIhw8i8o, Ohwi8o, OIdhw8i8o, Odhwi8o)));
+
             if (this->bias_pd_.desc()->format == any)
                 CHECK(this->bias_pd_.set_format(x));
             return status::success;
@@ -90,8 +98,23 @@ struct _jit_avx2_convolution_fwd_t: public cpu_primitive_t {
     _jit_avx2_convolution_fwd_t(const pd_t *pd, const input_vector &inputs,
             const output_vector &outputs)
         : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd)
-    { kernel_ = new jit_avx2_conv_fwd_kernel_f32(conf_.jcp_, *conf_.attr()); }
-    ~_jit_avx2_convolution_fwd_t() { delete kernel_; };
+          , padded_bias_(nullptr)
+    {
+        kernel_ = new jit_avx2_conv_fwd_kernel_f32(conf_.jcp_, *conf_.attr());
+
+        if (conf_.want_padded_bias()) {
+            const auto &j = conf_.jcp_;
+            assert(j.ngroups == 1);
+            padded_bias_ = (data_t *)malloc(sizeof(data_t) * j.oc, 64);
+            for (int oc = j.oc_without_padding; oc < j.oc; ++oc)
+                padded_bias_[oc] = 0;
+        }
+
+    }
+    ~_jit_avx2_convolution_fwd_t() {
+        delete kernel_;
+        free(padded_bias_);
+    };
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
@@ -104,12 +127,12 @@ private:
     void execute_forward();
     pd_t conf_;
     jit_avx2_conv_fwd_kernel_f32 *kernel_;
+    data_t *padded_bias_;
 };
 
 using jit_avx2_convolution_fwd_t = _jit_avx2_convolution_fwd_t<false>;
 using jit_avx2_convolution_relu_t = _jit_avx2_convolution_fwd_t<true>;
 
-/*
 struct jit_avx2_convolution_bwd_data_t: public cpu_primitive_t {
     struct pd_t: public cpu_convolution_bwd_data_pd_t {
         pd_t(engine_t *engine,
@@ -131,6 +154,7 @@ struct jit_avx2_convolution_bwd_data_t: public cpu_primitive_t {
                 && this->set_default_params() == status::success
                 && utils::one_of(this->desc()->prop_kind, backward_data)
                 && this->desc()->alg_kind == alg_kind::convolution_direct
+                && !this->has_zero_dim_memory()
                 && utils::everyone_is(data_type::f32,
                         this->desc()->diff_src_desc.data_type,
                         this->desc()->weights_desc.data_type,
@@ -149,12 +173,17 @@ struct jit_avx2_convolution_bwd_data_t: public cpu_primitive_t {
             using namespace memory_format;
 
             if (this->diff_src_pd_.desc()->format == any)
-                CHECK(this->diff_src_pd_.set_format(nChw8c));
+                CHECK(this->diff_src_pd_.set_format(
+                    utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(nChw8c));
+                CHECK(this->diff_dst_pd_.set_format(
+                    utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->weights_pd_.desc()->format == any)
                 CHECK(this->weights_pd_.set_format(this->with_groups()
-                            ? gOIhw8o8i : OIhw8o8i));
+                    ? utils::pick(this->ndims() - 3, gOIw8o8i, gOIhw8o8i,
+                        gOIdhw8o8i)
+                    : utils::pick(this->ndims() - 3, OIw8o8i, OIhw8o8i,
+                        OIdhw8o8i)));
             return status::success;
         }
     };
@@ -202,6 +231,7 @@ struct jit_avx2_convolution_bwd_weights_t: public cpu_primitive_t {
                 && this->set_default_params() == status::success
                 && this->desc()->prop_kind == prop_kind::backward_weights
                 && this->desc()->alg_kind == alg_kind::convolution_direct
+                && !this->has_zero_dim_memory()
                 && utils::everyone_is(data_type::f32,
                         this->desc()->src_desc.data_type,
                         this->desc()->diff_dst_desc.data_type,
@@ -222,13 +252,18 @@ struct jit_avx2_convolution_bwd_weights_t: public cpu_primitive_t {
             const bool flat = this->IC() == 3;
 
             if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(flat ? nchw : nChw8c));
+                CHECK(this->src_pd_.set_format(flat
+                    ? utils::pick(this->ndims() - 3, ncw, nchw, ncdhw)
+                    : utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(nChw8c));
+                CHECK(this->diff_dst_pd_.set_format(
+                    utils::pick(this->ndims() - 3, nCw8c, nChw8c, nCdhw8c)));
             if (this->diff_weights_pd_.desc()->format == any)
                 CHECK(this->diff_weights_pd_.set_format(this->with_groups()
-                            ? (flat ? gOhwi8o : gOIhw8i8o)
-                            : (flat ? Ohwi8o : OIhw8i8o)));
+                    ? utils::pick(2 * this->ndims() - 6 + flat, gOIw8i8o,
+                        gOwi8o, gOIhw8i8o, gOhwi8o, gOIdhw8i8o, gOdhwi8o)
+                    : utils::pick(2 * this->ndims() - 6 + flat, OIw8i8o, Owi8o,
+                        OIhw8i8o, Ohwi8o, OIdhw8i8o, Odhwi8o)));
             if (this->diff_bias_pd_.desc()->format == any)
                 CHECK(this->diff_bias_pd_.set_format(x));
             return status::success;
@@ -239,22 +274,32 @@ struct jit_avx2_convolution_bwd_weights_t: public cpu_primitive_t {
             const input_vector &inputs, const output_vector &outputs)
         : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd)
         , kernel_(nullptr), reducer_weights_(nullptr), reducer_bias_(nullptr)
+        , padded_bias_(nullptr)
     {
         kernel_ = new jit_avx2_conv_bwd_weights_kernel_f32(conf_.jcp_);
 
-        const int max_threads = omp_get_max_threads();
-        const size_t max_buffer_size = 1<<21; // just a heuristic
+        const int max_threads = mkldnn_get_max_threads();
+        const size_t max_buffer_size = 1<<21; /* just a heuristic */
         const auto &j = conf_.jcp_;
         reducer_weights_ = new cpu_reducer_t<data_type::f32>(reduce_balancer_t(
-                    max_threads, j.kh * j.kw * j.ic_block * j.oc_block,
-                    j.ngroups * j.nb_ic * j.nb_oc, j.mb, max_buffer_size));
+                max_threads, j.kd * j.kh * j.kw * j.ic_block * j.oc_block,
+                j.ngroups * j.nb_ic * j.nb_oc, j.mb * j.od, max_buffer_size));
         if (conf_.with_bias()) {
             reducer_bias_ = new cpu_reducer_t<data_type::f32>(
                     reduce_balancer_t(max_threads, j.oc_block,
                         j.ngroups * j.nb_oc, j.mb, max_buffer_size));
+
+            if (conf_.want_padded_bias())
+                padded_bias_ = (data_t *)
+                    malloc(sizeof(data_t) * j.oc, 64);
         }
     }
-    ~jit_avx2_convolution_bwd_weights_t() { delete kernel_; };
+    ~jit_avx2_convolution_bwd_weights_t() {
+        delete kernel_;
+        delete reducer_weights_;
+        delete reducer_bias_;
+        free(padded_bias_);
+    };
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
@@ -268,8 +313,8 @@ private:
     pd_t conf_;
     jit_avx2_conv_bwd_weights_kernel_f32 *kernel_;
     cpu_reducer_t<data_type::f32> *reducer_weights_, *reducer_bias_;
+    data_t *padded_bias_;
 };
-*/
 
 }
 }

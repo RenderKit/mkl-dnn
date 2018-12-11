@@ -22,8 +22,22 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#define MSAN_ENABLED 0
+#if defined(__has_feature)
+#if __has_feature(memory_sanitizer)
+#undef MSAN_ENABLED
+#define MSAN_ENABLED 1
+#include <sanitizer/msan_interface.h>
+#endif
+#endif
+
+#include "c_types_map.hpp"
+
 namespace mkldnn {
 namespace impl {
+
+// Sanity check for 64 bits
+static_assert(sizeof(void*) == 8, "Intel(R) MKL-DNN supports 64 bit only");
 
 #define UNUSED(x) ((void)x)
 #define MAYBE_UNUSED(x) UNUSED(x)
@@ -34,8 +48,17 @@ namespace impl {
     return status; \
 } while (0)
 
+#define IMPLICATION(cause, effect) (!(cause) || !!(effect))
+
 #ifdef _WIN32
 #define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
+
+#ifdef __APPLE__
+// older XCode doesn't support thread_local
+#define THREAD_LOCAL __thread
+#else
+#define THREAD_LOCAL thread_local
 #endif
 
 namespace utils {
@@ -96,16 +119,14 @@ inline bool everyone_is(T val, P item, Args... item_others) {
 }
 
 template <typename T, typename P>
-inline bool one_of(T val, P item) { return val == item; }
+constexpr bool one_of(T val, P item) { return val == item; }
 template <typename T, typename P, typename... Args>
-inline bool one_of(T val, P item, Args... item_others) {
+constexpr bool one_of(T val, P item, Args... item_others) {
     return val == item || one_of(val, item_others...);
 }
 
 template <typename... Args>
 inline bool any_null(Args... ptrs) { return one_of(nullptr, ptrs...); }
-
-inline bool implication(bool cause, bool effect) { return !cause || effect; }
 
 template<typename T>
 inline void array_copy(T *dst, const T *src, size_t size) {
@@ -217,6 +238,13 @@ inline bool nd_iterator_jump(U &cur, const U end, W &x, const Y &X,
     return false;
 }
 
+template <typename T>
+inline T pick(size_t i, const T &x0) { return x0; }
+template <typename T, typename ...Args>
+inline T pick(size_t i, const T &x0, Args &&... args) {
+    return i == 0 ? x0 : pick(i - 1, utils::forward<Args>(args)...);
+}
+
 template <typename Telem, size_t Tdims>
 struct array_offset_calculator {
     template <typename... Targs>
@@ -278,6 +306,16 @@ inline void yield_thread() { }
 int mkldnn_getenv(char *value, const char *name, int len);
 bool mkldnn_jit_dump();
 FILE *mkldnn_fopen(const char *filename, const char *mode);
+
+void set_rnd_mode(round_mode_t rnd_mode);
+void restore_rnd_mode();
+
+constexpr int msan_enabled = MSAN_ENABLED;
+inline void msan_unpoison(void *ptr, size_t size) {
+#if MSAN_ENABLED
+    __msan_unpoison(ptr, size);
+#endif
+}
 
 }
 }

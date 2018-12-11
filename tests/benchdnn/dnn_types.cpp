@@ -66,9 +66,69 @@ const char *data_kind2str(data_kind_t kind) {
     case MEAN: return "MEAN";
     case VAR: return "VAR";
     case SS: return "SS";
+    case GWEI: return "GWEI";
     }
     assert(!"incorrect data kind");
     return "incorrect data kind";
+}
+
+data_kind_t fmt2data_kind(mkldnn_memory_format_t fmt) {
+    switch (fmt) {
+    case mkldnn_x:
+    case mkldnn_nc:
+    case mkldnn_tnc:
+    case mkldnn_ntc:
+
+    case mkldnn_ncw:
+    case mkldnn_nwc:
+    case mkldnn_nCw16c:
+
+    case mkldnn_nchw:
+    case mkldnn_nhwc:
+    case mkldnn_chwn:
+    case mkldnn_nChw8c:
+    case mkldnn_nChw16c:
+
+    case mkldnn_ncdhw:
+    case mkldnn_ndhwc:
+    case mkldnn_nCdhw16c:
+        return DATA;
+
+    case mkldnn_goiw:
+    case mkldnn_gOIw16i16o:
+    case mkldnn_gOIw16o16i:
+    case mkldnn_gOiw16o:
+    case mkldnn_gOwi16o:
+    case mkldnn_gOIw8i16o2i:
+    case mkldnn_goihw:
+    case mkldnn_hwigo:
+    case mkldnn_hwigo_s8s8:
+    case mkldnn_gOIhw8i8o:
+    case mkldnn_gOIhw16i16o:
+    case mkldnn_gOIhw4i16o4i:
+    case mkldnn_gOIhw4i16o4i_s8s8:
+    case mkldnn_gOIhw8i16o2i:
+    case mkldnn_gOIdhw8i16o2i:
+    case mkldnn_gOIhw8o16i2o:
+    case mkldnn_gOIhw8o8i:
+    case mkldnn_gOIhw16o16i:
+    case mkldnn_gIOhw16o16i:
+    case mkldnn_gOihw8o:
+    case mkldnn_gOihw16o:
+    case mkldnn_gOhwi8o:
+    case mkldnn_gOhwi16o:
+    case mkldnn_Goihw8g:
+    case mkldnn_Goihw16g:
+    case mkldnn_gOhIw16o4i:
+    case mkldnn_goidhw:
+    case mkldnn_gOIdhw16i16o:
+    case mkldnn_gOIdhw16o16i:
+    case mkldnn_gOidhw16o:
+    case mkldnn_gOdhwi16o:
+        return GWEI;
+
+    default: return WEI;
+    }
 }
 
 attr_t::scale_t::policy_t attr_t::scale_t::str2policy(const char *str) {
@@ -114,7 +174,7 @@ int attr_t::scale_t::str2scale(const char *str, const char **end_s) {
 
     char *end;
     this->scale = strtof(s, &end);
-    if (this->scale <= 0 || end == s) return FAIL;
+    if (this->scale < 0 || end == s) return FAIL;
 
     s = end;
     assert(*s == '\0' || *s == ';');
@@ -325,7 +385,32 @@ mkldnn_primitive_attr_t create_mkldnn_attr(const attr_t &attr, int scale_cnt,
         const_mkldnn_post_ops_t c_ops;
         DNN_SAFE_V(mkldnn_primitive_attr_get_post_ops(mkldnn_attr, &c_ops));
         SAFE_V(mkldnn_post_ops_len(c_ops) == attr.post_ops.len ? OK : FAIL);
+
+        DNN_SAFE_V(mkldnn_post_ops_destroy(ops));
     }
 
     return mkldnn_attr;
+}
+
+mkldnn_memory_format_t get_default_format(int ndims, data_kind_t kind) {
+    switch(kind) {
+    case DATA: return (ndims == 5)
+        ? mkldnn_ncdhw
+        : (ndims == 4)
+        ? mkldnn_nchw
+        : mkldnn_ncw;
+    case GWEI: return (ndims == 6)
+        ? mkldnn_goidhw
+        : (ndims == 5)
+        ? mkldnn_goihw
+        : mkldnn_goiw;
+    case WEI: return (ndims == 5)
+        ? mkldnn_oidhw
+        : (ndims == 4)
+        ? mkldnn_oihw
+        : mkldnn_oiw;
+    default:
+        assert(!"unknown kind");
+    }
+    return mkldnn_format_undef;
 }

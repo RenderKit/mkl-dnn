@@ -92,33 +92,40 @@ struct _convolution_fwd_pd_t: public primitive_desc_t {
 
     inline int ID() const { return (ndims() == 5)
         ? cdesc_().src_desc.dims[2] : 1; }
-    inline int IH() const { return cdesc_().src_desc.dims[ndims()-2]; }
+    inline int IH() const { return (ndims() == 3)
+        ? 1 : cdesc_().src_desc.dims[ndims()-2]; }
     inline int IW() const { return cdesc_().src_desc.dims[ndims()-1]; }
     inline int OD() const { return (ndims() == 5)
         ? cdesc_().dst_desc.dims[2] : 1; }
-    inline int OH() const { return cdesc_().dst_desc.dims[ndims()-2]; }
+    inline int OH() const { return (ndims() == 3)
+        ? 1 : cdesc_().dst_desc.dims[ndims()-2]; }
     inline int OW() const { return cdesc_().dst_desc.dims[ndims()-1]; }
     inline int KD() const { return (ndims() == 5)
         ? cdesc_().weights_desc.dims[2 + with_groups()] : 1; }
     inline int KH() const
-    { return cdesc_().weights_desc.dims[ndims() - (2 - with_groups())]; }
+    { return (ndims() == 3)
+        ? 1 : cdesc_().weights_desc.dims[ndims() - (2 - with_groups())]; }
     inline int KW() const
     { return cdesc_().weights_desc.dims[ndims() - (1 - with_groups())]; }
 
     inline int KSD() const { return (ndims() == 5) ? cdesc_().strides[0] : 1; }
-    inline int KSH() const { return cdesc_().strides[ndims()-4]; }
+    inline int KSH() const { return (ndims() == 3)
+        ? 1 : cdesc_().strides[ndims()-4]; }
     inline int KSW() const { return cdesc_().strides[ndims()-3]; }
 
     inline int KDD() const { return (ndims() == 5) ? cdesc_().dilates[0] : 0; }
-    inline int KDH() const { return cdesc_().dilates[ndims()-4]; }
+    inline int KDH() const { return (ndims() == 3)
+        ? 0 : cdesc_().dilates[ndims()-4]; }
     inline int KDW() const { return cdesc_().dilates[ndims()-3]; }
 
     inline int padFront() const
         { return (ndims() == 5) ? cdesc_().padding[0][0] : 0; }
     inline int padBack() const
         { return (ndims() == 5) ? cdesc_().padding[1][0] : 0; }
-    inline int padT() const { return cdesc_().padding[0][ndims()-4]; }
-    inline int padB() const { return cdesc_().padding[1][ndims()-4]; }
+    inline int padT() const { return (ndims() == 3)
+        ? 0 : cdesc_().padding[0][ndims()-4]; }
+    inline int padB() const { return (ndims() == 3)
+        ? 0 : cdesc_().padding[1][ndims()-4]; }
     inline int padL() const { return cdesc_().padding[0][ndims()-3]; }
     inline int padR() const { return cdesc_().padding[1][ndims()-3]; }
 
@@ -130,6 +137,12 @@ struct _convolution_fwd_pd_t: public primitive_desc_t {
     { return cdesc_().weights_desc.ndims == cdesc_().src_desc.ndims + 1; }
 
     inline int ndims() const { return cdesc_().src_desc.ndims; }
+
+    bool has_zero_dim_memory() const {
+        return false
+            || memory_desc_wrapper(cdesc_().src_desc).has_zero_dim()
+            || memory_desc_wrapper(cdesc_().dst_desc).has_zero_dim();
+    }
 
 protected:
     base_desc_t desc_;
@@ -184,7 +197,7 @@ struct convolution_bwd_data_pd_t: public primitive_desc_t {
     virtual const memory_pd_t *output_pd(int index = 0) const override
     { return index == 0 ? diff_src_pd() : nullptr; }
 
-    virtual int n_inputs() const override { return 2; }
+    virtual int n_inputs() const override { return 2 + with_bias(); }
     virtual int n_outputs() const override { return 1; }
 
     virtual status_t query(query_t what, int idx, void *result) const override
@@ -208,33 +221,40 @@ struct convolution_bwd_data_pd_t: public primitive_desc_t {
 
     inline int ID() const { return (ndims() == 5)
         ? desc_.diff_src_desc.dims[2] : 1; }
-    inline int IH() const { return desc_.diff_src_desc.dims[ndims()-2]; }
+    inline int IH() const { return (ndims() == 3)
+        ? 1 : desc_.diff_src_desc.dims[ndims()-2]; }
     inline int IW() const { return desc_.diff_src_desc.dims[ndims()-1]; }
     inline int OD() const { return (ndims() == 5)
         ? desc_.diff_dst_desc.dims[2] : 1; }
-    inline int OH() const { return desc_.diff_dst_desc.dims[ndims()-2]; }
+    inline int OH() const { return (ndims() == 3)
+        ? 1 : desc_.diff_dst_desc.dims[ndims()-2]; }
     inline int OW() const { return desc_.diff_dst_desc.dims[ndims()-1]; }
     inline int KD() const { return (ndims() == 5)
         ? desc_.weights_desc.dims[2 + with_groups()] : 1; }
     inline int KH() const
-    { return desc_.weights_desc.dims[ndims() - (2 - with_groups())]; }
+    { return (ndims() == 3)
+        ? 1 : desc_.weights_desc.dims[ndims() - (2 - with_groups())]; }
     inline int KW() const
     { return desc_.weights_desc.dims[ndims() - (1 - with_groups())]; }
 
     inline int KSD() const { return (ndims() == 5) ? desc_.strides[0] : 1; }
-    inline int KSH() const { return desc_.strides[ndims()-4]; }
+    inline int KSH() const { return (ndims() == 3)
+        ? 1 : desc_.strides[ndims()-4]; }
     inline int KSW() const { return desc_.strides[ndims()-3]; }
 
     inline int KDD() const { return (ndims() == 5) ? desc_.dilates[0] : 0; }
-    inline int KDH() const { return desc_.dilates[ndims()-4]; }
+    inline int KDH() const { return (ndims() == 3)
+        ? 0 : desc_.dilates[ndims()-4]; }
     inline int KDW() const { return desc_.dilates[ndims()-3]; }
 
     inline int padFront() const
         { return (ndims() == 5) ? desc_.padding[0][0] : 0; }
     inline int padBack() const
         { return (ndims() == 5) ? desc_.padding[1][0] : 0; }
-    inline int padT() const { return desc_.padding[0][ndims()-4]; }
-    inline int padB() const { return desc_.padding[1][ndims()-4]; }
+    inline int padT() const { return (ndims() == 3)
+        ? 0 : desc_.padding[0][ndims()-4]; }
+    inline int padB() const { return (ndims() == 3)
+        ? 0 : desc_.padding[1][ndims()-4]; }
     inline int padL() const { return desc_.padding[0][ndims()-3]; }
     inline int padR() const { return desc_.padding[1][ndims()-3]; }
 
@@ -244,6 +264,13 @@ struct convolution_bwd_data_pd_t: public primitive_desc_t {
     { return desc_.weights_desc.ndims == desc_.diff_src_desc.ndims + 1; }
 
     inline int ndims() const { return desc_.diff_src_desc.ndims; }
+    virtual bool support_bias() const { return false; }
+
+    bool has_zero_dim_memory() const {
+        return false
+            || memory_desc_wrapper(desc_.diff_src_desc).has_zero_dim()
+            || memory_desc_wrapper(desc_.diff_dst_desc).has_zero_dim();
+    }
 
 protected:
     convolution_desc_t desc_;
@@ -310,33 +337,40 @@ struct convolution_bwd_weights_pd_t: public primitive_desc_t {
 
     inline int ID() const { return (ndims() == 5)
         ? desc_.src_desc.dims[2] : 1; }
-    inline int IH() const { return desc_.src_desc.dims[ndims()-2]; }
+    inline int IH() const { return (ndims() == 3)
+        ? 1 : desc_.src_desc.dims[ndims()-2]; }
     inline int IW() const { return desc_.src_desc.dims[ndims()-1]; }
     inline int OD() const { return (ndims() == 5)
         ? desc_.diff_dst_desc.dims[2] : 1; }
-    inline int OH() const { return desc_.diff_dst_desc.dims[ndims()-2]; }
+    inline int OH() const { return (ndims() == 3)
+        ? 1 : desc_.diff_dst_desc.dims[ndims()-2]; }
     inline int OW() const { return desc_.diff_dst_desc.dims[ndims()-1]; }
     inline int KD() const { return (ndims() == 5)
         ? desc_.diff_weights_desc.dims[2 + with_groups()] : 1; }
     inline int KH() const
-    { return desc_.diff_weights_desc.dims[ndims() - (2 - with_groups())]; }
+    { return (ndims() == 3)
+        ? 1 : desc_.diff_weights_desc.dims[ndims() - (2 - with_groups())]; }
     inline int KW() const
     { return desc_.diff_weights_desc.dims[ndims() - (1 - with_groups())]; }
 
     inline int KSD() const { return (ndims() == 5) ? desc_.strides[0] : 1; }
-    inline int KSH() const { return desc_.strides[ndims()-4]; }
+    inline int KSH() const { return (ndims() == 3)
+        ? 1 : desc_.strides[ndims()-4]; }
     inline int KSW() const { return desc_.strides[ndims()-3]; }
 
     inline int KDD() const { return (ndims() == 5) ? desc_.dilates[0] : 0; }
-    inline int KDH() const { return desc_.dilates[ndims()-4]; }
+    inline int KDH() const { return (ndims() == 3)
+        ? 0 : desc_.dilates[ndims()-4]; }
     inline int KDW() const { return desc_.dilates[ndims()-3]; }
 
     inline int padFront() const
         { return (ndims() == 5) ? desc_.padding[0][0] : 0; }
     inline int padBack() const
         { return (ndims() == 5) ? desc_.padding[1][0] : 0; }
-    inline int padT() const { return desc_.padding[0][ndims()-4]; }
-    inline int padB() const { return desc_.padding[1][ndims()-4]; }
+    inline int padT() const { return (ndims() == 3)
+        ? 0 : desc_.padding[0][ndims()-4]; }
+    inline int padB() const { return (ndims() == 3)
+        ? 0 : desc_.padding[1][ndims()-4]; }
     inline int padL() const { return desc_.padding[0][ndims()-3]; }
     inline int padR() const { return desc_.padding[1][ndims()-3]; }
 
@@ -346,6 +380,12 @@ struct convolution_bwd_weights_pd_t: public primitive_desc_t {
     { return desc_.diff_weights_desc.ndims == desc_.diff_dst_desc.ndims + 1; }
 
     inline int ndims() const { return desc_.src_desc.ndims; }
+
+    bool has_zero_dim_memory() const {
+        return false
+            || memory_desc_wrapper(desc_.src_desc).has_zero_dim()
+            || memory_desc_wrapper(desc_.diff_dst_desc).has_zero_dim();
+    }
 
 protected:
     convolution_desc_t desc_;

@@ -17,12 +17,17 @@
 # i8 (skx)
 --reset --dir=FWD_B --mb=2
 --skip-impl="ref:gemm"      # ! test jit version only
-
+--allow-unimpl=true
 --cfg=u8s8u8s32  --batch=conv_all
 --cfg=u8s8s8s32  --batch=conv_resnet_50
 --cfg=u8s8s32s32 --batch=conv_googlenet_v3
 --merge=RELU
 --cfg=u8s8s32s32 --batch=conv_vgg_19
+--cfg=s8s8u8s32  --batch=conv_all
+--cfg=s8s8s8s32  --batch=conv_resnet_50
+--cfg=s8s8s32s32 --batch=conv_googlenet_v3
+--merge=RELU
+--cfg=s8s8s32s32 --batch=conv_vgg_19
 
 # s16 (knm)
 --reset --mb=2
@@ -39,6 +44,7 @@
 --match=.*kh3[^0-9].*       # only 3x3 convolutions so far
 --allow-unimpl=true         # allow unimplemented for groups > 1
 --mb=2                      # for fwd and bwd_d reduce mb
+--dir=FWD_I --batch=conv_all
 --dir=FWD_B --batch=conv_all
 --dir=BWD_D --batch=conv_all
 --dir=BWD_WB --batch=conv_all
@@ -63,3 +69,6 @@
 
 # tails
 --batch=test_conv_tails
+
+# 3D conv
+--batch=test_conv_3d

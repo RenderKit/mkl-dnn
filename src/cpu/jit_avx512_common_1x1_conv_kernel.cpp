@@ -517,7 +517,7 @@ void jit_avx512_common_1x1_conv_kernel::generate()
     mov(reg_bcast_loop_work, ptr[param1 + GET_OFF(bcast_dim)]);
     mov(EVEX_compress_addr(rsp, bcast_loop_work_offt), reg_bcast_loop_work);
     mov(reg_reduce_loop_work, ptr[param1 + GET_OFF(reduce_dim)]);
-    mov(reg_reduce_pos_flag, ptr[param1 + GET_OFF(reduce_pos_flag)]);
+    mov(reg_reduce_pos_flag, ptr[param1 + GET_OFF(first_last_flag)]);
     if (one_of(jcp.prop_kind, forward_training, forward_inference))
         mov(reg_relu_ns, reinterpret_cast<size_t>(&jcp.relu_negative_slope));
     if (jcp.prop_kind == backward_weights)
@@ -648,6 +648,7 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
 
     const bool with_groups = weights_d.ndims() == src_d.ndims() + 1;
     const int simd_w = cpu_isa_traits<avx512_common>::vlen / sizeof(float);
+    const int ndims = src_d.ndims();
 
     jcp.prop_kind = cd.prop_kind;
 
@@ -666,19 +667,19 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
         jcp.ic = rnd_up(jcp.ic, simd_w);
     }
 
-    jcp.ih = src_d.dims()[2];
-    jcp.iw = src_d.dims()[3];
-    jcp.oh = dst_d.dims()[2];
-    jcp.ow = dst_d.dims()[3];
+    jcp.ih = (ndims == 3) ? 1 : src_d.dims()[2];
+    jcp.iw = src_d.dims()[ndims - 1];
+    jcp.oh = (ndims == 3) ? 1 : dst_d.dims()[2];
+    jcp.ow = dst_d.dims()[ndims - 1];
 
-    jcp.kh = weights_d.dims()[with_groups + 2];
-    jcp.kw = weights_d.dims()[with_groups + 3];
+    jcp.kh = (ndims == 3) ? 1 : weights_d.dims()[with_groups + 2];
+    jcp.kw = weights_d.dims()[with_groups + ndims - 1];
 
-    jcp.t_pad = cd.padding[0][0];
-    jcp.l_pad = cd.padding[0][1];
+    jcp.t_pad = (ndims == 3) ? 0 : cd.padding[0][0];
+    jcp.l_pad = cd.padding[0][ndims - 3];
 
-    jcp.stride_h = cd.strides[0];
-    jcp.stride_w = cd.strides[1];
+    jcp.stride_h = (ndims == 3) ? 1 : cd.strides[0];
+    jcp.stride_w = cd.strides[ndims - 3];
 
     jcp.src_fmt = src_d.format();
     jcp.with_bias = one_of(jcp.prop_kind, forward_training, forward_inference)
@@ -702,7 +703,8 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
 
     bool args_ok = true
         && jcp.ngroups == 1
-        && everyone_is(nChw16c, src_d.format(), dst_d.format())
+        && everyone_is(pick(ndims - 3, nCw16c, nChw16c), src_d.format(),
+            dst_d.format())
         && one_of(cd.bias_desc.format, memory_format::undef, any, x);
     if (!args_ok) return status::unimplemented;
 
@@ -726,12 +728,13 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
             && weights_d.data_type() == data_type::s16
             && dst_d.data_type() == data_type::s16)))
     {
-        constexpr memory_format_t weights_formats[2][2] = {
-            { OIhw8i16o2i, OIhw8o16i2o },
-            { gOIhw8i16o2i, gOIhw8o16i2o }
-        };
-        memory_format_t weights_format
-            = weights_formats[with_groups][jcp.prop_kind == backward_data];
+        const int is_bwd_d = jcp.prop_kind == backward_data;
+        memory_format_t weights_format = with_groups
+            ? pick(2 * ndims - 6 + is_bwd_d, gOIw8i16o2i, gOIw8o16i2o,
+                gOIhw8i16o2i, gOIhw8o16i2o)
+            : pick(2 * ndims - 6 + is_bwd_d, OIw8i16o2i, OIw8o16i2o,
+                OIhw8i16o2i, OIhw8o16i2o);
+
         if (weights_d.format() != weights_format)
             return status::unimplemented;
 
@@ -743,12 +746,12 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
     else if (everyone_is(data_type::f32, src_d.data_type(),
                             weights_d.data_type(), dst_d.data_type()))
     {
-        constexpr memory_format_t weights_formats[2][2] = {
-            { OIhw16i16o, IOhw16o16i },
-            { gOIhw16i16o, gIOhw16o16i }
-        };
-        memory_format_t weights_format
-            = weights_formats[with_groups][jcp.prop_kind == backward_data];
+        const int is_bwd_d = jcp.prop_kind == backward_data;
+        memory_format_t weights_format = with_groups
+            ? pick(2 * ndims - 6 + is_bwd_d, gOIw16i16o, gIOw16o16i,
+                gOIhw16i16o, gIOhw16o16i)
+            : pick(2 * ndims - 6 + is_bwd_d, OIw16i16o, IOw16o16i,
+                OIhw16i16o, IOhw16o16i);
 
         if (weights_d.format() != weights_format)
             return status::unimplemented;
@@ -763,6 +766,7 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
                    the src transposition overhead exceed the benefit from 4fma
                 */
                 && ((jcp.is * jcp.ic) / jcp.oc <= 2048)
+                && mkldnn_thr_syncable()
                 )
         {
             jcp.transpose_src = true;
@@ -934,6 +938,29 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(
                 reduce_blocking = 8;
             reduce_blocking = best_divider(nb_reduce, 1, reduce_blocking, true);
             reduce_blocking *= jcp.reduce_block;
+        }
+
+        // Check input data cache aliasing.
+        // For other ISA constants may be updated.
+        // 64 * 1024 is chosen due to 1MB L2 16-way cache.
+        // 7 is empirical value. It is about half of 16.
+        // So we leave about half of the set for other data - weights, dst
+        int way_size = (64 * 1024) / jcp.typesize_in;
+        int max_hits = 7;
+        if (jcp.bcast_dim * reduce_blocking > way_size * max_hits) {
+            int nrb = reduce_blocking / simd_w;
+            int sp = jcp.bcast_dim;
+            int wl = way_size / simd_w;
+            for (int start_off = 0; start_off < jcp.ur; start_off++) {
+                for (int off = start_off, hits = 0; off < sp * nrb; off += wl) {
+                    if (off % sp >= jcp.ur || ++hits < max_hits)
+                        continue;
+                    int max_r_blocking = simd_w * nstl::max(1, (off + wl) / sp);
+                    reduce_blocking
+                            = nstl::min(reduce_blocking, max_r_blocking);
+                    break;
+                }
+            }
         }
 
         if (reduce_blocking < jcp.reduce_dim) {
@@ -1235,6 +1262,8 @@ void jit_avx512_common_1x1_conv_kernel::balance(jit_1x1_conv_conf_t &jcp,
                 jcp.nthr_ic_b = nthr_ic_b;
             }
         }
+
+        if (!mkldnn_thr_syncable()) { assert(nthr_mb == 1); break; }
     }
     if (jcp.nthr_mb > nthreads / 2 && jcp.nthr_mb < nthreads)
         jcp.nthr_mb = nstl::min(jcp.mb, nthreads);

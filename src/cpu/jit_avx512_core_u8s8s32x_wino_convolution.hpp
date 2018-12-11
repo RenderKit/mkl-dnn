@@ -23,6 +23,7 @@
 #include "cpu_convolution_pd.hpp"
 #include "cpu_engine.hpp"
 #include "mkldnn_thread.hpp"
+#include "scratchpad.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
@@ -62,10 +63,11 @@ struct _jit_avx512_core_u8s8s32x_wino_convolution_fwd_t : public cpu_primitive_t
                 && utils::one_of(this->cdesc_().prop_kind,
                                     forward_training, forward_inference)
                 && this->cdesc_().alg_kind == alg_kind::convolution_winograd
+                && !this->has_zero_dim_memory()
                 && this->cdesc_().src_desc.data_type == data_type::u8
                 && this->cdesc_().dst_desc.data_type == dst_data_type
                 && this->cdesc_().weights_desc.data_type == data_type::s8
-                && utils::implication(this->with_bias(),
+                && IMPLICATION(this->with_bias(),
                     utils::one_of(this->cdesc_().bias_desc.data_type,
                                                 data_type::f32, data_type::s32,
                                                 data_type::s8, data_type::u8))
@@ -73,22 +75,13 @@ struct _jit_avx512_core_u8s8s32x_wino_convolution_fwd_t : public cpu_primitive_t
 
             if (!ok) return status::unimplemented;
 
-            memory_desc_t expect_wei_md = *(this->weights_pd_.desc());
-            status_t jit_conf_result = jit_conf(expect_wei_md);
-            if (jit_conf_result == success) {
-                cpu_memory_t::pd_t new_weights_pd(this->engine_, &expect_wei_md);
-                if (this->weights_pd_.desc()->format == any)
-                    this->weights_pd_ = new_weights_pd;
-                if (!this->weights_pd_.is_equal(&new_weights_pd))
-                    return status::unimplemented;
-            }
-            return jit_conf_result;
+            return jit_conf();
         }
 
-        jit_conv_conf_u8s8s32x_wino_t jcp_;
+        jit_conv_conf_2x3_wino_t jcp_;
 
     protected:
-        status_t jit_conf(memory_desc_t& expect_wei_md);
+        status_t jit_conf();
 
         virtual status_t set_default_params() override {
             using namespace memory_format;
@@ -126,17 +119,14 @@ private:
     jit_avx512_core_u8s8s32x_wino_conv_src_trans_t *src_trans_;
     jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t *dst_trans_;
 
-    size_t size_wino_wei;
-    size_t size_wino_src;
-    size_t size_wino_dst;
+    size_t size_wino_wei_;
+    size_t size_wino_src_;
+    size_t size_wino_dst_;
+    size_t wino_shift_;
 
-    const wei_data_t *wino_wei_;
-    const acc_data_t *dst_bias_;
+    scratchpad_t *scratchpad_;
 
-    src_data_t *wino_src_;
-    acc_data_t *wino_dst_;
-
-    void *workspace;
+    mkldnn::impl::scales_t updated_output_scales_;
 };
 
 template <impl::data_type_t dst_type>

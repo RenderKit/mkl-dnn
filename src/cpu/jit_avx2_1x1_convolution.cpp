@@ -32,6 +32,11 @@ using namespace mkldnn::impl::status;
 using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
+#define data_blk_off(f, n, c, h, w) \
+    ((ndims == 3) \
+    ? (f).blk_off(n, c, w) \
+    : (f).blk_off(n, c, h, w))
+
 /* convolution forward */
 
 template <bool with_relu>
@@ -48,11 +53,12 @@ void _jit_avx2_1x1_convolution_fwd_t<with_relu>::execute_forward() {
     const auto &jcp = kernel_->jcp;
 
     const int work_amount = jcp.mb * jcp.ngroups * jcp.nb_bcast;
+    const int ndims = dst_d.ndims();
 
-    const int stride_h = conf_.cdesc()->strides[0];
-    const int stride_w = conf_.cdesc()->strides[1];
-    const int pad_t = conf_.cdesc()->padding[0][0];
-    const int pad_l = conf_.cdesc()->padding[0][1];
+    const int stride_h = (ndims == 3) ? 1 : conf_.cdesc()->strides[0];
+    const int stride_w = conf_.cdesc()->strides[ndims - 3];
+    const int pad_t = (ndims == 3) ? 0 : conf_.cdesc()->padding[0][0];
+    const int pad_l = conf_.cdesc()->padding[0][ndims - 3];
 
     auto step = [](int default_step, int remaining, int tail_step) {
         assert(default_step <= tail_step);
@@ -103,14 +109,14 @@ void _jit_avx2_1x1_convolution_fwd_t<with_relu>::execute_forward() {
                 const int _ocb = g * nb_oc + ocb;
                 p.load_dim = this_block_size(ocb * jcp.oc_block, jcp.oc,
                         load_step * jcp.oc_block);
+                const size_t dst_off = data_blk_off(dst_d, n, _ocb, oh, ow);
 
-                const size_t dst_off = dst_d.blk_off(n, _ocb, oh, ow);
                 p.output_data = &dst[dst_off];
 
                 p.bias_data = &bias[_ocb * jcp.oc_block];
 
                 for (int icb = 0; icb < nb_ic; icb += nb_ic_blocking) {
-                    p.reduce_pos_flag = 0
+                    p.first_last_flag = 0
                         | (icb == 0 ? FLAG_REDUCE_FIRST : 0)
                         | (icb + nb_ic_blocking >= nb_ic
                                 ? FLAG_REDUCE_LAST : 0);
@@ -129,13 +135,13 @@ void _jit_avx2_1x1_convolution_fwd_t<with_relu>::execute_forward() {
                             + _icb * jcp.is * jcp.ic_block;
 
                         if (ocb == 0) {
-                            rp.src = src + src_d.blk_off(n, _icb, ih, iw);
+                            rp.src = src + data_blk_off(src_d, n, _icb, ih, iw);
                             rtus_driver_->ker_(&rp);
                         }
 
                         p.bcast_data = rp.ws;
                     } else
-                        p.bcast_data = src + src_d.blk_off(n, _icb, ih, iw);
+                        p.bcast_data = src + data_blk_off(src_d, n, _icb, ih, iw);
 
                     kernel_->jit_ker(&p);
                 }
@@ -147,10 +153,13 @@ void _jit_avx2_1x1_convolution_fwd_t<with_relu>::execute_forward() {
         }
     };
 
-#   pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
+    if (conf_.want_padded_bias()) {
+        for (int oc = 0; oc < jcp.oc_without_padding; ++oc)
+            padded_bias_[oc] = bias[oc];
+        bias = padded_bias_;
     }
+
+    parallel(0, ker);
 }
 
 template struct _jit_avx2_1x1_convolution_fwd_t<true>;
@@ -171,11 +180,12 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() {
 
     // TODO (Roma): remove this restriction
     assert(jcp.stride_w == 1 && jcp.stride_h == 1);
+    const int ndims = diff_dst_d.ndims();
 
-    const int stride_h = conf_.desc()->strides[0];
-    const int stride_w = conf_.desc()->strides[1];
-    const int pad_t = conf_.desc()->padding[0][0];
-    const int pad_l = conf_.desc()->padding[0][1];
+    const int stride_h = (ndims == 3) ? 1 : conf_.desc()->strides[0];
+    const int stride_w = conf_.desc()->strides[ndims - 3];
+    const int pad_t = (ndims == 3) ? 0 : conf_.desc()->padding[0][0];
+    const int pad_l = conf_.desc()->padding[0][ndims - 3];
 
     const int nb_ic = jcp.nb_load;
     const int nb_oc = jcp.nb_reduce;
@@ -227,8 +237,7 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() {
                 rp.iw_start = iw;
 
                 const int _icb = g * nb_ic + icb;
-                rp.src = diff_src + diff_src_d.blk_off(n, _icb, ih, iw);
-
+                rp.src = diff_src + data_blk_off(diff_src_d, n, _icb, ih, iw);
                 if (conf_.rtus_.reduce_src_) {
                     rp.ws = scratch_ + ithr * ws_per_thread_;
                     p.output_data = rp.ws;
@@ -238,14 +247,15 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() {
                 for (int ocb = 0; ocb < jcp.nb_reduce;
                         ocb += jcp.nb_reduce_blocking) {
                     const int _ocb = g * nb_oc + ocb;
-                    size_t diff_dst_off = diff_dst_d.blk_off(n, _ocb, oh, ow);
+                    size_t diff_dst_off = data_blk_off(diff_dst_d, n, _ocb, oh,
+                        ow);
                     p.bcast_data = &diff_dst[diff_dst_off];
 
                     p.load_data = &weights[conf_.with_groups()
                         ? weights_d.blk_off(g, ocb, icb)
                         : weights_d.blk_off(ocb, icb)];
 
-                    p.reduce_pos_flag = ocb == 0 ? FLAG_REDUCE_FIRST : 0;
+                    p.first_last_flag = ocb == 0 ? FLAG_REDUCE_FIRST : 0;
 
                     p.reduce_dim = this_block_size(ocb * jcp.oc_block, jcp.oc,
                             nb_oc_blocking * jcp.oc_block);
@@ -259,10 +269,7 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() {
         }
     };
 
-#   pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    parallel(0, ker);
 }
 
 /* convolution backward wtr weights */
@@ -272,6 +279,7 @@ jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
         const output_vector &outputs)
     : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd), kernel_(nullptr)
     , rtus_driver_(nullptr), ws_per_thread_(0), scratch_(nullptr)
+    , padded_bias_(nullptr)
 {
     kernel_ = new jit_avx2_1x1_conv_kernel_f32(conf_.jcp_, *conf_.attr());
 
@@ -292,7 +300,7 @@ jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
     const int njobs_x = bcast_work;
     const int njobs_y = jcp.ngroups * load_work;
 
-    const int max_threads = omp_get_max_threads();
+    const int max_threads = mkldnn_get_max_threads();
     const size_t max_buffer_size = max_threads * job_size * 8;
 
     reducer_weights_ = new cpu_reducer_2d_t<data_type::f32>(
@@ -303,8 +311,11 @@ jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
 
     reducer_bias_ = !conf_.with_bias() ? nullptr
         : new cpu_reducer_t<data_type::f32>(reduce_balancer_t(max_threads,
-                    oc_block, conf_.G() * conf_.OC() / oc_block,
-                    conf_.MB(), max_buffer_size));
+                    oc_block, jcp.ngroups * jcp.oc / oc_block,
+                    jcp.mb, max_buffer_size));
+
+    if (conf_.want_padded_bias())
+        padded_bias_ = (data_t *)malloc(sizeof(data_t) * jcp.oc, 64);
 
     init_rtus_driver<avx2>(this);
 }
@@ -313,7 +324,8 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_weights = reinterpret_cast<data_t *>(this->memory(0));
-    auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
+    auto diff_bias_in = reinterpret_cast<data_t *>(this->memory(1));
+    data_t *diff_bias = conf_.want_padded_bias() ? padded_bias_ : diff_bias_in;
 
     const memory_desc_wrapper diff_dst_d(conf_.diff_dst_pd());
     const memory_desc_wrapper src_d(conf_.src_pd());
@@ -322,6 +334,7 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
 
     const auto &jcp = kernel_->jcp;
 
+    const int ndims = diff_dst_d.ndims();
     // TODO (Roma): remove this restriction
     assert(jcp.stride_w == 1 && jcp.stride_h == 1);
 
@@ -336,10 +349,10 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
     const int sp_dim = jcp.reduce_dim;
     const int mb_sp_work = jcp.mb * sp_dim;
 
-    const int stride_h = conf_.desc()->strides[0];
-    const int stride_w = conf_.desc()->strides[1];
-    const int pad_t = conf_.desc()->padding[0][0];
-    const int pad_l = conf_.desc()->padding[0][1];
+    const int stride_h = (ndims == 3) ? 1 : conf_.desc()->strides[0];
+    const int stride_w = conf_.desc()->strides[ndims - 3];
+    const int pad_t = (ndims == 3) ? 0 : conf_.desc()->padding[0][0];
+    const int pad_l = conf_.desc()->padding[0][ndims - 3];
 
     auto step = [](int default_step, int remaining, int tail_step) {
         assert(default_step <= tail_step);
@@ -376,7 +389,7 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
                     p.reduce_dim = sp_step;
                     rp.os = p.reduce_dim;
 
-                    p.reduce_pos_flag = sp == sp_start && first_image
+                    p.first_last_flag = sp == sp_start && first_image
                         ? FLAG_REDUCE_FIRST : 0;
 
                     p.load_data = diff_dst
@@ -392,9 +405,13 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
 
                         rp.ws = scratch_ + ithr * ws_per_thread_
                             + (ic_b * jcp.is + sp) * jcp.ic_block;
-                        rp.src = src
-                            + ih * src_d.blocking_desc().strides[0][2]
-                            + iw * src_d.blocking_desc().strides[0][3];
+                        if (ndims == 3)
+                            rp.src = src
+                                + iw * src_d.blocking_desc().strides[0][2];
+                        else
+                            rp.src = src
+                                + ih * src_d.blocking_desc().strides[0][2]
+                                + iw * src_d.blocking_desc().strides[0][3];
 
                         if (oc_b == 0)
                             rtus_driver_->ker_(&rp);
@@ -520,13 +537,17 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() {
         rb->reduce(ithr, diff_bias);
     };
 
-#   pragma omp parallel
-    {
-        int ithr = omp_get_thread_num();
-        int nthr = omp_get_num_threads();
+    parallel(0, [&](const int ithr, const int nthr) {
         ker(ithr, nthr);
         if (conf_.with_bias())
             ker_bias(ithr, nthr);
+    });
+
+    /* TODO: put this in ker_bias */
+    if (conf_.want_padded_bias()) {
+        assert(jcp.ngroups == 1);
+        for (int oc = 0; oc < jcp.oc_without_padding; ++oc)
+            diff_bias_in[oc] = diff_bias[oc];
     }
 }
 

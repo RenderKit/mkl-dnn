@@ -42,8 +42,8 @@ double get_msec();
 #define MKLDNN_VERBOSE_PRB_LEN 384
 
 #define DECL_DAT_AUX_PRB_STRS() \
-    char dat_str[MKLDNN_VERBOSE_PRB_LEN] = {'\0'}; MAYBE_UNUSED(dat_str); \
-    char aux_str[MKLDNN_VERBOSE_PRB_LEN] = {'\0'}; MAYBE_UNUSED(aux_str); \
+    char dat_str[MKLDNN_VERBOSE_DAT_LEN] = {'\0'}; MAYBE_UNUSED(dat_str); \
+    char aux_str[MKLDNN_VERBOSE_AUX_LEN] = {'\0'}; MAYBE_UNUSED(aux_str); \
     char prb_str[MKLDNN_VERBOSE_PRB_LEN] = {'\0'}; MAYBE_UNUSED(prb_str)
 
 inline void verbose_templ(char *buffer, mkldnn_primitive_kind_t prim_kind,
@@ -125,6 +125,29 @@ template <typename pd_t> static void init_info_conv(pd_t *s, char *buffer) {
     }
 
     verbose_templ(buffer, s->kind(), s->name(), s->cdesc()->prop_kind, dat_str,
+            aux_str, prb_str);
+}
+
+template <typename pd_t> static void init_info_shuffle(pd_t *s, char *buffer) {
+    DECL_DAT_AUX_PRB_STRS();
+
+    const auto md = (s->desc()->prop_kind == prop_kind::backward_data
+            ? s->diff_dst_pd() : s->src_pd())->desc();
+
+    snprintf(dat_str, MKLDNN_VERBOSE_DAT_LEN, "dt:%s fmt:%s",
+            mkldnn_dt2str(md->data_type), mkldnn_fmt2str(md->format));
+
+    snprintf(aux_str, MKLDNN_VERBOSE_AUX_LEN, "axis:%d group_size:%d",
+            s->axis(), s->group_size());
+
+    int l = 0;
+    for (int d = 0; d < md->ndims - 1; ++d)
+        l += snprintf(prb_str + l, MKLDNN_VERBOSE_PRB_LEN - l,
+                "%dx", md->dims[d]);
+    snprintf(prb_str + l, MKLDNN_VERBOSE_PRB_LEN - l,
+                "%d", md->dims[md->ndims - 1]);
+
+    verbose_templ(buffer, s->kind(), s->name(), s->desc()->prop_kind, dat_str,
             aux_str, prb_str);
 }
 

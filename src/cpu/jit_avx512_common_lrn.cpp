@@ -263,13 +263,11 @@ struct jit_avx512_common_lrn_fwd_t::jit_avx512_common_lrn_kernel_f32:
         movq(xk, imm_addr64);
         vbroadcastss(zk, xk);
 
-        char tag = '\0';
         if (is_first || is_single) {
             vxorps(xmm2, xmm2, xmm2);
             for(int irb = 0; irb < FWD_RBC; irb++) {
                 vmovups(ptr[t + irb*BUFFER_BLOCK], xmm2);
             }
-            tag = 'f';
         }
         if (is_last || is_single) {
             vxorps(xmm2, xmm2, xmm2);
@@ -277,13 +275,12 @@ struct jit_avx512_common_lrn_fwd_t::jit_avx512_common_lrn_kernel_f32:
                 vmovups(ptr[t + irb*BUFFER_BLOCK + BUFFER_NEXT_OFFSET],
                     xmm2);
             }
-            tag = 'l';
         }
 
         int LSREST = LSB % FWD_RBC;
         int LS = LSB - LSREST;
 
-        jit_tagged_label lrn_loop("lrn_loop", tag);
+        Label lrn_loop;
 
         if (LS > 0) {
             mov(hw, LS);
@@ -328,6 +325,7 @@ status_t jit_avx512_common_lrn_fwd_t::pd_t::init() {
     const memory_desc_wrapper data_d(data_pd_.desc());
     bool ok = true
         && one_of(desc()->prop_kind, forward_training, forward_inference)
+        && !has_zero_dim_memory()
         && everyone_is(data_type::f32, desc()->data_desc.data_type)
         && data_d.ndims() == 4
         && data_d.dims()[1] % vsize == 0
@@ -394,7 +392,7 @@ void jit_avx512_common_lrn_fwd_t::execute_forward() {
     const int H = conf_.H();
     const int W = conf_.W();
 
-    auto ker = [&](const int ithr, const int nthr) {
+    parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
         const int C16 = C / vsize;
         const size_t work_amount = use_h_parallelism ? N*C16*H : N*C16;
@@ -452,12 +450,7 @@ void jit_avx512_common_lrn_fwd_t::execute_forward() {
                 nd_iterator_step(n, N, c16, C16);
             }
         }
-    };
-
-# pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    });
 }
 
 struct jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_kernel_f32:
@@ -679,26 +672,23 @@ struct jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_kernel_f32:
         is_last  = J.version == +1 || J.version == +2;
         is_single = J.version == 3;
 
-        char tag = '\0';
         if (is_first || is_single) {
             vxorps(xmm1, xmm1, xmm1);
             for(int irb = 0; irb < BWD_RBC; irb++) {
                 vmovups(ptr[t + irb*BUFFER_BLOCK], xmm1);
             }
-            tag = 'f';
         }
         if (is_last || is_single) {
             vxorps(xmm1, xmm1, xmm1);
             for(int irb = 0; irb < BWD_RBC; irb++) {
                 vmovups(ptr[t + irb*BUFFER_BLOCK + BUFFER_NEXT_OFFSET], xmm1);
             }
-            tag = 'l';
         }
 
         int LSREST = LSB % BWD_RBC;
         int LS = LSB - LSREST;
 
-        jit_tagged_label lrn_loop("lrn_loop", tag);
+        Label lrn_loop;
 
         if (LS > 0) {
             mov(hw, LS);
@@ -743,6 +733,7 @@ status_t jit_avx512_common_lrn_bwd_t::pd_t::init() {
     bool ok = true
         && utils::one_of(desc()->prop_kind, backward, backward_data)
         && utils::everyone_is(data_type::f32, desc()->data_desc.data_type)
+        && !has_zero_dim_memory()
         && data_d.ndims() == 4
         && data_d.dims()[1] % vsize == 0
         && attr()->has_default_values();
@@ -811,7 +802,7 @@ void jit_avx512_common_lrn_bwd_t::execute_backward() {
     const int H = conf_.H();
     const int W = conf_.W();
 
-    auto ker = [&](const int ithr, const int nthr) {
+    parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
         const int C16 = C / vsize;
         const size_t work_amount = use_h_parallelism ? N*C16*H : N*C16;
@@ -871,12 +862,7 @@ void jit_avx512_common_lrn_bwd_t::execute_backward() {
                 nd_iterator_step(n, N, c16, C16);
             }
         }
-    };
-
-# pragma omp parallel
-    {
-        ker(omp_get_thread_num(), omp_get_num_threads());
-    }
+    });
 }
 
 }

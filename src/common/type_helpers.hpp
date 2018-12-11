@@ -74,6 +74,7 @@ inline memory_format_t flat_memory_format(int ndims) {
     switch (ndims) {
     case 1: return memory_format::x;
     case 2: return memory_format::nc;
+    case 3: return memory_format::ncw;
     case 4: return memory_format::nchw;
     case 5: return memory_format::ncdhw;
     default: return memory_format::undef;
@@ -83,17 +84,123 @@ inline memory_format_t flat_memory_format(int ndims) {
 
 inline memory_format_t format_normalize(const memory_format_t fmt) {
     using namespace memory_format;
-    if (utils::one_of(fmt, x, nc, nchw, nhwc, chwn, nChw8c, nChw16c, oi, io,
-                oihw, ihwo, hwio, oIhw8i, oIhw16i, OIhw8i8o, OIhw16i16o,
-                OIhw8i16o2i, OIdhw8i16o2i, OIhw8o16i2o, OIhw8o8i, OIhw16o16i,
-                Oihw16o, Ohwi8o, Ohwi16o, OIhw4i16o4i, goihw, hwigo, gOIhw8i8o,
-                gOIhw16i16o, gOIhw8i16o2i, gOIdhw8i16o2i, gOIhw8o16i2o,
-                gOIhw8o8i, gOIhw16o16i, gOihw16o, gOhwi8o, gOhwi16o,
-                IOhw16o16i, gIOhw16o16i, gOIhw4i16o4i, ncdhw, oidhw, goidhw,
-                nCdhw16c, OIdhw16i16o, gOIdhw16i16o, OIdhw16o16i, gOIdhw16o16i,
-                ndhwc, gOidhw16o, Oidhw16o, gOdhwi16o, Odhwi16o))
-        return blocked;
-    return fmt;
+    /* FIXME: double blocked formats are special cases -- the blocking
+     *        structure doesn't correctly describe memory layout (wrt
+     *        the strides within blocks). Though as long as the code
+     *        uses memory_desc_wrapper::off() or explicit offset
+     *        calculations everything should be fine. */
+    const bool is_blocked = utils::one_of(fmt, blocked,
+            x,
+            nc,
+            ncw,
+            nwc,
+            nCw8c,
+            nCw16c,
+            nchw,
+            nhwc,
+            chwn,
+            nChw8c,
+            nChw16c,
+            ncdhw,
+            ndhwc,
+            nCdhw8c,
+            nCdhw16c,
+            oi,
+            io,
+            oiw,
+            wio,
+            Owi8o,
+            OIw8i8o,
+            OIw8o8i,
+            OIw16i16o,
+            OIw16o16i,
+            Oiw16o,
+            Owi16o,
+            OIw8i16o2i,
+            OIw8o16i2o,
+            IOw16o16i,
+            oihw,
+            ihwo,
+            hwio,
+            hwio_s8s8,
+            dhwio,
+            oidhw,
+            OIdhw8i8o,
+            OIdhw8o8i,
+            Odhwi8o,
+            OIdhw16i16o,
+            OIdhw16o16i,
+            Oidhw16o,
+            Odhwi16o,
+            oIhw8i,
+            oIhw16i,
+            oIdhw8i,
+            oIdhw16i,
+            OIhw8i8o,
+            OIhw16i16o,
+            OIhw4i16o4i,
+            OIhw4i16o4i_s8s8,
+            OIhw8i16o2i,
+            OIdhw8i16o2i,
+            OIhw8o16i2o,
+            OIhw8o8i,
+            OIhw16o16i,
+            IOhw16o16i,
+            Oihw16o,
+            Ohwi8o,
+            Ohwi16o,
+            goiw,
+            gOwi8o,
+            gOIw8i8o,
+            gOIw8o8i,
+            gOIw16i16o,
+            gOIw16o16i,
+            gOiw16o,
+            gOwi16o,
+            gOIw8i16o2i,
+            gOIw8o16i2o,
+            gIOw16o16i,
+            goihw,
+            hwigo,
+            hwigo_s8s8,
+            gOIhw8i8o,
+            gOIhw16i16o,
+            gOIhw4i16o4i,
+            gOIhw4i16o4i_s8s8,
+            gOIhw8i16o2i,
+            gOIdhw8i16o2i,
+            gOIhw8o16i2o,
+            gOIhw8o8i,
+            gOIhw16o16i,
+            gIOhw16o16i,
+            gOihw16o,
+            gOhwi8o,
+            gOhwi16o,
+            Goihw8g,
+            Goihw16g,
+            goidhw,
+            gOIdhw8i8o,
+            gOIdhw8o8i,
+            gOdhwi8o,
+            gOIdhw16i16o,
+            gOIdhw16o16i,
+            gOidhw16o,
+            gOdhwi16o,
+            ntc,
+            tnc,
+            ldsnc,
+            ldigo,
+            ldgoi,
+            ldgo);
+    return is_blocked ? blocked : fmt;
+}
+
+inline bool is_format_double_blocked(memory_format_t fmt) {
+    using namespace memory_format;
+    return utils::one_of(OIw8o16i2o, OIw8i16o2i, OIhw8i16o2i, OIdhw8i16o2i,
+            OIhw8o16i2o, OIhw4i16o4i, OIhw4i16o4i_s8s8, gOIw8o16i2o, gOIw8i16o2i,
+            gOIhw8i16o2i, gOIdhw8i16o2i, gOIhw8o16i2o, gOIhw4i16o4i,
+            gOIhw4i16o4i_s8s8);
 }
 
 inline bool blocking_desc_is_equal(const blocking_desc_t &lhs,
@@ -112,11 +219,12 @@ inline bool wino_desc_is_equal(const wino_data_t &lhs,
     const wino_data_t &rhs) {
     return lhs.wino_format == rhs.wino_format
         && lhs.alpha == rhs.alpha
+        && lhs.ic == rhs.ic
+        && lhs.oc == rhs.oc
         && lhs.ic_block == rhs.ic_block
         && lhs.oc_block == rhs.oc_block
-        && lhs.nb_ic == rhs.nb_ic
-        && lhs.nb_oc == rhs.nb_oc
-        && lhs.m == rhs.m
+        && lhs.ic2_block == rhs.ic2_block
+        && lhs.oc2_block == rhs.oc2_block
         && lhs.r == rhs.r;
 }
 
@@ -183,10 +291,13 @@ inline data_type_t default_accum_data_type(data_type_t src_dt,
     if (one_of(prop_kind, forward_training, forward_inference)) {
         if (src_dt == s16 && wei_dt == s16 && dst_dt == s32)
             return s32;
-        if (src_dt == u8 && wei_dt == s8 && one_of(dst_dt, f32, s32, s8, u8))
+        if ((src_dt == u8 || src_dt == s8)
+            && wei_dt == s8 && one_of(dst_dt, f32, s32, s8, u8))
             return s32;
     } else if (prop_kind == backward_data) {
         if (src_dt == s32 && wei_dt == s16 && dst_dt == s16)
+            return s32;
+        if (one_of(src_dt, f32, s32, s8, u8) && wei_dt == s8 && dst_dt == u8)
             return s32;
     } else if (prop_kind == backward_weights) {
         if (src_dt == s16 && wei_dt == s32 && dst_dt == s16)

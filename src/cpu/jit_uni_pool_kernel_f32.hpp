@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2017-2018 Intel Corporation
+* Copyright 2018 YANDEX LLC
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -49,14 +50,14 @@ struct jit_uni_pool_kernel_f32: public jit_generator {
             const memory_desc_wrapper &dst_d);
 
 private:
-    using Vmm = typename utils::conditional3<isa == sse42, Xmm, isa == avx2,
+    using Vmm = typename utils::conditional3<isa == sse42, Xmm, isa == avx,
                                              Ymm, Zmm>::type;
     Xmm xreg(int idx) { return Xmm((isa == avx512_common ? 31 : 15) - idx); }
     Ymm yreg(int idx) { return Ymm(xreg(idx).getIdx()); }
     Vmm vreg(int idx) { return Vmm(xreg(idx).getIdx()); }
 
     const AddressFrame &vmmword = (isa == sse42) ? xword :
-                                  (isa == avx2) ? yword : zword;
+                                  (isa == avx) ? yword : zword;
 
     Xmm vmm_mask = Xmm(0);
     Xmm xmm_ker_area_h = Xmm(2);
@@ -72,19 +73,29 @@ private:
     Opmask k_index_mask = Opmask(6);
     Opmask k_store_mask = Opmask(7);
 
+    // Here be some (tame) dragons. This kernel does not follow the regular
+    // OS-agnostic ABI pattern because when isa is sse42 it uses maskmovdqu
+    // instruction which has its destination hardcoded in rdi. Therefore:
+    // - all registers are hardcoded
+    // - on Windows rdi and rcx are swapped to mimic the Unix x86_64 ABI
+    //
+    // While this is only required by the backward pass, the quirk above
+    // is applied to the forward pass as well to keep things simpler.
+
     using reg64_t = const Xbyak::Reg64;
+    reg64_t reg_param      = rdi; // Always mimic the Unix ABI
     reg64_t reg_input      = r8;
     reg64_t aux_reg_input  = r9;
     reg64_t reg_index      = r10;
     reg64_t reg_output     = r12;
-    reg64_t reg_arr_init   = r13;
-    reg64_t dst_ptr        = abi_param1;
+    reg64_t reg_kd_pad_shift = r13;
+    reg64_t dst_ptr        = rdi; // Must be rdi due to maskmovdqu
 
     reg64_t kj      = r14;
     reg64_t oi_iter = r15;
     reg64_t reg_kh  = rax;
     reg64_t reg_k_shift  = rbx;
-    reg64_t tmp_gpr = abi_not_param1;
+    reg64_t tmp_gpr = rcx; // Must be rcx because rdi is used above
     reg64_t reg_ker_area_h = rdx;
 
     reg64_t zero_size = r15;
@@ -125,6 +136,52 @@ private:
     }
 
     void generate();
+
+    void avx_vpadd1(const Ymm& y0, const Xmm& x1, const Xmm& xtmp) {
+        assert(y0.getIdx() != x1.getIdx());
+        vextractf128(xtmp, y0, 0);
+        vpaddd(xtmp, xtmp, x1);
+        vinsertf128(y0, y0, xtmp, 0);
+        vextractf128(xtmp, y0, 1);
+        vpaddd(xtmp, xtmp, x1);
+        vinsertf128(y0, y0, xtmp, 1);
+    }
+
+    void avx_vpadd1(const Xmm& x0, const Xmm& x1, const Xmm&) {
+        assert(false /*function should not be used*/);
+        paddd(x0, x1);
+    }
+
+    void avx_pmovzxbd(const Ymm& y0, const Xmm& x1, const Xmm& xtmp) {
+        Xmm x0(y0.getIdx());
+        pshufd(xmm_tmp, x1, 1);
+        pmovzxbd(x0, x1);
+        pmovzxbd(xmm_tmp, xmm_tmp);
+        vinsertf128(y0, y0, xmm_tmp, 1);
+    }
+
+    void avx_pmovzxbd(const Xmm& x0, const Xmm& x1, const Xmm&) {
+        assert(false /*function should not be used*/);
+        pmovzxbd(x0, x1);
+    }
+
+    void avx_pcmpeqd(const Ymm& y0, const Ymm& y1, const Ymm& y2, const Xmm& xtmp) {
+        assert(y0.getIdx() != y1.getIdx());
+        assert(y0.getIdx() != y2.getIdx());
+        Xmm x0(y0.getIdx());
+        Xmm x2(y2.getIdx());
+        vextractf128(x0, y1, 1);
+        vextractf128(xtmp, y2, 1);
+        pcmpeqd(xtmp, x0);
+        vextractf128(x0, y1, 0);
+        pcmpeqd(x0, x2);
+        vinsertf128(y0, y0, xtmp, 1);
+    }
+
+    void avx_pcmpeqd(const Xmm& x0, const Xmm& x1, const Xmm&, const Xmm&) {
+        assert(false /*function should not be used*/);
+        pcmpeqd(x0, x1);
+    }
 };
 
 }

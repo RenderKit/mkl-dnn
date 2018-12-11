@@ -13,72 +13,82 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *******************************************************************************/
-#include "gemm_utils.hpp"
-#include "utils.hpp"
+
+#include "mkldnn_thread.hpp"
 #include "nstl.hpp"
+#include "utils.hpp"
+
 #include "../jit_generator.hpp"
+
+#include "gemm_utils.hpp"
 
 namespace mkldnn {
 namespace impl {
 namespace cpu {
-using namespace mkldnn::impl::utils;
 
-constexpr int unroll_m = 16;
-constexpr int unroll_n = 6;
+using namespace mkldnn::impl::utils;
+using namespace gemm_utils;
+
+
+template <typename data_t>
 static void copy_A(
-        bool isTransA, int K, const float *A, const int lda, float *ws) {
+        bool isTransA, int K, const data_t *A, const int lda, data_t *ws) {
     for (int k = 0; k < K; k++) {
         PRAGMA_OMP_SIMD()
-        for (int i = 0; i < unroll_m; i++) {
+        for (int i = 0; i < gemm_utils::unroll_factor<data_t>::m; i++) {
             ws[i] = isTransA ? A[i * lda + k] : A[i + k * lda];
         }
-        ws += unroll_m;
+        ws += unroll_factor<data_t>::m;
     }
 }
 
-template <bool isTransA, bool isTransB>
-static void kernel_mxn(int K, const float *A, const int lda,
-        const float *B, const int ldb, float *C, const int ldc,
-        const float alpha, const float beta) {
-    float c[unroll_m * unroll_n] = { 0. };
+template <typename data_t, bool isTransA, bool isTransB>
+static void kernel_mxn(int K, const data_t *A, const int lda,
+        const data_t *B, const int ldb, data_t *C, const int ldc,
+        const data_t alpha, const data_t beta) {
+    data_t c[unroll_factor<data_t>::m * unroll_factor<data_t>::n] =
+        { static_cast<data_t>(0.) };
     for (int k = 0; k < K; k++) {
-        for (int j = 0; j < unroll_n; j++) {
-            float b = isTransB ? B[j + k * ldb] : B[k + j * ldb];
+        for (int j = 0; j < unroll_factor<data_t>::n; j++) {
+            data_t b = isTransB ? B[j + k * ldb] : B[k + j * ldb];
             PRAGMA_OMP_SIMD()
-            for (int i = 0; i < unroll_m; i++) {
-                float a = isTransA ? A[i * lda + k] : A[i + lda * k];
-                c[i + unroll_m * j] += a * b;
+            for (int i = 0; i < unroll_factor<data_t>::m; i++) {
+                data_t a = isTransA ? A[i * lda + k] : A[i + lda * k];
+                c[i + unroll_factor<data_t>::m * j] += a * b;
             }
         }
     }
-    for (int j = 0; j < unroll_n; j++) {
+    for (int j = 0; j < unroll_factor<data_t>::n; j++) {
         PRAGMA_OMP_SIMD()
-        for (int i = 0; i < unroll_m; i++) {
-            C[i + j * ldc] = (beta == 0.0f)
-            ? alpha * c[i + unroll_m * j]
-            : alpha * c[i + unroll_m * j] + beta * C[i + j * ldc];
+        for (int i = 0; i < unroll_factor<data_t>::m; i++) {
+            C[i + j * ldc] = (beta == static_cast<data_t>(0.))
+            ? alpha * c[i + unroll_factor<data_t>::m * j]
+            : alpha * c[i + unroll_factor<data_t>::m * j]
+                + beta * C[i + j * ldc];
         }
     }
 }
 
-template <bool isTransA, bool isTransB>
+template <typename data_t, bool isTransA, bool isTransB>
 static void block_ker(const int M, const int N, const int K,
-        const float *A, const int lda, const float *B, const int ldb, float *C,
-        const int ldc, const float alpha, const float beta, float *ws,
-        bool do_copy) {
-    int Nu = rnd_dn(N, unroll_n), Mu = rnd_dn(M, unroll_m);
-    for (int i = 0; i < Mu; i += unroll_m) {
-        for (int j = 0; j < Nu; j += unroll_n) {
-            const float *b = isTransB ? &B[j] : &B[j * ldb];
-            const float *a = isTransA ? &A[i * lda] : &A[i];
+        const data_t *A, const int lda, const data_t *B, const int ldb,
+        data_t *C, const int ldc, const data_t alpha, const data_t beta,
+        data_t *ws, bool do_copy) {
+    int Nu = rnd_dn(N, unroll_factor<data_t>::n);
+    int Mu = rnd_dn(M, unroll_factor<data_t>::m);
+    for (int i = 0; i < Mu; i += unroll_factor<data_t>::m) {
+        for (int j = 0; j < Nu; j += unroll_factor<data_t>::n) {
+            const data_t *b = isTransB ? &B[j] : &B[j * ldb];
+            const data_t *a = isTransA ? &A[i * lda] : &A[i];
             if (do_copy) {
                 if (j == 0) {
-                    copy_A(isTransA, K, a, lda, ws);
+                    copy_A<data_t>(isTransA, K, a, lda, ws);
                 }
-                kernel_mxn<false, isTransB>(
-                        K, ws, unroll_m, b, ldb, &C[i + j * ldc], ldc, alpha, beta);
+                kernel_mxn<data_t, false, isTransB>(
+                        K, ws, unroll_factor<data_t>::m, b, ldb,
+                        &C[i + j * ldc], ldc, alpha, beta);
             } else {
-                kernel_mxn<isTransA, isTransB>(
+                kernel_mxn<data_t, isTransA, isTransB>(
                         K, a, lda, b, ldb, &C[i + j * ldc], ldc, alpha, beta);
             }
         }
@@ -86,10 +96,12 @@ static void block_ker(const int M, const int N, const int K,
     // tail processing
     for (int i = 0; i < M; i++) {
         for (int j = Nu; j < N; j++) {
-            float c = beta == 0.0f ? 0.0f : beta * C[i + j * ldc];
+            data_t c = beta == static_cast<data_t>(0.)
+                ? static_cast<data_t>(0.)
+                : beta * C[i + j * ldc];
             for (int p = 0; p < K; p++) {
-                float b = isTransB ? B[j + p * ldb] : B[p + j * ldb];
-                float a = isTransA ? A[p + i * lda] : A[i + p * lda];
+                data_t b = isTransB ? B[j + p * ldb] : B[p + j * ldb];
+                data_t a = isTransA ? A[p + i * lda] : A[i + p * lda];
                 c += alpha * a * b;
             }
             C[i + j * ldc] = c;
@@ -97,10 +109,12 @@ static void block_ker(const int M, const int N, const int K,
     }
     for (int i = Mu; i < M; i++) {
         for (int j = 0; j < Nu; j++) {
-            float c = beta == 0.0f ? 0.0f : beta * C[i + j * ldc];
+            data_t c = beta == static_cast<data_t>(0.)
+                ? static_cast<data_t>(0.)
+                : beta * C[i + j * ldc];
             for (int p = 0; p < K; p++) {
-                float b = isTransB ? B[j + p * ldb] : B[p + j * ldb];
-                float a = isTransA ? A[p + i * lda] : A[i + p * lda];
+                data_t b = isTransB ? B[j + p * ldb] : B[p + j * ldb];
+                data_t a = isTransA ? A[p + i * lda] : A[i + p * lda];
                 c += alpha * a * b;
             }
             C[i + j * ldc] = c;
@@ -108,25 +122,28 @@ static void block_ker(const int M, const int N, const int K,
     }
 }
 
-template <bool isTransA, bool isTransB>
-void gemm_ithr(const int M, const int N, const int K, const float alpha,
-        const float *A, const int lda, const float *B, const int ldb,
-        const float beta, float *C, const int ldc, bool do_copy, float *ws) {
-    int BM = 4032;
-    int BN = isTransA ? 96 : 48;
-    int BK = isTransB ? 96 : 256;
-    const float *curA, *curB;
-    float *curC;
+template <typename data_t, bool isTransA, bool isTransB>
+void gemm_ithr(const int M, const int N, const int K, const data_t alpha,
+        const data_t *A, const int lda, const data_t *B, const int ldb,
+        const data_t beta, data_t *C, const int ldc, bool do_copy, data_t *ws) {
+    constexpr int BM = gemm_traits<data_t, isTransA, isTransB>::BM;
+    constexpr int BN = gemm_traits<data_t, isTransA, isTransB>::BN;
+    constexpr int BK = gemm_traits<data_t, isTransA, isTransB>::BK;
+
+    const data_t *curA;
+    const data_t *curB;
+    data_t *curC;
 
     if ((M <= 0) || (N <= 0))
         return;
 
-    if ((K <= 0) || (alpha == 0.0f)) {
-        if (beta == 0.0f) {
-            for (int j = 0; j < N * M; j++)
-                C[j] = 0.0f;
-        } else if (beta != 1.0f) {
-            for (int j = 0; j < N * M; j++)
+    if ((K <= 0) || (alpha == static_cast<data_t>(0))) {
+        ptrdiff_t MN = (ptrdiff_t)N * M;
+        if (beta == static_cast<data_t>(0.)) {
+            for (ptrdiff_t j = 0; j < MN; j++)
+                C[j] = static_cast<data_t>(0.);
+        } else if (beta != static_cast<data_t>(1.)) {
+            for (ptrdiff_t j = 0; j < MN; j++)
                 C[j] *= beta;
         }
         return;
@@ -142,65 +159,69 @@ void gemm_ithr(const int M, const int N, const int K, const float alpha,
                 curB = isTransB ? B + Bn + Bk * ldb : B + Bk + Bn * ldb;
                 curC = C + Bm + Bn * ldc;
                 if (Bk == 0) {
-                    block_ker<isTransA, isTransB>(mb, nb, kb, curA, lda, curB,
-                            ldb, curC, ldc, alpha, beta, ws, do_copy);
+                    block_ker<data_t, isTransA, isTransB>(mb, nb, kb, curA, lda,
+                        curB, ldb, curC, ldc, alpha, beta, ws, do_copy);
                 } else {
-                    block_ker<isTransA, isTransB>(mb, nb, kb, curA, lda, curB,
-                            ldb, curC, ldc, alpha, 1.0f, ws, do_copy);
+                    block_ker<data_t, isTransA, isTransB>(mb, nb, kb, curA, lda,
+                        curB, ldb, curC, ldc, alpha, static_cast<data_t>(1.0),
+                        ws, do_copy);
                 }
             }
         }
     }
 }
 
+template <typename data_t>
 void ref_gemm(const char *transa_, const char *transb_, const int *M_,
-        const int *N_, const int *K_, const float *alpha_, const float *A,
-        const int *lda_, const float *B, const int *ldb_, const float *beta_,
-        float *C, const int *ldc_) {
+        const int *N_, const int *K_, const data_t *alpha_, const data_t *A,
+        const int *lda_, const data_t *B, const int *ldb_, const data_t *beta_,
+        data_t *C, const int *ldc_, const data_t *bias) {
     bool isTransA = (*transa_ == 'T' || *transa_ == 't');
     bool isTransB = (*transb_ == 'T' || *transb_ == 't');
     const int M = *M_, N = *N_, K = *K_, lda = *lda_, ldb = *ldb_, ldc = *ldc_;
-    const float alpha = *alpha_, beta = *beta_;
+    const data_t alpha = *alpha_, beta = *beta_;
 
-    int max_nthr = omp_get_max_threads();
+    int max_nthr = mkldnn_in_parallel() ? 1 : mkldnn_get_max_threads();
     int nthr_m, nthr_n, nthr_k;
     int MB, NB, KB;
-    // thread ballancing over M, N, K & size of blocking dimensions
-    gemm_utils::calc_nthr_nocopy_avx2(
+    // thread balancing over M, N, K & size of blocking dimensions
+    gemm_utils::calc_nthr_nocopy_avx(
             M, N, K, max_nthr, &nthr_m, &nthr_n, &nthr_k, &MB, &NB, &KB);
+    assert(IMPLICATION(!mkldnn_thr_syncable(), nthr_k == 1));
 
-    float *c_buffers = nullptr, *ws_buffers = nullptr;
+    data_t *c_buffers = nullptr;
+    data_t *ws_buffers = nullptr;
     if (nthr_k > 1) {
-        c_buffers = (float *)malloc(nthr_m * nthr_n * (nthr_k - 1) * MB * NB
-                * sizeof(float), PAGE_4K);
+        c_buffers = (data_t *)malloc(nthr_m * nthr_n * (nthr_k - 1) * MB * NB
+                * sizeof(data_t), PAGE_4K);
         if (!c_buffers) {
             nthr_k = 1;
             KB = K;
         }
     }
 
-    bool do_copy = (NB / unroll_n > 3);
-    int nthr = nthr_m * nthr_n * nthr_k;
-    const size_t ws_elems_per_thr = K * unroll_m;
+    bool do_copy = (NB / unroll_factor<data_t>::n > 3);
+    const int nthr_mn = nthr_m * nthr_n;
+    const int nthr = nthr_mn * nthr_k;
+    const size_t ws_elems_per_thr = K * unroll_factor<data_t>::m;
     const size_t ws_size_per_thr
-            = utils::rnd_up(ws_elems_per_thr * sizeof(float), PAGE_4K);
+            = utils::rnd_up(ws_elems_per_thr * sizeof(data_t), PAGE_4K);
     if (do_copy) {
-        ws_buffers = (float *)malloc(nthr * ws_size_per_thr, PAGE_4K);
+        ws_buffers = (data_t*)malloc(nthr * ws_size_per_thr, PAGE_4K);
         if (!ws_buffers)
             do_copy = false;
     }
-#   pragma omp parallel num_threads(nthr)
-    {
-        int ithr_omp = omp_get_thread_num();
-        int nthr_mn = nthr_m * nthr_n;
-        int ithr_omp_mn = ithr_omp % nthr_mn;
-        int ithr_omp_m = ithr_omp_mn % nthr_m;
-        int ithr_omp_n = ithr_omp_mn / nthr_m;
-        int ithr_omp_k = ithr_omp / nthr_mn;
-        int cbase = (ithr_omp_m + nthr_m * ithr_omp_n) * (nthr_k - 1);
 
-        float *ws = do_copy
-                ? ws_buffers + ithr_omp * ws_size_per_thr / sizeof(float)
+    parallel(nthr, [&](const int ithr, const int nthr) {
+        int ithr_mn = ithr % nthr_mn;
+        int ithr_m = ithr_mn % nthr_m;
+        int ithr_n = ithr_mn / nthr_m;
+        int ithr_k = ithr / nthr_mn;
+
+        int cbase = (ithr_m + nthr_m * ithr_n) * (nthr_k - 1);
+
+        data_t *ws = do_copy
+                ? ws_buffers + ithr * ws_size_per_thr / sizeof(data_t)
                 : nullptr;
 
         int m_from = 0, m_to = 0, myM = 0, n_from = 0, n_to = 0, myN = 0,
@@ -213,64 +234,84 @@ void ref_gemm(const char *transa_, const char *transb_, const int *M_,
                 to = N;
             myN = to - from;
         };
-        get_thr_block(m_from, m_to, myM, MB, M, ithr_omp_m);
-        get_thr_block(n_from, n_to, myN, NB, N, ithr_omp_n);
-        get_thr_block(k_from, k_to, myK, KB, K, ithr_omp_k);
+        get_thr_block(m_from, m_to, myM, MB, M, ithr_m);
+        get_thr_block(n_from, n_to, myN, NB, N, ithr_n);
+        get_thr_block(k_from, k_to, myK, KB, K, ithr_k);
 
-        if ((myM > 0) && (myN > 0)) {
-            float myBeta, *myC;
+        if (myM > 0 && myN > 0) {
+            data_t myBeta, *myC;
             int ld;
-            if (ithr_omp_k == 0) {
+            if (ithr_k == 0) {
                 myC = &(C[m_from + n_from * ldc]);
                 myBeta = beta;
                 ld = ldc;
             } else {
-                myC = c_buffers + MB * NB * (cbase + ithr_omp_k - 1);
+                myC = c_buffers + MB * NB * (cbase + ithr_k - 1);
                 myBeta = 0.0f;
                 ld = MB;
             }
-            const float *myA = isTransA
+            const data_t *myA = isTransA
                     ? &(A[k_from + m_from * lda])
                     : &(A[m_from + k_from * lda]);
-            const float *myB = isTransB
+            const data_t *myB = isTransB
                     ? &(B[n_from + k_from * ldb])
                     : &(B[k_from + n_from * ldb]);
 
             if (!isTransA) {
                 if (!isTransB) {
-                    gemm_ithr<false, false>(myM, myN, myK, alpha, myA, lda, myB,
-                            ldb, myBeta, myC, ld, do_copy, ws);
+                    gemm_ithr<data_t, false, false>(myM, myN, myK, alpha, myA,
+                        lda, myB, ldb, myBeta, myC, ld, do_copy, ws);
                 } else {
-                    gemm_ithr<false, true>(myM, myN, myK, alpha, myA, lda, myB,
-                            ldb, myBeta, myC, ld, do_copy, ws);
+                    gemm_ithr<data_t, false, true>(myM, myN, myK, alpha, myA,
+                        lda, myB, ldb, myBeta, myC, ld, do_copy, ws);
                 }
             } else {
                 if (!isTransB) {
-                    gemm_ithr<true, false>(myM, myN, myK, alpha, myA, lda, myB,
-                            ldb, myBeta, myC, ld, do_copy, ws);
+                    gemm_ithr<data_t, true, false>(myM, myN, myK, alpha, myA,
+                        lda, myB, ldb, myBeta, myC, ld, do_copy, ws);
                 } else {
-                    gemm_ithr<true, true>(myM, myN, myK, alpha, myA, lda, myB,
-                            ldb, myBeta, myC, ld, do_copy, ws);
+                    gemm_ithr<data_t, true, true>(myM, myN, myK, alpha, myA,
+                        lda, myB, ldb, myBeta, myC, ld, do_copy, ws);
                 }
             }
         }
+
         if (nthr_k > 1) {
-#           pragma omp barrier
+            assert(mkldnn_thr_syncable());
+            mkldnn_thr_barrier();
+
             // sum matrices partitioned along K dimension
             int offset = 0, block = 0;
-            gemm_utils::partition_unit_diff(ithr_omp_k, nthr_k, myN, &offset,
+            gemm_utils::partition_unit_diff(ithr_k, nthr_k, myN, &offset,
                     &block);
             for (int ik = 1; ik < nthr_k; ++ik) {
-                float *myC = c_buffers + MB * NB * (cbase + ik - 1);
-                myC = myC + offset * MB;
+                data_t *myC = c_buffers + MB * (NB * (cbase + ik - 1) + offset);
+
                 gemm_utils::sum_two_matrices(myM, block, myC, MB,
                         &C[m_from + (n_from + offset) * ldc], ldc);
             }
         }
+    });
+
+    if (bias) {
+        parallel_nd(N, M, [&](int i, int j) {
+            C[i*ldc + j] += bias[j];
+        });
     }
+
     free(ws_buffers);
     free(c_buffers);
 }
+
+template void ref_gemm<float>(const char *transa_, const char *transb_,
+        const int *M_, const int *N_, const int *K_, const float *alpha_,
+        const float *A, const int *lda_, const float *B, const int *ldb_,
+        const float *beta_, float *C, const int *ldc_, const float *bias);
+
+template void ref_gemm<double>(const char *transa_, const char *transb_,
+        const int *M_, const int *N_, const int *K_, const double *alpha_,
+        const double *A, const int *lda_, const double *B, const int *ldb_,
+        const double *beta_, double *C, const int *ldc_, const double *bias);
 }
 }
 }
