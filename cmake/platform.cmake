@@ -50,6 +50,7 @@ if(MSVC)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15552")
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(DEF_ARCH_OPT_FLAGS "-msse4.2")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -62,6 +63,7 @@ elseif(UNIX OR MINGW)
     append(CMAKE_CXX_FLAGS "-std=c++11 -fvisibility-inlines-hidden")
     # compiler specific settings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(DEF_ARCH_OPT_FLAGS "-msse4.2")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -140,9 +142,7 @@ if(UNIX OR MINGW)
     endif()
 endif()
 
-if(ARCH_OPT_FLAGS STREQUAL "HostOpts")
-    set(ARCH_OPT_FLAGS "${DEF_ARCH_OPT_FLAGS}")
-endif()
+set(ARCH_OPT_FLAGS "${DEF_ARCH_OPT_FLAGS}")
 
 append(CMAKE_C_FLAGS "${CMAKE_CCXX_FLAGS} ${ARCH_OPT_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_FLAGS} ${ARCH_OPT_FLAGS}")
