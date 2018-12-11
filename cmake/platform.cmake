@@ -68,6 +68,9 @@ elseif(UNIX OR MINGW)
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
         append(CMAKE_CCXX_NOWARN_FLAGS "-Wno-pass-failed")
+        if(APPLE)
+          append(CMAKE_CXX_FLAGS "-mmacosx-version-min=10.7") # makes sure code runs on older macOS versions
+        endif()
         if(MKLDNN_USE_CLANG_SANITIZER MATCHES "Memory(WithOrigin)?")
             if(NOT MKLDNN_THREADING STREQUAL "SEQ")
                 message(WARNING "Clang OpenMP is not compatible with MSan! "
