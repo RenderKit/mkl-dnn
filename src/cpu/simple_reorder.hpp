@@ -85,13 +85,13 @@ template <SIMPLE_REORDER_TEMPL_DECL, typename spec = void>
 struct simple_reorder_impl {};
 
 namespace {
-bool simple_fmt_check(bool order_keep, impl::memory_format_t fmt_i,
+inline bool simple_fmt_check(bool order_keep, impl::memory_format_t fmt_i,
         impl::memory_format_t fmt_o, const memory_desc_wrapper &input_d,
         const memory_desc_wrapper &output_d) {
     return input_d.format() == (order_keep ? fmt_i : fmt_o)
         && output_d.format() == (order_keep ? fmt_o : fmt_i);
 }
-bool simple_attr_check(const primitive_attr_t *attr, bool many_scales_support) {
+inline bool simple_attr_check(const primitive_attr_t *attr, bool many_scales_support) {
     if (many_scales_support)
         return true;
     return IMPLICATION(attr, attr->output_scales_.mask_ == 0);

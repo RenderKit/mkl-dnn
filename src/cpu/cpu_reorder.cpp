@@ -61,6 +61,7 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
 
 #ifdef __INTEL_COMPILER
     /* direct copy for icc, which is faster than jitted code */
+    /*
     REG_SR_DIRECT_COPY(f32, s32),
     REG_SR_DIRECT_COPY(f32, s8),
     REG_SR_DIRECT_COPY(f32, u8),
@@ -76,12 +77,14 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     REG_SR_DIRECT_COPY(u8, s32),
     REG_SR_DIRECT_COPY(u8, s8),
     REG_SR_DIRECT_COPY(u8, u8),
+    */
 #endif
 
     /* jit */
     jit_uni_reorder_create,
 
     /* fp32: flat <-> blocked with tail */
+    /*
     REG_SR_BIDIR(f32, any, f32, nCw8c),
     REG_SR_BIDIR(f32, any, f32, OIw8i8o),
     REG_SR_BIDIR(f32, any, f32, OIw8o8i),
@@ -133,9 +136,11 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     REG_SR_BIDIR(f32, any, f32, gOdhwi16o),
     REG_SR_BIDIR(f32, any, f32, gOIdhw16o16i),
     REG_SR_BIDIR(f32, any, f32, gOIdhw16i16o),
+    */
 
 
     /* int: flat <-> blocked with tail */
+    /*
     REG_SR_BIDIR(f32, any, s32, nChw16c),
     REG_SR_BIDIR(f32, any, s8, nChw16c),
     REG_SR_BIDIR(f32, any, u8, nChw16c),
@@ -165,16 +170,20 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     REG_SR(f32, any, s8, hwigo_s8s8, fmt_order::keep),
     REG_SR(f32, oihw, s8, OIhw4i16o4i_s8s8, fmt_order::keep),
     REG_SR(f32, goihw, s8, gOIhw4i16o4i_s8s8, fmt_order::keep),
+    */
 
     /* s16 <-> s16 */
+    /*
     REG_SR_DIRECT_COPY(s16, s16),
 
     REG_SR_BIDIR(s16, any, s16, OIhw8i16o2i),
     REG_SR_BIDIR(s16, any, s16, gOIhw8i16o2i),
     REG_SR_BIDIR(s16, OIhw8i16o2i, s16, OIhw8o16i2o),
     REG_SR_BIDIR(s16, gOIhw8i16o2i, s16, gOIhw8o16i2o),
+    */
 
     /* reference: the last line of defence */
+    /*
     REG_SR(f32, any, f32, any, fmt_order::any, spec::reference),
     REG_SR(f32, any, s32, any, fmt_order::any, spec::reference),
     REG_SR(f32, any, s16, any, fmt_order::any, spec::reference),
@@ -200,6 +209,7 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     REG_SR(u8, any, s32, any, fmt_order::any, spec::reference),
     REG_SR(u8, any, u8, any, fmt_order::any, spec::reference),
     REG_SR(u8, any, s8, any, fmt_order::any, spec::reference),
+    */
 
     /* eol */
     nullptr,

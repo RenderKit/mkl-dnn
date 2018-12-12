@@ -265,6 +265,7 @@ status_t cpu_memory_t::typed_zero_pad() {
     const auto fmt = mpd.format();
 
     /* data */
+    /*
 #   define MAYBE_DATA(f) if (fmt == f) \
     { typed_zero_pad_data<dt, f>(mpd, data); return success; }
     MAYBE_DATA(nCw8c);
@@ -273,8 +274,10 @@ status_t cpu_memory_t::typed_zero_pad() {
     MAYBE_DATA(nCdhw8c);
     MAYBE_DATA(nChw16c);
     MAYBE_DATA(nCdhw16c);
+    */
 
     /* weights */
+    /*
 #   define MAYBE_WEIGHTS(f) if (fmt == f) \
     { typed_zero_pad_weights<dt, f>(mpd, data); return success; }
     MAYBE_WEIGHTS(OIdhw8i8o);
@@ -344,6 +347,7 @@ status_t cpu_memory_t::typed_zero_pad() {
     MAYBE_WEIGHTS(Goihw8g);
     MAYBE_WEIGHTS(Goihw16g);
 #   undef MAYBE_WEIGHTS
+    */
 
     // the last line of defence
     if (types::format_normalize(fmt) == blocked) {
