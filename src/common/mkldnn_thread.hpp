@@ -28,11 +28,7 @@
  * using regular cmake). For the 3rd-party projects that build the library
  * from the sources on their own try to guess the right threading... */
 #if !defined(MKLDNN_THR)
-#   if defined(_OPENMP)
-#       define MKLDNN_THR MKLDNN_THR_OMP
-#   else
-#       define MKLDNN_THR MKLDNN_THR_SEQ
-#   endif
+#   define MKLDNN_THR MKLDNN_THR_TBB
 #endif
 
 #if MKLDNN_THR == MKLDNN_THR_SEQ
