@@ -1129,16 +1129,15 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
     }
 
-//#pragma omp parallel
     {
-        parallel_nd_in_omp(jcp.mb, jcp.dimK_nb_block, jcp.dimK_block,
+        parallel_nd(jcp.mb, jcp.dimK_nb_block, jcp.dimK_block,
             [&](int img, int K_blk1, int K_blk2) {
             input_transform_data<is_fwd>(img, jcp,
                 &(input(img, K_blk1 * jcp.dimK_block + K_blk2, 0, 0, 0)),
                 &(V(0, 0, 0, 0, K_blk1, K_blk2, 0, 0)), V_streamout);
         });
 
-        parallel_nd_in_omp(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
+        parallel_nd(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
             [&](int ofm1, int ifm1, int ofm2, int ifm2) {
             float *U_base_ptr = is_fwd
                 ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
@@ -1148,9 +1147,7 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
                 ifm1 * jcp.ic_block + ifm2, 0, 0, 0, 0)), U_base_ptr);
         });
 
-//#pragma omp barrier
-
-        parallel_nd_in_omp(jcp.dimN_nb_block, alpha, alpha, jcp.dimM_nb_block, jcp.dimN_block,
+        parallel_nd(jcp.dimN_nb_block, alpha, alpha, jcp.dimM_nb_block, jcp.dimN_block,
             [&](int N_blk1, int oj, int oi, int M_blk1, int N_blk2) {
 
             kernel_->gemm_loop_ker_first_iter(
@@ -1174,9 +1171,8 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
         });
 
 
-//#pragma omp barrier
 
-        parallel_nd_in_omp(jcp.mb, jcp.dimM_nb_block, jcp.dimM_block,
+        parallel_nd(jcp.mb, jcp.dimM_nb_block, jcp.dimM_block,
                     [&](int img, int M_blk1, int M_blk2) {
 
             const int M_blk = M_blk1 * jcp.dimM_block + M_blk2;
@@ -1275,9 +1271,8 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
             last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
     }
 
-//#pragma omp parallel
     {
-        parallel_nd_in_omp(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
+        parallel_nd(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
             [&](int ofm1, int ifm1, int ofm2, int ifm2) {
 
             float *U_base_ptr = is_fwd
@@ -1289,13 +1284,20 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
                             0, 0, 0, 0)),
                     U_base_ptr);
         });
+    }
 
-//#pragma omp barrier
+//#pragma omp parallel
+    tbb::parallel_for(tbb::blocked_range<int>(0, jcp.tile_block),
+        [&](const tbb::blocked_range<int>& r)
+    {
 
     int ithr = mkldnn_get_thread_num();
 
-//#pragma omp for schedule(static)
+/*
+#pragma omp for schedule(static)
     for (int tile_block = 0; tile_block < jcp.tile_block; tile_block++) {
+*/
+    for (int tile_block = r.begin(); tile_block < r.end(); tile_block++) {
         for (int K_blk1 = 0; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
             for (int K_blk2 = 0; K_blk2 < jcp.dimK_block; K_blk2++) {
                 input_transform_tileblock_data<is_fwd>(
@@ -1345,7 +1347,8 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
             }
         }
     }
-    }
+    //}
+    }, tbb::static_partitioner());
 }
 
 template void

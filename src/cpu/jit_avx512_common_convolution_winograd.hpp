@@ -234,8 +234,7 @@ struct _jit_avx512_common_convolution_winograd_fwd_t
                                this->cdesc_().weights_desc.data_type,
                                this->cdesc_().dst_desc.data_type)
                     && IMPLICATION(this->with_bias(), data_type::f32
-                                       == this->cdesc_().bias_desc.data_type)
-                    && mkldnn_thr_syncable();
+                                       == this->cdesc_().bias_desc.data_type);
             if (!ok)
                 return status::unimplemented;
 
