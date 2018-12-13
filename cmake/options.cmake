@@ -118,7 +118,7 @@ set(ARCH_OPT_FLAGS "HostOpts" CACHE STRING
 # Profiling capabilities
 # ======================
 
-set(VTUNEROOT "" CACHE STRING
+set(VTUNE_ROOT "" CACHE STRING
     "path to Intel(R) VTune(tm) Amplifier.
     Required to register Intel(R) MKL-DNN kernels that are generated at
     runtime, otherwise the profile would not be able to track the kernels and

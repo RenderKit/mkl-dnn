@@ -229,8 +229,8 @@ if(MKLDNN_THREADING MATCHES "TBB")
     endif()
 endif()
 
-if(VTUNEROOT)
-    include_directories(${VTUNEROOT}/include)
+if(VTUNE_ROOT)
+    include_directories(${VTUNE_ROOT}/include)
     add_definitions(-DJIT_PROFILING_VTUNE)
 endif()
 
