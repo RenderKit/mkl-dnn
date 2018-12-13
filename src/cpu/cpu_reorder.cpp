@@ -48,7 +48,7 @@ using namespace mkldnn::impl::memory_format;
 static const rpd_create_f cpu_reorder_impl_list[] = {
     /* winograd */
     wino_reorder_t<f32, f32>::pd_t::create,
-    wino_reorder_t<f32, s8>::pd_t::create,
+    //wino_reorder_t<f32, s8>::pd_t::create,
 
 #if defined(__INTEL_COMPILER) || (defined(__GNUC__) && !defined(__clang__))
     /* Direct copy for icc which is faster than jitted code;
