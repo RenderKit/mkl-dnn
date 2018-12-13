@@ -267,6 +267,9 @@ endif()
 
 add_library(${TARGET_NAME} ${MKLDNN_LIBRARY_TYPE} ${HEADERS} ${SOURCES})
 
+# Compile the library for SSE4.2
+set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE42}")
+
 #Add mkldnn.dll to execution PATH
 if(NOT(MINGW))
     set(CTESTCONFIG_PATH "${CTESTCONFIG_PATH}\;${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE}" PARENT_SCOPE)

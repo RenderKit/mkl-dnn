@@ -28,7 +28,7 @@ add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
 
 set(CMAKE_CCXX_FLAGS)
 set(CMAKE_CCXX_NOWARN_FLAGS)
-set(DEF_ARCH_OPT_FLAGS)
+set(ISA_FLAGS_SSE42)
 
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
@@ -45,12 +45,12 @@ if(MSVC)
     endif()
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
         append(CMAKE_CCXX_FLAGS "/MP")
-        set(DEF_ARCH_OPT_FLAGS "-QxSSE4.2")
+        set(ISA_FLAGS_SSE42 "-QxSSE4.2")
         # disable: loop was not vectorized with "simd"
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15552")
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(DEF_ARCH_OPT_FLAGS "-msse4.2")
+        set(ISA_FLAGS_SSE42 "-msse4.2")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -63,7 +63,7 @@ elseif(UNIX OR MINGW)
     append(CMAKE_CXX_FLAGS "-std=c++11 -fvisibility-inlines-hidden")
     # compiler specific settings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(DEF_ARCH_OPT_FLAGS "-msse4.2")
+        set(ISA_FLAGS_SSE42 "-msse4.2")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -111,12 +111,12 @@ elseif(UNIX OR MINGW)
         endif()
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
-            set(DEF_ARCH_OPT_FLAGS "-msse4.2")
+            set(ISA_FLAGS_SSE42 "-msse4.2")
         endif()
         # suppress warning on assumptions made regarding overflow (#146)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Wno-strict-overflow")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-        set(DEF_ARCH_OPT_FLAGS "-xsse4.2")
+        set(ISA_FLAGS_SSE42 "-xsse4.2")
         # workaround for Intel Compiler 16.0 that produces error caused
         # by pragma omp simd collapse(..)
         if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")
@@ -146,11 +146,6 @@ if(UNIX OR MINGW)
         append(CMAKE_SHARED_LINKER_FLAGS "-diag-disable:10237")
     endif()
 endif()
-
-set(ARCH_OPT_FLAGS "${DEF_ARCH_OPT_FLAGS}")
-
-append(CMAKE_C_FLAGS "${CMAKE_CCXX_FLAGS} ${ARCH_OPT_FLAGS}")
-append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_FLAGS} ${ARCH_OPT_FLAGS}")
 
 if(APPLE)
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
