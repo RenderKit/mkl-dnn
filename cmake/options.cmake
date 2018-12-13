@@ -41,12 +41,12 @@ option(MKLDNN_ENABLE_CONCURRENT_EXEC
 # Building properties and scope
 # =============================
 
-set(MKLDNN_LIBRARY_TYPE "STATIC" CACHE STRING
+set(MKLDNN_LIBRARY_TYPE "SHARED" CACHE STRING
     "specifies whether Intel(R) MKL-DNN library should be SHARED or STATIC")
 option(WITH_EXAMPLE "builds examples"  ON)
 option(WITH_TEST "builds tests" ON)
 
-set(MKLDNN_THREADING "TBB" CACHE STRING
+set(MKLDNN_THREADING "OMP" CACHE STRING
     "specifies threading type; supports OMP (default), OMP:COMP, OMP:INTEL, or TBB.
 
     When OpenMP is used a user can choose what runtime to use:
@@ -63,7 +63,7 @@ set(MKLDNN_THREADING "TBB" CACHE STRING
     set TBBROOT (either environment variable or CMake option) to the library
     location")
 
-set(MKLDNN_USE_MKL "NONE" CACHE STRING
+set(MKLDNN_USE_MKL "DEF" CACHE STRING
     "specifies what Intel MKL library to use.
     Supports DEF (default), NONE, ML, FULL, FULL:STATIC.
 

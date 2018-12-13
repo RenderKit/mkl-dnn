@@ -19,7 +19,7 @@ if(TBB_cmake_included)
 endif()
 set(TBB_cmake_included true)
 
-if(MKLDNN_THREADING AND NOT MKLDNN_THREADING STREQUAL "TBB")
+if(NOT MKLDNN_THREADING STREQUAL "TBB")
   return()
 endif()
 
