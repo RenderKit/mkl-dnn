@@ -164,9 +164,9 @@ private:
             out_data_t *__restrict _out
                     = tmp_wei_ + (iic * nb_oc_ + ob) * oc_block_;
 
-            parallel_nd(size_wspace_, [&](int i) { wspace_[i] = 0.f; });
+            for_nd(0, 1, size_wspace_, [&](int i) { wspace_[i] = 0.f; });
 
-            parallel_nd(r_, w_alpha_, oc_block_,
+            for_nd(0, 1, r_, w_alpha_, oc_block_,
                 [&](int ih, int j, int ioc) {
                 for (int iw = 0; iw < r_; ++iw) {
                     int inp_oc = ob * oc_block_ + ioc;
@@ -179,7 +179,7 @@ private:
                 }
             });
 
-            parallel_nd(w_alpha_, w_alpha_, oc_block_,
+            for_nd(0, 1, w_alpha_, w_alpha_, oc_block_,
                 [&](int i, int j, int ioc) {
                 float t = 0;
                 for (int k = 0; k < r_; ++k)
@@ -211,7 +211,7 @@ private:
         int index = 0;
         for (int u_h = 0; u_h < w_alpha_; u_h++) {
         for (int u_w = 0; u_w < w_alpha_; u_w++) {
-            parallel_nd(nb_oc_, oc_block_, [&](int ob, int o) {
+            for_nd(0, 1, nb_oc_, oc_block_, [&](int ob, int o) {
                 int u_h_shift = u_h * w_alpha_ * ic_ * oc_;
                 int u_w_shift = u_w * ic_ * oc_;
                 int u_h_shift_b = u_h * w_alpha_ * oc_;
@@ -245,7 +245,7 @@ private:
     }
 
     void reorder_to_aaOio(out_data_t *__restrict output) {
-        parallel_nd(w_alpha_, w_alpha_, nb_oc_,
+        for_nd(0, 1, w_alpha_, w_alpha_, nb_oc_,
             [&](int u_h, int u_w, int ob) {
             for (int ib = 0; ib < nb_ic_; ib++) {
             for (int i = 0; i < ic_block_; i++) {
@@ -266,7 +266,7 @@ private:
     void reorder_to_aaOBiOo(out_data_t *__restrict output) {
         int oc_chunks = nb_oc_ / oc2_block_;
 
-        parallel_nd(w_alpha_, w_alpha_, oc_chunks,
+        for_nd(0, 1, w_alpha_, w_alpha_, oc_chunks,
             [&](int u_h, int u_w, int occ) {
             for (int ib = 0; ib < nb_ic_; ib++) {
                 out_data_t *__restrict wei_ptr = output
@@ -294,7 +294,7 @@ private:
         int ic_chunks = nb_ic_ / ic2_block_;
         int oc_chunks = nb_oc_ / oc2_block_;
 
-        parallel_nd(oc_chunks, w_alpha_, w_alpha_,
+        for_nd(0, 1, oc_chunks, w_alpha_, w_alpha_,
             [&](int occ, int u_h, int u_w) {
             for (int icc = 0; icc < ic_chunks; icc++) {
             for (int ob = 0; ob < oc2_block_; ob++) {
