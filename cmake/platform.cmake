@@ -32,7 +32,7 @@ set(ISA_FLAGS_SSE42)
 
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL MSVC)
         append(CMAKE_CCXX_FLAGS "/MP")
         # int -> bool
         append(CMAKE_CCXX_NOWARN_FLAGS "/wd4800")
@@ -42,20 +42,21 @@ if(MSVC)
         append(CMAKE_CCXX_NOWARN_FLAGS "/wd4305")
         # UNUSED(func)
         append(CMAKE_CCXX_NOWARN_FLAGS "/wd4551")
-    endif()
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
         append(CMAKE_CCXX_FLAGS "/MP")
         set(ISA_FLAGS_SSE42 "-QxSSE4.2")
         # disable: loop was not vectorized with "simd"
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15552")
-    endif()
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15335")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(ISA_FLAGS_SSE42 "-msse4.2")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
         append(CMAKE_CCXX_FLAGS "-Wno-pass-failed")
     endif()
+    # disable secure warnings
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 elseif(UNIX OR MINGW)
     append(CMAKE_CCXX_FLAGS "-Wall -Werror -Wno-unknown-pragmas")
     append(CMAKE_CCXX_FLAGS "-fvisibility=internal")
@@ -133,6 +134,12 @@ endif()
 if(WIN32)
     string(REPLACE ";" "\;" ENV_PATH "$ENV{PATH}")
     set(CTESTCONFIG_PATH "${CTESTCONFIG_PATH}\;${MKLDLLPATH}\;${ENV_PATH}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
+        # Link Intel libraries statically
+        string(REPLACE "/MDd" "/MTd" CMAKE_CXX_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_DEBUG})
+        string(REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
+        string(REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
+    endif()
 endif()
 
 if(UNIX OR MINGW)
