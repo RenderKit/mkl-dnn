@@ -71,7 +71,11 @@ if(WIN32)
     endif()
 
     set(TBB_LIBDIR ${TBB_ROOT}/lib/${TBB_ARCH}/${TBB_VCVER})
-    set(TBB_BINDIR ${TBB_ROOT}/bin/${TBB_ARCH}/${TBB_VCVER})
+    find_path(TBB_BINDIR tbb.dll
+        PATHS
+            ${TBB_ROOT}/bin/${TBB_ARCH}/${TBB_VCVER}
+            ${TBB_ROOT}/../redist/${TBB_ARCH}/tbb/${TBB_VCVER}
+    )
 
     if(TBB_ROOT STREQUAL "")
         find_path(TBB_INCLUDE_DIR tbb/task_scheduler_init.h)
