@@ -90,30 +90,6 @@ set(MKLDNN_USE_MKL "DEF" CACHE STRING
              set MKL_THREADING_LAYER to `tbb` or `sequential`, to avoid
              conflict between OpenMP and TBB thread pools.")
 
-# =============
-# Optimizations
-# =============
-
-set(ARCH_OPT_FLAGS "HostOpts" CACHE STRING
-    "specifies compiler optimization flags (see below for more information).
-    If empty default optimization level would be applied which depends on the
-    compiler being used.
-
-    - For Intel(R) C++ Compilers the default option is `-xHOST` which instructs
-      the compiler to generate the code for the architecture where building is
-      happening. This option would not allow to run the library on older
-      architectures.
-
-    - For GNU* Compiler Collection version 5 and newer the default options are
-      `-march=native -mtune=native` which behaves similarly to the description
-      above.
-
-    - For all other cases there are no special optimizations flags.
-
-    If the library is to be built for generic architecture (e.g. built by a
-    Linux distributive maintainer) one may want to specify ARCH_OPT_FLAGS=\"\"
-    to not use any host specific instructions")
-
 # ======================
 # Profiling capabilities
 # ======================
