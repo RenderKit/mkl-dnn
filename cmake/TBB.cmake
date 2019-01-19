@@ -70,24 +70,26 @@ if(WIN32)
         set(TBB_VCVER vc14)
     endif()
 
-    set(TBB_LIBDIR ${TBB_ROOT}/lib/${TBB_ARCH}/${TBB_VCVER})
-    find_path(TBB_BINDIR tbb.dll
-        PATHS
-            ${TBB_ROOT}/bin/${TBB_ARCH}/${TBB_VCVER}
-            ${TBB_ROOT}/../redist/${TBB_ARCH}/tbb/${TBB_VCVER}
-    )
-
     if(TBB_ROOT STREQUAL "")
         find_path(TBB_INCLUDE_DIR tbb/task_scheduler_init.h)
+        find_path(TBB_BIN_DIR tbb.dll)
         find_library(TBB_LIBRARY tbb)
         find_library(TBB_LIBRARY_MALLOC tbbmalloc)
     else()
         set(TBB_INCLUDE_DIR TBB_INCLUDE_DIR-NOTFOUND)
+        set(TBB_BIN_DIR TBB_BIN_DIR-NOTFOUND)
         set(TBB_LIBRARY TBB_LIBRARY-NOTFOUND)
         set(TBB_LIBRARY_MALLOC TBB_LIBRARY_MALLOC-NOTFOUND)
         find_path(TBB_INCLUDE_DIR tbb/task_scheduler_init.h PATHS ${TBB_ROOT}/include NO_DEFAULT_PATH)
-        find_library(TBB_LIBRARY tbb PATHS ${TBB_LIBDIR} ${TBB_ROOT}/lib NO_DEFAULT_PATH)
-        find_library(TBB_LIBRARY_MALLOC tbbmalloc PATHS ${TBB_LIBDIR} ${TBB_ROOT}/lib NO_DEFAULT_PATH)
+        find_path(TBB_BIN_DIR tbb.dll
+            PATHS
+                ${TBB_ROOT}/bin/${TBB_ARCH}/${TBB_VCVER}
+                ${TBB_ROOT}/../redist/${TBB_ARCH}/tbb/${TBB_VCVER}
+            NO_DEFAULT_PATH
+        )
+        set(TBB_LIB_DIR ${TBB_ROOT}/lib/${TBB_ARCH}/${TBB_VCVER})
+        find_library(TBB_LIBRARY tbb PATHS ${TBB_LIB_DIR} ${TBB_ROOT}/lib NO_DEFAULT_PATH)
+        find_library(TBB_LIBRARY_MALLOC tbbmalloc PATHS ${TBB_LIB_DIR} ${TBB_ROOT}/lib NO_DEFAULT_PATH)
     endif()
 
 else()
