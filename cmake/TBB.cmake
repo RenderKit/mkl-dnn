@@ -82,9 +82,11 @@ if(WIN32)
         set(TBB_LIBRARY_MALLOC TBB_LIBRARY_MALLOC-NOTFOUND)
         find_path(TBB_INCLUDE_DIR tbb/task_scheduler_init.h PATHS ${TBB_ROOT}/include NO_DEFAULT_PATH)
         find_path(TBB_BIN_DIR tbb.dll
-            PATHS
+            HINTS
                 ${TBB_ROOT}/bin/${TBB_ARCH}/${TBB_VCVER}
+                ${TBB_ROOT}/bin
                 ${TBB_ROOT}/../redist/${TBB_ARCH}/tbb/${TBB_VCVER}
+                ${TBB_ROOT}/../redist/${TBB_ARCH}_win/tbb/${TBB_VCVER}
             NO_DEFAULT_PATH
         )
         set(TBB_LIB_DIR ${TBB_ROOT}/lib/${TBB_ARCH}/${TBB_VCVER})
