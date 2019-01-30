@@ -154,13 +154,3 @@ if(UNIX OR MINGW)
     endif()
 endif()
 
-if(APPLE)
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-    # FIXME: this is ugly but required when compiler does not add its library
-    # paths to rpath (like Intel compiler...)
-    foreach(_ ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES})
-        set(_rpath "-Wl,-rpath,${_}")
-        append(CMAKE_SHARED_LINKER_FLAGS "${_rpath}")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${_rpath}")
-    endforeach()
-endif()
