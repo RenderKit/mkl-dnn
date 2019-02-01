@@ -40,6 +40,7 @@ namespace cpu {
 
 typedef enum {
     isa_any,
+    sse41,
     sse42,
     avx,
     avx2,
@@ -89,8 +90,11 @@ static inline bool mayiuse(const cpu_isa_t cpu_isa) {
     using namespace Xbyak::util;
 
     switch (cpu_isa) {
+    case sse41:
     case sse42:
-        return cpu.has(Cpu::tSSE42);
+        // FIXME: SSE4.2 is actually NOT required
+        //return cpu.has(Cpu::tSSE42);
+        return cpu.has(Cpu::tSSE41);
     case avx:
         return cpu.has(Cpu::tAVX);
     case avx2:

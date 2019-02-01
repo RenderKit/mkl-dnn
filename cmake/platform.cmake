@@ -28,7 +28,7 @@ add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
 
 set(CMAKE_CCXX_FLAGS)
 set(CMAKE_CCXX_NOWARN_FLAGS)
-set(ISA_FLAGS_SSE42)
+set(ISA_FLAGS_SSE41)
 
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
@@ -44,12 +44,12 @@ if(MSVC)
         append(CMAKE_CCXX_NOWARN_FLAGS "/wd4551")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
         append(CMAKE_CCXX_FLAGS "/MP")
-        set(ISA_FLAGS_SSE42 "-QxSSE4.2")
+        set(ISA_FLAGS_SSE41 "-Qxsse4.1")
         # disable: loop was not vectorized with "simd"
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15552")
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15335")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(ISA_FLAGS_SSE42 "-msse4.2")
+        set(ISA_FLAGS_SSE41 "-msse4.1")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -64,7 +64,7 @@ elseif(UNIX OR MINGW)
     append(CMAKE_CXX_FLAGS "-std=c++11 -fvisibility-inlines-hidden")
     # compiler specific settings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(ISA_FLAGS_SSE42 "-msse4.2")
+        set(ISA_FLAGS_SSE41 "-msse4.1")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -112,12 +112,12 @@ elseif(UNIX OR MINGW)
         endif()
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
-            set(ISA_FLAGS_SSE42 "-msse4.2")
+            set(ISA_FLAGS_SSE41 "-msse4.1")
         endif()
         # suppress warning on assumptions made regarding overflow (#146)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Wno-strict-overflow")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-        set(ISA_FLAGS_SSE42 "-xsse4.2")
+        set(ISA_FLAGS_SSE41 "-xsse4.1")
         # workaround for Intel Compiler 16.0 that produces error caused
         # by pragma omp simd collapse(..)
         if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")

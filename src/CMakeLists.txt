@@ -267,8 +267,8 @@ endif()
 
 add_library(${TARGET_NAME} ${MKLDNN_LIBRARY_TYPE} ${HEADERS} ${SOURCES})
 
-# Compile the library for SSE4.2
-set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE42}")
+# Compile the library for SSE4.1
+set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE41}")
 
 #Add mkldnn.dll to execution PATH
 if(NOT(MINGW))
