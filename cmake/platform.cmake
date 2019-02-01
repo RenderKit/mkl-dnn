@@ -32,7 +32,7 @@ set(ISA_FLAGS_SSE41)
 
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
-    if(CMAKE_CXX_COMPILER_ID STREQUAL MSVC)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         append(CMAKE_CCXX_FLAGS "/MP")
         # int -> bool
         append(CMAKE_CCXX_NOWARN_FLAGS "/wd4800")
