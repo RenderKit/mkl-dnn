@@ -32,6 +32,15 @@ set(ISA_FLAGS_SSE41)
 
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
+    # enable intrinsic functions
+    append(CMAKE_CXX_FLAGS "/Oi")
+    # enable full optimizations
+    append(CMAKE_CXX_FLAGS_RELEASE "/Ox")
+    append(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/Ox")
+    # package individual functions
+    append(CMAKE_CXX_FLAGS_RELEASE "/Gy")
+    append(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/Gy")
+    # compiler specific settings
     if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         append(CMAKE_CCXX_FLAGS "/MP")
         # int -> bool
@@ -132,10 +141,9 @@ if(WIN32)
     string(REPLACE ";" "\;" ENV_PATH "$ENV{PATH}")
     set(CTESTCONFIG_PATH "${CTESTCONFIG_PATH}\;${MKLDLLPATH}\;${ENV_PATH}")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-        # Link Intel libraries statically
-        string(REPLACE "/MDd" "/MTd" CMAKE_CXX_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_DEBUG})
-        string(REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
+        # Link Intel and MS libraries statically for release builds
         string(REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
+        string(REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
     endif()
 endif()
 
