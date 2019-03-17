@@ -274,6 +274,9 @@ set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${PROJECT_VERSION}.0")
 set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "0")
 set_property(TARGET ${LIB_NAME} PROPERTY PUBLIC_HEADER ${HEADERS})
 
+# Compile the library for SSE4.1
+set_target_properties(${LIB_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE41}")
+
 target_include_directories(${LIB_NAME} PUBLIC
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/../include>
@@ -281,14 +284,11 @@ target_include_directories(${LIB_NAME} PUBLIC
     $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>
     )
 
-# Compile the library for SSE4.1
-set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE41}")
-
-target_link_libraries_private(${LIB_NAME}
+target_link_libraries_build(${LIB_NAME}
     "${EXTRA_SHARED_LIBS};${EXTRA_STATIC_LIBS}")
-target_link_libraries_public(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
+target_link_libraries_install(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
 if(MKLDNN_LIBRARY_TYPE STREQUAL "STATIC")
-    target_link_libraries_public(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
+    target_link_libraries_install(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
 endif()
 
 set(LIB_EXPORT_NAME "${LIB_NAME}-targets")
