@@ -351,7 +351,7 @@ void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::_execute_data_W_S_G_D(
                 });
 
         if (jcp.prop_kind != prop_kind::forward_inference) {
-            parallel_nd_in_omp(jcp.nb_oc, jcp.nb_ic, (jcp.oc_block * jcp.oc_reg_block),
+            parallel_nd(jcp.nb_oc, jcp.nb_ic, (jcp.oc_block * jcp.oc_reg_block),
                 (jcp.ic_block * jcp.ic_reg_block),
                 [&](int ofm1, int ifm1, int ofm2, int ifm2) {
                     float *U_base_ptr = is_fwd
