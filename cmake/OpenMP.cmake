@@ -21,7 +21,6 @@ if(OpenMP_cmake_included)
     return()
 endif()
 set(OpenMP_cmake_included true)
-
 include("cmake/Threading.cmake")
 #include("cmake/MKL.cmake")
 
@@ -45,6 +44,8 @@ if (NOT MKLDNN_THREADING MATCHES "OMP")
 endif()
 
 
+set(MKLDNN_USES_INTEL_OPENMP FALSE)
+
 if (APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # OSX Clang doesn't have OpenMP by default.
     # But we still want to build the library.
@@ -52,7 +53,6 @@ if (APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 else()
     set(_omp_severity "FATAL_ERROR")
 endif()
-
 
 macro(forbid_link_compiler_omp_rt)
     if (NOT WIN32)
@@ -63,7 +63,7 @@ macro(forbid_link_compiler_omp_rt)
             CMAKE_CXX_CREATE_SHARED_LIBRARY_FORBIDDEN_FLAGS
             "${OpenMP_CXX_FLAGS}")
         if (NOT APPLE)
-            set (CMAKE_SHARED_LINKER_FLAGS "-Wl,--as-needed")
+            append(CMAKE_SHARED_LINKER_FLAGS "-Wl,--as-needed")
         endif()
     endif()
 endmacro()
@@ -71,6 +71,7 @@ endmacro()
 macro(use_intel_omp_rt)
     # fast return
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
+        set(MKLDNN_USES_INTEL_OPENMP TRUE)
         return()
     endif()
 
@@ -79,16 +80,7 @@ macro(use_intel_omp_rt)
     # with all libraries shipped with compilers that Intel MKL-DNN supports.
     if(HAVE_MKL)
         forbid_link_compiler_omp_rt()
-        if (UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-            # For some reasons Clang ignores `-fopenmp=libiomp5` switch and
-            # links against libomp.so anyways.
-            # The workaround is to set the full path to libiomp5.so
-            add_library(libiomp5 SHARED IMPORTED)
-            set_property(TARGET libiomp5 PROPERTY IMPORTED_LOCATION "${MKLIOMP5LIB}")
-            list(APPEND EXTRA_LIBS libiomp5)
-        else()
-            list(APPEND EXTRA_LIBS ${MKLIOMP5LIB})
-        endif()
+        list(APPEND EXTRA_SHARED_LIBS ${MKLIOMP5LIB})
     else()
         if (MKLDNN_THREADING STREQUAL "OMP:INTEL")
             message(${_omp_severity} "Intel OpenMP runtime could not be found. "
@@ -107,7 +99,7 @@ elseif(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     append(CMAKE_C_FLAGS "-Xclang -fopenmp")
     append(CMAKE_CXX_FLAGS "-Xclang -fopenmp")
     set(OpenMP_CXX_FOUND true)
-    list(APPEND EXTRA_LIBS ${MKLIOMP5LIB})
+    list(APPEND EXTRA_SHARED_LIBS ${MKLIOMP5LIB})
 else()
     find_package(OpenMP)
     #newer version for findOpenMP (>= v. 3.9)
@@ -120,13 +112,14 @@ else()
         set(OpenMP_C_FOUND true)
         set(OpenMP_CXX_FOUND true)
     endif()
-    append_if(OpenMP_C_FOUND CMAKE_C_FLAGS "${OpenMP_C_FLAGS}")
-    append_if(OpenMP_CXX_FOUND CMAKE_CXX_FLAGS "${OpenMP_CXX_FLAGS}")
+    append_if(OpenMP_C_FOUND CMAKE_SRC_CCXX_FLAGS "${OpenMP_C_FLAGS}")
 endif()
 
 if (MKLDNN_THREADING MATCHES "OMP")
     if (OpenMP_CXX_FOUND)
         set_threading("OMP")
+        append(CMAKE_TEST_CCXX_FLAGS "${OpenMP_CXX_FLAGS}")
+        append(CMAKE_EXAMPLE_CCXX_FLAGS "${OpenMP_CXX_FLAGS}")
     else()
         message(${_omp_severity} "OpenMP library could not be found. "
             "Proceeding might lead to highly sub-optimal performance.")
@@ -137,6 +130,10 @@ if (MKLDNN_THREADING MATCHES "OMP")
         set(MKLIOMP5DLL "")
     else()
         use_intel_omp_rt()
+    endif()
+
+    if(MKLIOMP5LIB)
+        set(MKLDNN_USES_INTEL_OPENMP TRUE)
     endif()
 else()
     # Compilation happens with OpenMP to enable `#pragma omp simd`

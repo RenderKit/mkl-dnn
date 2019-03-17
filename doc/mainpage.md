@@ -26,7 +26,7 @@ The table below summarizes the list of supported functions and their variants.
 |                   | 3D direct deconvolution  | x             | x              |                |
 | Inner Product     | 2D inner product         | x             | x              | x              |
 |                   | 3D inner product         | x             | x              |                |
-| RNN (experimental)| Vanilla RNN cell         | x             | x              |                |
+| RNN               | Vanilla RNN cell         | x             | x              | x              |
 |                   | LSTM cell                | x             | x              |                |
 |                   | GRU cell                 | x             | x              |                |
 | Pooling           | 2D maximum pooling       | x             | x              | x              |
@@ -140,7 +140,7 @@ The following examples are available in the /examples directory and provide more
     - C: simple_training.c
     - C++: simple_training_net.cpp
 
-* Creation of forward propagation of GNMT topology (experimental support)
+* Creation of forward propagation of GNMT topology
     - C++: simple_rnn.cpp
 
 * Training RNN with sequences of variable length
@@ -152,6 +152,7 @@ The following examples are available in the /examples directory and provide more
    format `any` for input or output.
    The memory format chosen is based on different circumstances such as hardware and
    convolutional parameters.
+*  Convolution could be executed using the [Winograd algorithm](@ref winograd_convolution) for a significant performance boost.
 *  Operation primitives (such as ReLU, LRN, or pooling) following convolution or
    inner product, should have input in the same memory format as the
    convolution or inner-product. Reordering can be an expensive
@@ -161,6 +162,7 @@ The following examples are available in the /examples directory and provide more
 *  An operation primitive (typically operations such as pooling, LRN, or softmax)
    might need workspace memory for storing results of intermediate operations
    that help with backward propagation.
+
 
 The following link provides a guide to MKLDNN verbose mode for profiling execution:
 

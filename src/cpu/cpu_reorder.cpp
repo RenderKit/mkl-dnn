@@ -23,6 +23,7 @@
 #include "cpu/jit_uni_reorder.hpp"
 #include "cpu/simple_reorder.hpp"
 #include "cpu/wino_reorder.hpp"
+#include "cpu/rnn/rnn_reorders.hpp"
 
 namespace mkldnn {
 namespace impl {
@@ -49,6 +50,20 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     /* winograd */
     wino_reorder_t<f32, f32>::pd_t::create,
     //wino_reorder_t<f32, s8>::pd_t::create,
+
+#if defined(__INTEL_COMPILER) || (defined(__GNUC__) && !defined(__clang__))
+    /* Direct copy for icc which is faster than jitted code;
+     * Direct copy for gcc which might or might not be faster than jitted
+     * code, but still worth it because doesn't require jitting, i.e. much
+     * faster creation time. This is tentative solution and should be removed
+     * later (when we will cache jitted code?...). */
+    REG_SR_DIRECT_COPY(f32, f32),
+#endif
+
+    /* rnn reorders */
+    rnn_data_reorder_t<f32, u8>::pd_t::create,
+    rnn_weights_reorder_t<f32, f32>::pd_t::create,
+    rnn_weights_reorder_t<f32, s8>::pd_t::create,
 
 #if defined(__INTEL_COMPILER) || (defined(__GNUC__) && !defined(__clang__))
     /* Direct copy for icc which is faster than jitted code;
@@ -138,6 +153,10 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
     REG_SR_BIDIR(f32, any, f32, gOIdhw16i16o),
     */
 
+ /* fp32: blocked <-> blocked with tail */
+    REG_SR_BIDIR(f32, nCw8c, f32, nCw16c),
+    REG_SR_BIDIR(f32, nChw8c, f32, nChw16c),
+    REG_SR_BIDIR(f32, nCdhw8c, f32, nCdhw16c),
 
     /* int: flat <-> blocked with tail */
     /*
@@ -168,10 +187,17 @@ static const rpd_create_f cpu_reorder_impl_list[] = {
 
     REG_SR(f32, any, s8, hwio_s8s8, fmt_order::keep),
     REG_SR(f32, any, s8, hwigo_s8s8, fmt_order::keep),
+    REG_SR(s8, any, s8, hwio_s8s8, fmt_order::keep),
+    REG_SR(s8, any, s8, hwigo_s8s8, fmt_order::keep),
+
     REG_SR(f32, oihw, s8, OIhw4i16o4i_s8s8, fmt_order::keep),
     REG_SR(f32, goihw, s8, gOIhw4i16o4i_s8s8, fmt_order::keep),
-    */
+    REG_SR(s8, oihw, s8, OIhw4i16o4i_s8s8, fmt_order::keep),
+    REG_SR(s8, goihw, s8, gOIhw4i16o4i_s8s8, fmt_order::keep),
 
+    REG_SR(f32, goihw, s8, Goihw16g_s8s8, fmt_order::keep),
+    REG_SR(s8, goihw, s8, Goihw16g_s8s8, fmt_order::keep),
+    */
     /* s16 <-> s16 */
     /*
     REG_SR_DIRECT_COPY(s16, s16),

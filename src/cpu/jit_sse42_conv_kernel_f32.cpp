@@ -199,7 +199,8 @@ void jit_sse42_conv_fwd_kernel_f32::width_blk_step(int ur_w,
 
     Label skip_kh_loop;
     mov(kj, reg_kh);
-    if ((jcp.kh - 1) * (jcp.dilate_h + 1) < nstl::max(jcp.t_pad, jcp.b_pad)) {
+    if ((jcp.dilate_h >= jcp.ih)
+            || (jcp.kh - 1) * (jcp.dilate_h + 1) < nstl::max(jcp.t_pad, jcp.b_pad)) {
         cmp(kj, 0);
         je(skip_kh_loop, T_NEAR);
     }
@@ -223,37 +224,13 @@ void jit_sse42_conv_fwd_kernel_f32::width_blk_step(int ur_w,
 
     L(skip_kh_loop);
 
-    Label done;
-    Label regular_store;
-
-    if (jcp.with_relu) {
-        assert(oc_blocks * ur_w < 15);
+    if (jcp.with_eltwise) {
+        Label regular_store;
         test(reg_ci_flag, FLAG_IC_LAST);
         je(regular_store, T_NEAR);
 
-        pxor(xzero, xzero);
-        if (jcp.relu_negative_slope == 0) {
-           xmm_relu_ns = xzero;
-        } else {
-           mov(imm_addr64, float2int(jcp.relu_negative_slope));
-           movq(xmm_relu_ns, imm_addr64);
-           shufps(xmm_relu_ns, xmm_relu_ns, 0x0);
-        }
-        for (int ii = 0; ii < oc_blocks; ii++) {
-            for (int jj = 0; jj < ur_w; jj++) {
-                const size_t o_off = (ii * oh * ow + jj) * oc_blk;
-                Xmm reg_out = Xmm(ur_w * ii + jj + 1);
+        eltwise_injector_->compute_vector_range(1, oc_blocks * ur_w + 1);
 
-                pxor(xmask, xmask);
-                cmpps(xmask, reg_out, _cmp_nle_us);
-                movups(xmm_res_ns, reg_out);
-                mulps(xmm_res_ns, xmm_relu_ns);
-                blendvps(reg_out, xmm_res_ns);
-                movups(xword[reg_output + sizeof(float) * o_off], reg_out);
-            }
-        }
-
-        jmp(done);
         L(regular_store);
     }
 
@@ -265,8 +242,6 @@ void jit_sse42_conv_fwd_kernel_f32::width_blk_step(int ur_w,
             movups(xword[reg_output + sizeof(float) * o_off], reg_out);
         }
     }
-
-    L(done);
 
     mov(aux_reg_kernel, reg_kernel);
     mov(aux_reg_input, reg_input);
@@ -369,23 +344,22 @@ void jit_sse42_conv_fwd_kernel_f32::generate()
     L(exit);
 
     this->postamble();
+
+    if (jcp.with_eltwise)
+        eltwise_injector_->prepare_table();
 }
 
 bool jit_sse42_conv_fwd_kernel_f32::post_ops_ok(
         jit_conv_conf_t &jcp, const primitive_attr_t &attr) {
     const auto &p = attr.post_ops_;
 
-    auto is_relu = [&](int idx) { return p.entry_[idx].is_relu(); };
+    auto is_eltwise = [&](int idx) { return p.entry_[idx].is_eltwise(); };
     auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(); };
 
     switch (p.len_) {
     case 0: return true; // no post_ops
-    case 1:
-        return true // sum OR relu
-                && !jcp.with_relu && (is_relu(0) || is_sum(0));
-    case 2:
-        return true // sum->relu
-                && !jcp.with_relu && (is_sum(0) && is_relu(1));
+    case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
+    case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
     default: return false;
     }
 
@@ -396,7 +370,7 @@ bool jit_sse42_conv_fwd_kernel_f32::post_ops_ok(
 status_t jit_sse42_conv_fwd_kernel_f32::init_conf(jit_conv_conf_t &jcp,
         const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
         const memory_desc_wrapper &weights_d, const memory_desc_wrapper &dst_d,
-        const primitive_attr_t &attr, bool with_relu, float relu_negative_slope)
+        const primitive_attr_t &attr)
 {
     if (!mayiuse(sse42)) return status::unimplemented;
 
@@ -433,18 +407,16 @@ status_t jit_sse42_conv_fwd_kernel_f32::init_conf(jit_conv_conf_t &jcp,
 
     jcp.src_fmt = src_d.format();
     jcp.with_bias = cd.bias_desc.format != memory_format::undef;
-    jcp.with_relu = with_relu;
-    jcp.relu_negative_slope = relu_negative_slope;
 
     if (!post_ops_ok(jcp, attr))
         return status::unimplemented;
 
     const auto &p = attr.post_ops_;
     jcp.with_sum = p.find(primitive_kind::sum) != -1;
-    if (!jcp.with_relu) {
-        jcp.with_relu = p.find(primitive_kind::eltwise) != -1;
-        jcp.relu_negative_slope = 0;
-    }
+    const int eltwise_ind = p.find(primitive_kind::eltwise);
+    jcp.with_eltwise = eltwise_ind != -1;
+    if (jcp.with_eltwise)
+        jcp.eltwise = p.entry_[eltwise_ind].eltwise;
 
     const bool flat = jcp.ic == 3;
     const bool mimo = !flat;

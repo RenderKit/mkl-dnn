@@ -22,6 +22,10 @@ if(platform_cmake_included)
 endif()
 set(platform_cmake_included true)
 
+#include("cmake/utils.cmake")
+
+add_definitions(-DMKLDNN_DLL -DMKLDNN_DLL_EXPORTS)
+
 # UNIT8_MAX-like macros are a part of the C99 standard and not a part of the
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
@@ -57,6 +61,8 @@ if(MSVC)
         # disable: loop was not vectorized with "simd"
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15552")
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15335")
+        # disable: unknown pragma
+        append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:3180")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(ISA_FLAGS_SSE41 "-msse4.1")
         # Clang cannot vectorize some loops with #pragma omp simd and gets
@@ -67,7 +73,8 @@ if(MSVC)
     # disable secure warnings
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 elseif(UNIX OR MINGW)
-    append(CMAKE_CCXX_FLAGS "-Wall -Werror -Wno-unknown-pragmas")
+    append(CMAKE_CCXX_FLAGS "-Wall -Wno-unknown-pragmas")
+    append_if_product(CMAKE_CCXX_FLAGS "-Werror")
     append(CMAKE_CCXX_FLAGS "-fvisibility=internal")
     append(CMAKE_C_FLAGS "-std=c99")
     append(CMAKE_CXX_FLAGS "-std=c++11 -fvisibility-inlines-hidden")

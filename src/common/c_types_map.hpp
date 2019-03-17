@@ -60,6 +60,7 @@ namespace prop_kind {
 using alg_kind_t = mkldnn_alg_kind_t;
 namespace alg_kind {
     const alg_kind_t undef = mkldnn_alg_kind_undef;
+    const alg_kind_t convolution_auto = mkldnn_convolution_auto;
     const alg_kind_t convolution_direct = mkldnn_convolution_direct;
     const alg_kind_t convolution_winograd = mkldnn_convolution_winograd;
     const alg_kind_t deconvolution_direct = mkldnn_deconvolution_direct;
@@ -102,6 +103,13 @@ namespace round_mode {
     const round_mode_t down = mkldnn_round_down;
 }
 
+using rnn_packed_format_t = mkldnn_rnn_packed_memory_format_t;
+namespace rnn_packed_format {
+    const rnn_packed_format_t undef = mkldnn_packed_format_undef;
+    const rnn_packed_format_t ldigo_p = mkldnn_ldigo_p;
+    const rnn_packed_format_t ldgoi_p = mkldnn_ldgoi_p;
+}
+
 using memory_format_t = mkldnn_memory_format_t;
 namespace memory_format {
     const memory_format_t undef = mkldnn_format_undef;
@@ -139,6 +147,7 @@ namespace memory_format {
     const memory_format_t oihw = mkldnn_oihw;
     const memory_format_t ihwo = mkldnn_ihwo;
     const memory_format_t hwio = mkldnn_hwio;
+    const memory_format_t iohw = mkldnn_iohw;
     const memory_format_t hwio_s8s8 = mkldnn_hwio_s8s8;
     const memory_format_t dhwio = mkldnn_dhwio;
     const memory_format_t oidhw = mkldnn_oidhw;
@@ -179,6 +188,7 @@ namespace memory_format {
     const memory_format_t gOIw8o16i2o = mkldnn_gOIw8o16i2o;
     const memory_format_t goihw = mkldnn_goihw;
     const memory_format_t hwigo = mkldnn_hwigo;
+    const memory_format_t giohw = mkldnn_giohw;
     const memory_format_t hwigo_s8s8 = mkldnn_hwigo_s8s8;
     const memory_format_t gOIhw8i8o = mkldnn_gOIhw8i8o;
     const memory_format_t gOIhw16i16o = mkldnn_gOIhw16i16o;
@@ -195,6 +205,7 @@ namespace memory_format {
     const memory_format_t gOhwi16o = mkldnn_gOhwi16o;
     const memory_format_t Goihw8g = mkldnn_Goihw8g;
     const memory_format_t Goihw16g = mkldnn_Goihw16g;
+    const memory_format_t Goihw16g_s8s8 = mkldnn_Goihw16g_s8s8;
     const memory_format_t goidhw = mkldnn_goidhw;
     const memory_format_t gOIdhw8i8o = mkldnn_gOIdhw8i8o;
     const memory_format_t gOIdhw8o8i = mkldnn_gOIdhw8o8i;
@@ -207,11 +218,10 @@ namespace memory_format {
     const memory_format_t tnc = mkldnn_tnc;
     const memory_format_t ldsnc = mkldnn_ldsnc;
     const memory_format_t ldigo = mkldnn_ldigo;
-    const memory_format_t ldigo_p = mkldnn_ldigo_p;
     const memory_format_t ldgoi = mkldnn_ldgoi;
-    const memory_format_t ldgoi_p = mkldnn_ldgoi_p;
     const memory_format_t ldgo = mkldnn_ldgo;
     const memory_format_t wino_fmt = mkldnn_wino_fmt;
+    const memory_format_t rnn_packed = mkldnn_rnn_packed;
 }
 
 using padding_kind_t = mkldnn_padding_kind_t;
@@ -243,7 +253,6 @@ namespace primitive_kind {
     const primitive_kind_t lrn = mkldnn_lrn;
     const primitive_kind_t batch_normalization = mkldnn_batch_normalization;
     const primitive_kind_t inner_product = mkldnn_inner_product;
-    const primitive_kind_t convolution_relu = mkldnn_convolution_relu;
     const primitive_kind_t rnn = mkldnn_rnn;
 }
 
@@ -274,7 +283,6 @@ namespace query {
     const query_t lrn_d = mkldnn_query_lrn_d;
     const query_t batch_normalization_d = mkldnn_query_batch_normalization_d;
     const query_t inner_product_d = mkldnn_query_inner_product_d;
-    const query_t convolution_relu_d = mkldnn_query_convolution_relu_d;
     const query_t rnn_d = mkldnn_query_rnn_d;
 
     const query_t some_pd = mkldnn_query_some_pd;
@@ -291,6 +299,7 @@ namespace query {
 }
 
 using blocking_desc_t = mkldnn_blocking_desc_t;
+using rnn_packed_data_t = mkldnn_rnn_packed_desc_t;
 using wino_data_t = mkldnn_wino_desc_t;
 using memory_desc_t = mkldnn_memory_desc_t;
 using convolution_desc_t = mkldnn_convolution_desc_t;
@@ -302,7 +311,6 @@ using softmax_desc_t = mkldnn_softmax_desc_t;
 using lrn_desc_t = mkldnn_lrn_desc_t;
 using batch_normalization_desc_t = mkldnn_batch_normalization_desc_t;
 using inner_product_desc_t = mkldnn_inner_product_desc_t;
-using convolution_relu_desc_t = mkldnn_convolution_relu_desc_t;
 
 using rnn_direction_t = mkldnn_rnn_direction_t;
 using rnn_cell_desc_t = mkldnn_rnn_cell_desc_t;
@@ -325,7 +333,6 @@ struct op_desc_t {
         lrn_desc_t lrn;
         batch_normalization_desc_t batch_normalization;
         inner_product_desc_t inner_product;
-        convolution_relu_desc_t convolution_relu;
         rnn_desc_t rnn;
     };
 
@@ -347,7 +354,6 @@ struct op_desc_t {
     DECL_CTOR_AND_CONVERTERS(lrn_desc_t, lrn);
     DECL_CTOR_AND_CONVERTERS(batch_normalization_desc_t, batch_normalization);
     DECL_CTOR_AND_CONVERTERS(inner_product_desc_t, inner_product);
-    DECL_CTOR_AND_CONVERTERS(convolution_relu_desc_t, convolution_relu);
     DECL_CTOR_AND_CONVERTERS(rnn_desc_t, rnn);
 
 #   undef DECL_CTOR_AND_CONVERTERS

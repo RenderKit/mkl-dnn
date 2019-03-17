@@ -237,6 +237,7 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
     case f::nChw16c:
     case f::oihw:
     case f::hwio:
+    case f::iohw:
     case f::oIhw8i:
     case f::oIhw16i:
     case f::OIhw8i8o:
@@ -258,6 +259,7 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
     case f::oidhw:
     case f::goihw:
     case f::hwigo:
+    case f::giohw:
     case f::oIdhw8i:
     case f::oIdhw16i:
     case f::OIdhw8i8o:
@@ -267,6 +269,7 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
     case f::gOhwi8o:
     case f::Goihw8g:
     case f::Goihw16g:
+    case f::gOhwi16o:
     case f::gOIhw8i8o:
     case f::gOIhw16i16o:
     case f::gOIhw8i16o2i:
@@ -339,7 +342,8 @@ static void fill_data(const size_t size, data_t *data, double sparsity = 1.,
 }
 
 template <typename data_t>
-static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst)
+static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst,
+        data_t threshold = (data_t)1e-4)
 {
     using data_type = mkldnn::memory::data_type;
 
@@ -374,8 +378,8 @@ static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst)
 
         if (data_traits<data_t>::data_type == data_type::f32) {
             data_t diff = got - ref;
-            data_t e = (std::abs(ref) > (data_t)1e-4) ? diff / ref : diff;
-            EXPECT_NEAR(e, (data_t)0.0, (data_t)1e-4)
+            data_t e = (std::abs(ref) > threshold) ? diff / ref : diff;
+            EXPECT_NEAR(e, (data_t)0.0, threshold)
                 << "Index: " << i << " Total: " << num;
         } else {
             EXPECT_EQ(ref, got) << "Index: " << i << " Total: " << num;
@@ -473,7 +477,19 @@ struct test_convolution_formats_t {
 struct test_convolution_params_t {
     const mkldnn::engine::kind engine_kind;
     mkldnn::algorithm aalgorithm;
-    const float relu_negative_slope;
+    test_convolution_formats_t formats;
+    test_convolution_attr_t attr;
+    test_convolution_sizes_t sizes;
+    bool expect_to_fail;
+    mkldnn_status_t expected_status;
+};
+
+struct test_convolution_eltwise_params_t {
+    const mkldnn::algorithm alg;
+    const mkldnn::engine::kind engine_kind;
+    mkldnn::algorithm aalgorithm;
+    const float eltwise_alpha;
+    const float eltwise_beta;
     test_convolution_formats_t formats;
     test_convolution_attr_t attr;
     test_convolution_sizes_t sizes;
@@ -482,7 +498,7 @@ struct test_convolution_params_t {
 };
 
 template<typename F> bool catch_expected_failures(const F &f,
-        bool expect_to_fail, mkldnn_status_t expected_status)
+        bool expect_to_fail, mkldnn_status_t expected_status, bool ignore_unimplemented = true)
 {
     try {
         f();
@@ -491,7 +507,7 @@ template<typename F> bool catch_expected_failures(const F &f,
         // not match.
         if (!(expect_to_fail) || e.status != (expected_status)) {
             // Ignore unimplemented
-            if (e.status == mkldnn_unimplemented)
+            if ( ignore_unimplemented && (e.status == mkldnn_unimplemented))
                 return true;
             else
                 throw e;

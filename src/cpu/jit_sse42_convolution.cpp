@@ -29,30 +29,29 @@ using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
 #define src_blk_off(f, n, c, h, w) \
-    (conf_.ndims() == 3) \
+    (pd()->ndims() == 3) \
     ? (f).blk_off(n, c, w) \
     : (f).blk_off(n, c, h, w)
 
 #define wht_blk_off_(f, g, ...) \
-    conf_.with_groups() \
+    pd()->with_groups() \
     ? (f).blk_off(g, __VA_ARGS__) \
     : (f).blk_off(__VA_ARGS__)
 #define wht_blk_off(f, g, oc, ic, kh, kw) \
-        conf_.ndims() == 3 \
+        pd()->ndims() == 3 \
         ? wht_blk_off_(f, g, oc, ic, kw) \
         : wht_blk_off_(f, g, oc, ic, kh, kw)
 
-template <bool with_relu>
-void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
+void jit_sse42_convolution_fwd_t::execute_forward() const {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
     auto dst = reinterpret_cast<data_t *>(this->memory());
 
-    const memory_desc_wrapper src_d(conf_.src_pd());
-    const memory_desc_wrapper dst_d(conf_.dst_pd());
-    const memory_desc_wrapper weights_d(conf_.weights_pd(0));
-    const memory_desc_wrapper bias_d(conf_.weights_pd(1));
+    const memory_desc_wrapper src_d(pd()->src_pd());
+    const memory_desc_wrapper dst_d(pd()->dst_pd());
+    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
+    const memory_desc_wrapper bias_d(pd()->weights_pd(1));
 
     const auto &jcp = kernel_->jcp;
 
@@ -107,7 +106,7 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
                         par_conv.flags |= FLAG_IC_FIRST;
                     }
 
-                    if (jcp.with_relu && icb + 1 == jcp.nb_ic) {
+                    if (jcp.with_eltwise && icb + 1 == jcp.nb_ic) {
                         par_conv.flags |= FLAG_IC_LAST;
                     }
 
@@ -127,10 +126,10 @@ void _jit_sse42_convolution_fwd_t<with_relu>::execute_forward() {
             icbb += icb_step;
         }
     });
-}
 
-template void _jit_sse42_convolution_fwd_t<true>::execute_forward();
-template void _jit_sse42_convolution_fwd_t<false>::execute_forward();
+    if (pd()->wants_zero_pad_dst())
+        output_memory_primitive(0)->zero_pad();
+}
 
 }
 }

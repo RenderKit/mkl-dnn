@@ -110,7 +110,7 @@ inline unsigned int get_cache_size(int level, bool per_core = true){
     unsigned int l = level - 1;
     // Currently, if XByak is not able to fetch the cache topology
     // we default to 32KB of L1, 512KB of L2 and 1MB of L3 per core.
-    if (cpu.data_cache_levels == 0){
+    if (cpu.getDataCacheLevels() == 0){
         const int L1_cache_per_core = 32000;
         const int L2_cache_per_core = 512000;
         const int L3_cache_per_core = 1024000;
@@ -122,25 +122,14 @@ inline unsigned int get_cache_size(int level, bool per_core = true){
         default: return 0;
         }
     }
-    if (l < cpu.data_cache_levels) {
-        return cpu.data_cache_size[l]
-            / (per_core ? cpu.cores_sharing_data_cache[l] : 1);
+    if (l < cpu.getDataCacheLevels()) {
+        return cpu.getDataCacheSize(l)
+            / (per_core ? cpu.getCoresSharingDataCache(l) : 1);
     } else
         return 0;
 }
 
 }
-
-// TODO (Roma): move all_same to a more appropriate location
-
-template <typename T, typename U, typename... Us>
-struct all_same : std::false_type {};
-
-template <typename T, typename... Us>
-struct all_same<T, T, Us...> : all_same<T, Us...> { };
-
-template <typename T>
-struct all_same<T, T> : std::true_type {};
 
 class jit_generator : public Xbyak::CodeGenerator
 {
@@ -169,6 +158,8 @@ public:
         _cmp_neq_uq = 4u,
         _cmp_nlt_us = 5u,
         _cmp_nle_us = 6u,
+
+        _op_floor = 1u,
     };
 
     Xbyak::Reg64 param1 = abi_param1;
@@ -514,24 +505,30 @@ public:
         vpaddd(x1, x2, op);
     }
 
-    void uni_vandps(const Xbyak::Xmm &x, const Xbyak::Operand &op1,
-                    const Xbyak::Operand &op2 = Xbyak::Operand()) {
-        assert(x.getIdx() == op1.getIdx());
-        andps(x, op2);
+    void uni_vandps(const Xbyak::Xmm &x1, const Xbyak::Xmm &x2,
+                    const Xbyak::Operand &op = Xbyak::Operand()) {
+        assert(x1.getIdx() == x2.getIdx());
+        andps(x1, op);
     }
-    void uni_vandps(const Xbyak::Ymm &x, const Xbyak::Operand &op1,
-                    const Xbyak::Operand &op2 = Xbyak::Operand()) {
-        vandps(x, op1, op2);
+    void uni_vandps(const Xbyak::Ymm &x1, const Xbyak::Ymm &x2,
+                    const Xbyak::Operand &op = Xbyak::Operand()) {
+        if (!mayiuse(avx512_common) || x1.getBit() < 512)
+            vandps(x1, x2, op);
+        else
+            vpandd(x1, x2, op);
     }
 
-    void uni_vorps(const Xbyak::Xmm &x, const Xbyak::Operand &op1,
-                    const Xbyak::Operand &op2 = Xbyak::Operand()) {
-        assert(x.getIdx() == op1.getIdx());
-        orps(x, op2);
+    void uni_vorps(const Xbyak::Xmm &x1, const Xbyak::Xmm &x2,
+                    const Xbyak::Operand &op = Xbyak::Operand()) {
+        assert(x1.getIdx() == x2.getIdx());
+        orps(x1, op);
     }
-    void uni_vorps(const Xbyak::Ymm &x, const Xbyak::Operand &op1,
-                    const Xbyak::Operand &op2 = Xbyak::Operand()) {
-        vorps(x, op1, op2);
+    void uni_vorps(const Xbyak::Ymm &x1, const Xbyak::Ymm &x2,
+                    const Xbyak::Operand &op = Xbyak::Operand()) {
+        if (!mayiuse(avx512_common) || x1.getBit() < 512)
+            vorps(x1, x2, op);
+        else
+            vpord(x1, x2, op);
     }
 
     void uni_vpslld(const Xbyak::Xmm &x, const Xbyak::Operand &op,

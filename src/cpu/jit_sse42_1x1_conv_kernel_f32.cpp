@@ -181,7 +181,6 @@ void jit_sse42_1x1_conv_kernel_f32::generate_reduce_loop(
     }; // init()
 
     auto store = [=]() {
-        Label store_done;
         Label store_noadd;
 
         if (!jcp.with_sum) {
@@ -199,37 +198,16 @@ void jit_sse42_1x1_conv_kernel_f32::generate_reduce_loop(
 
         L(store_noadd);
 
-        if (jcp.with_relu) {
+        if (jcp.with_eltwise) {
             assert(ur * load_loop_blk < 14);
 
             Label store_norelu;
             test(reg_reduce_pos_flag, FLAG_REDUCE_LAST);
             jz(store_norelu, T_NEAR);
 
-            if (jcp.relu_negative_slope == 0) {
-                xorps(xmm_relu_ns, xmm_relu_ns);
-            } else {
-                mov(imm_addr64, float2int(jcp.relu_negative_slope));
-                movq(xmm_relu_ns, imm_addr64);
-                shufps(xmm_relu_ns, xmm_relu_ns, 0x0);
-            }
-            for (int j = 0; j < ur; ++j) {
-                for (int i = 0; i < load_loop_blk; ++i) {
-                    xorps(xmask, xmask);
-                    cmpps(xmask, reg_accum(i, j, 0), _cmp_nle_us);
-                    movups(xmm_res_ns, reg_accum(i, j, 0));
-                    mulps(xmm_res_ns, xmm_relu_ns);
-                    blendvps(reg_accum(i, j, 0), xmm_res_ns);
-                    movups(output_ptr(i, j, 0), reg_accum(i, j, 0));
-                    xorps(xmask, xmask);
-                    cmpps(xmask, reg_accum(i, j, 1), _cmp_nle_us);
-                    movups(xmm_res_ns, reg_accum(i, j, 1));
-                    mulps(xmm_res_ns, xmm_relu_ns);
-                    blendvps(reg_accum(i, j, 1), xmm_res_ns);
-                    movups(output_ptr(i, j, 1), reg_accum(i, j, 1));
-                }
-            }
-            jmp(store_done, T_NEAR);
+            eltwise_injector_->compute_vector_range(1,
+                    2 * ur * load_loop_blk + 1);
+
             L(store_norelu);
         }
 
@@ -238,8 +216,6 @@ void jit_sse42_1x1_conv_kernel_f32::generate_reduce_loop(
                 movups(output_ptr(i, j, 0), reg_accum(i, j, 0));
                 movups(output_ptr(i, j, 1), reg_accum(i, j, 1));
             }
-
-        L(store_done);
     };
 
     auto fma_block = [=](bool last_block) {
@@ -453,23 +429,22 @@ void jit_sse42_1x1_conv_kernel_f32::generate()
         add(rsp, stack_space_needed);
 
     postamble();
+
+    if (jcp.with_eltwise)
+        eltwise_injector_->prepare_table();
 }
 
 bool jit_sse42_1x1_conv_kernel_f32::post_ops_ok(
         jit_1x1_conv_conf_t &jcp, const primitive_attr_t &attr) {
     const auto &p = attr.post_ops_;
 
-    auto is_relu = [&](int idx) { return p.entry_[idx].is_relu(); };
+    auto is_eltwise = [&](int idx) { return p.entry_[idx].is_eltwise(); };
     auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(); };
 
     switch (p.len_) {
     case 0: return true; // no post_ops
-    case 1:
-        return true // sum OR relu
-                && !jcp.with_relu && (is_relu(0) || is_sum(0));
-    case 2:
-        return true // sum->relu
-                && !jcp.with_relu && (is_sum(0) && is_relu(1));
+    case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
+    case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
     default: return false;
     }
 
@@ -479,7 +454,7 @@ bool jit_sse42_1x1_conv_kernel_f32::post_ops_ok(
 status_t jit_sse42_1x1_conv_kernel_f32::init_conf(jit_1x1_conv_conf_t &jcp,
         const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
         const memory_desc_wrapper &weights_d, const memory_desc_wrapper &dst_d,
-        const primitive_attr_t &attr, bool with_relu, float relu_negative_slope)
+        const primitive_attr_t &attr)
 {
     if (!mayiuse(sse42))
         return status::unimplemented;
@@ -513,8 +488,6 @@ status_t jit_sse42_1x1_conv_kernel_f32::init_conf(jit_1x1_conv_conf_t &jcp,
 
     jcp.src_fmt = src_d.format();
     jcp.with_bias = cd.bias_desc.format != memory_format::undef;
-    jcp.with_relu = with_relu;
-    jcp.relu_negative_slope = relu_negative_slope;
 
     jcp.os = jcp.oh * jcp.ow;
     jcp.is = jcp.ih * jcp.iw;
@@ -524,10 +497,10 @@ status_t jit_sse42_1x1_conv_kernel_f32::init_conf(jit_1x1_conv_conf_t &jcp,
 
     const auto &p = attr.post_ops_;
     jcp.with_sum = p.find(primitive_kind::sum) != -1;
-    if (!jcp.with_relu) {
-        jcp.with_relu = p.find(primitive_kind::eltwise) != -1;
-        jcp.relu_negative_slope = 0;
-    }
+    const int eltwise_ind = p.find(primitive_kind::eltwise);
+    jcp.with_eltwise = eltwise_ind != -1;
+    if (jcp.with_eltwise)
+        jcp.eltwise = p.entry_[eltwise_ind].eltwise;
 
     const int is_bwd_d = jcp.prop_kind == backward_data;
     memory_format_t weights_format = with_groups
