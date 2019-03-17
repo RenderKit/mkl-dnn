@@ -466,18 +466,9 @@ void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::_execute_data_W_SGD(
         });
     }
 
-//#pragma omp parallel
-    tbb::parallel_for(tbb::blocked_range<int>(0, jcp.tile_block),
-        [&](const tbb::blocked_range<int>& r)
-    {
+    parallel_nd(jcp.tile_block, [&](int tile_block) {
+        int ithr = mkldnn_get_thread_num();
 
-    int ithr = mkldnn_get_thread_num();
-
-/*
-#pragma omp for schedule(static)
-    for (int tile_block = 0; tile_block < jcp.tile_block; tile_block++) {
-*/
-    for (int tile_block = r.begin(); tile_block < r.end(); tile_block++) {
         for (int K_blk1 = 0; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
             for (int K_blk2 = 0; K_blk2 < jcp.dimK_block; K_blk2++) {
 
@@ -518,9 +509,7 @@ void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::_execute_data_W_SGD(
                         &(output(0, M_blk, 0, 0, 0)), bias_ptr);
             }
         }
-    }
-    //}
-    }, tbb::static_partitioner());
+    });
 }
 
 template struct _jit_avx512_core_fp32_wino_conv_4x3_t<true>;
