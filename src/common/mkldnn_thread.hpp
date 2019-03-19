@@ -56,12 +56,6 @@ inline void mkldnn_thr_barrier() {
 #define PRAGMA_OMP(...) PRAGMA_MACRO(CHAIN2(omp, __VA_ARGS__))
 
 #elif MKLDNN_THR == MKLDNN_THR_TBB
-// We need to define these to avoid implicit linkage against
-// tbb_debug.lib under Windows. When removing these lines debug build
-// under Windows fails.
-#define __TBB_NO_IMPLICIT_LINKAGE 1
-#define __TBBMALLOC_NO_IMPLICIT_LINKAGE 1
-
 #include "tbb/task_arena.h"
 #include "tbb/parallel_for.h"
 #define MKLDNN_THR_SYNC 0

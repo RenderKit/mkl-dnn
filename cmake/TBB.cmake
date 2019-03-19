@@ -157,8 +157,13 @@ FIND_PACKAGE_HANDLE_STANDARD_ARGS(TBB DEFAULT_MSG TBB_INCLUDE_DIR TBB_LIBRARY TB
 if(TBB_FOUND)
     set(TBB_INCLUDE_DIRS ${TBB_INCLUDE_DIR})
     set(TBB_LIBRARIES ${TBB_LIBRARY} ${TBB_LIBRARY_MALLOC})
+
+    # We need to define these to avoid implicit linkage against
+    # tbb_debug.lib under Windows. When removing these lines debug build
+    # under Windows fails.
+    set(TBB_DEFINITIONS -D__TBB_NO_IMPLICIT_LINKAGE=1 -D__TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
+
     set_threading("TBB")
-    list(APPEND EXTRA_SHARED_LIBS ${TBB_IMPORTED_TARGETS})
 endif()
 
 mark_as_advanced(TBB_INCLUDE_DIR)
