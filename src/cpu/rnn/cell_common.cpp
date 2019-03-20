@@ -25,7 +25,7 @@ namespace cpu {
 using namespace rnn_utils;
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-cell_execution_sig(
+rnn_cell_execution_sig(
         (_ref_rnn_common_t<aprop, src_type, weights_type>::cell_execution)) {
     if (!rnn.merge_gemm_layer) {
         (this->*gemm_layer_func)('N', 'N', rnn.n_gates * rnn.dic, rnn.mb,
@@ -37,16 +37,22 @@ cell_execution_sig(
             1.0, w_iter_[0], rnn.weights_iter_ld, states_tm1_l_,
             rnn.states_ws_ld, 1.0, ws_gates_, rnn.gates_ws_ld);
 
-    (this->*elemwise_func)(rnn, ws_gates_, states_t_l_, c_states_t_l_,
+    if (rnn_postgemm_ != nullptr)
+        rnn_postgemm_->execute<src_data_t, acc_data_t>(rnn, ws_gates_, states_t_l_, c_states_t_l_,
             states_tm1_l_, c_states_tm1_l_, diff_states_t_l_,
             diff_states_t_lp1_, diff_states_tp1_l_, bias_[0], ws_grid_,
             ws_cell_);
+    else
+        (this->*elemwise_func)(rnn, ws_gates_, states_t_l_, c_states_t_l_,
+                states_tm1_l_, c_states_tm1_l_, diff_states_t_l_,
+                diff_states_t_lp1_, diff_states_tp1_l_, bias_[0], ws_grid_,
+                ws_cell_);
 }
-template cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution);
-template cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution);
+template rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution);
+template rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution);
 
 template <>
-cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution) {
+rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution) {
     ws_diff_states_aoc_t diff_states_t_l(rnn, diff_states_t_l_);
     (this->*elemwise_func)(rnn, ws_gates_, states_t_l_, c_states_t_l_,
             states_tm1_l_, c_states_tm1_l_, diff_states_t_l_,

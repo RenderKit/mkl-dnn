@@ -23,6 +23,10 @@
 #include <assert.h>
 #include <stdint.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define MKLDNN_X86_64
+#endif
+
 #define MSAN_ENABLED 0
 #if defined(__has_feature)
 #if __has_feature(memory_sanitizer)
@@ -33,15 +37,14 @@
 #endif
 
 #include "c_types_map.hpp"
+#include "nstl.hpp"
+#include "z_magic.hpp"
 
 namespace mkldnn {
 namespace impl {
 
 // Sanity check for 64 bits
 static_assert(sizeof(void*) == 8, "Intel(R) MKL-DNN supports 64 bit only");
-
-#define UNUSED(x) ((void)x)
-#define MAYBE_UNUSED(x) UNUSED(x)
 
 #define CHECK(f) do { \
     status_t status = f; \
@@ -50,10 +53,6 @@ static_assert(sizeof(void*) == 8, "Intel(R) MKL-DNN supports 64 bit only");
 } while (0)
 
 #define IMPLICATION(cause, effect) (!(cause) || !!(effect))
-
-#if defined(_WIN32) && !defined(__GNUC__)
-#define __PRETTY_FUNCTION__ __FUNCSIG__
-#endif
 
 namespace utils {
 
@@ -157,6 +156,31 @@ inline R array_product(const T *arr, size_t size) {
     R prod = 1;
     for (size_t i = 0; i < size; ++i) prod *= arr[i];
     return prod;
+}
+
+/** sorts an array of values using @p comparator. While sorting the array
+ * of value, the function permutes an array of @p keys accordingly.
+ *
+ * @note The arrays of @p keys can be omitted. In this case the function
+ *       sorts the array of @vals only.
+ */
+template <typename T, typename U, typename F>
+inline void simultaneous_sort(T *vals, U *keys, size_t size, F comparator) {
+    if (size == 0) return;
+
+    for (size_t i = 0; i < size - 1; ++i) {
+        bool swapped = false;
+
+        for (size_t j = 0; j < size - i - 1; j++) {
+            if (comparator(vals[j], vals[j + 1]) > 0) {
+                nstl::swap(vals[j], vals[j + 1]);
+                if (keys) nstl::swap(keys[j], keys[j + 1]);
+                swapped = true;
+            }
+        }
+
+        if (swapped == false) break;
+    }
 }
 
 template <typename T, typename U>
@@ -300,31 +324,12 @@ private:
 
 }
 
-void *malloc(size_t size, int alignment);
-void free(void *p);
 int32_t mkldnn_fetch_and_add(int32_t *dst, int32_t val);
-
-struct c_compatible {
-    enum { default_alignment = 64 };
-    static void *operator new(size_t sz) {
-        return malloc(sz, default_alignment);
-    }
-    static void *operator new(size_t sz, void *p) { UNUSED(sz); return p; }
-    static void *operator new[](size_t sz) {
-        return malloc(sz, default_alignment);
-    }
-    static void operator delete(void *p) { free(p); }
-    static void operator delete[](void *p) { free(p); }
-};
-
-inline void yield_thread() { }
+inline void yield_thread() {}
 
 int mkldnn_getenv(char *value, const char *name, int len);
 bool mkldnn_jit_dump();
 FILE *mkldnn_fopen(const char *filename, const char *mode);
-
-void set_rnd_mode(round_mode_t rnd_mode);
-void restore_rnd_mode();
 
 constexpr int msan_enabled = MSAN_ENABLED;
 inline void msan_unpoison(void *ptr, size_t size) {

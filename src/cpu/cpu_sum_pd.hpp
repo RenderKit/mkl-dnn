@@ -14,23 +14,26 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <stdint.h>
-#include "mkldnn_test_common.hpp"
-#include "gtest/gtest.h"
+#ifndef CPU_SUM_PD_HPP
+#define CPU_SUM_PD_HPP
 
-#include "mkldnn.hpp"
-#include "test_convolution_backward_data_common.hpp"
+#include "c_types_map.hpp"
+#include "sum_pd.hpp"
+#include "type_helpers.hpp"
+#include "utils.hpp"
+
 namespace mkldnn {
+namespace impl {
+namespace cpu {
 
-using convolution_test = convolution_backward_data_test<int16_t, int16_t,
-                                                        int32_t, int32_t>;
-
-TEST_P(convolution_test, TestConvolution)
-{
-}
-
-#define S16S16S32
-#define DIRECTION_BACKWARD_DATA
-#include "convolution_common.h"
+struct cpu_sum_pd_t: public sum_pd_t {
+    using sum_pd_t::sum_pd_t;
+};
 
 }
+}
+}
+
+#endif
+
+// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s

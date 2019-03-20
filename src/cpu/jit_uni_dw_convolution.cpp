@@ -25,26 +25,26 @@ namespace impl {
 namespace cpu {
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::memory_tracking::names;
 using namespace mkldnn::impl::utils;
 
 template <cpu_isa_t isa>
-void _jit_uni_dw_convolution_fwd_t<isa>::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto dst = reinterpret_cast<data_t *>(this->memory());
+void _jit_uni_dw_convolution_fwd_t<isa>::execute_forward(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const data_t *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
-    const memory_desc_wrapper bias_d(pd()->weights_pd(1));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
+    const memory_desc_wrapper bias_d(pd()->weights_md(1));
 
     const auto &jcp = kernel_->jcp;
 
     if (pd()->wants_padded_bias()) {
-        auto padded_bias = this->scratchpad().template get<data_t>(
+        auto padded_bias = this->scratchpad(ctx).template get<data_t>(
                 key_conv_padded_bias);
         utils::array_copy(padded_bias, bias, jcp.oc_without_padding);
         utils::array_set(padded_bias + jcp.oc_without_padding, 0.f,
@@ -138,7 +138,7 @@ void _jit_uni_dw_convolution_fwd_t<isa>::execute_forward() const {
     });
 
     if (pd()->wants_zero_pad_dst())
-        output_memory_primitive(0)->zero_pad();
+        ctx.memory(MKLDNN_ARG_DST)->zero_pad();
 }
 
 template struct _jit_uni_dw_convolution_fwd_t<avx512_common>;
@@ -146,14 +146,15 @@ template struct _jit_uni_dw_convolution_fwd_t<avx2>;
 template struct _jit_uni_dw_convolution_fwd_t<sse42>;
 
 template <cpu_isa_t isa>
-void _jit_uni_dw_convolution_bwd_data_t<isa>::execute_backward_data() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t *>(this->memory());
+void _jit_uni_dw_convolution_bwd_data_t<isa>::execute_backward_data(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
 
     const auto &jcp = kernel_->jcp;
 
@@ -247,9 +248,8 @@ template struct _jit_uni_dw_convolution_bwd_data_t<sse42>;
 
 template <cpu_isa_t isa>
 _jit_uni_dw_convolution_bwd_weights_t<isa>::
-_jit_uni_dw_convolution_bwd_weights_t(const pd_t *apd,
-        const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs)
+_jit_uni_dw_convolution_bwd_weights_t(const pd_t *apd)
+    : cpu_primitive_t(apd)
     , kernel_(nullptr), acc_ker_(nullptr)
 {
     kernel_ = new jit_uni_dw_conv_bwd_weights_kernel_f32<isa>(pd()->jcp_);
@@ -258,16 +258,17 @@ _jit_uni_dw_convolution_bwd_weights_t(const pd_t *apd,
 }
 
 template <cpu_isa_t isa>
-void _jit_uni_dw_convolution_bwd_weights_t<isa>::execute_backward_weights() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_weights = reinterpret_cast<data_t *>(this->memory(0));
-    auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
+void _jit_uni_dw_convolution_bwd_weights_t<isa>::execute_backward_weights(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_weights = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_WEIGHTS);
+    auto diff_bias = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_BIAS);
 
     auto diff_wei_reduction_buf =
-        scratchpad().template get<data_t>(key_conv_wei_reduction);
+        scratchpad(ctx).template get<data_t>(key_conv_wei_reduction);
     auto diff_bia_reduction_buf =
-        scratchpad().template get<data_t>(key_conv_bia_reduction);
+        scratchpad(ctx).template get<data_t>(key_conv_bia_reduction);
 
     const auto &jcp = kernel_->jcp;
 

@@ -32,18 +32,18 @@ namespace cpu {
     : (f).blk_off(n, c, h, w))
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
-void jit_sse42_1x1_convolution_fwd_t::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto dst = reinterpret_cast<data_t *>(this->memory());
+void jit_sse42_1x1_convolution_fwd_t::execute_forward(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const data_t *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
 
     const auto &jcp = kernel_->jcp;
     const int ndims = src_d.ndims();
@@ -126,7 +126,7 @@ void jit_sse42_1x1_convolution_fwd_t::execute_forward() const {
     });
 
     if (pd()->wants_zero_pad_dst())
-        output_memory_primitive(0)->zero_pad();
+        ctx.memory(MKLDNN_ARG_DST)->zero_pad();
 }
 
 }

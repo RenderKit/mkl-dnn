@@ -28,7 +28,7 @@ using namespace mkldnn::impl::utils;
 namespace mkldnn {
 namespace impl {
 
-status_t scales_t::set(int count, int mask, const float *scales) {
+status_t scales_t::set(dim_t count, int mask, const float *scales) {
     cleanup();
 
     count_ = count;
@@ -42,7 +42,7 @@ status_t scales_t::set(int count, int mask, const float *scales) {
         if (scales_ == nullptr)
             return status::out_of_memory;
 
-        for (int c = 0; c < count_; ++c)
+        for (dim_t c = 0; c < count_; ++c)
             scales_[c] = scales[c];
     }
 
@@ -87,14 +87,15 @@ status_t post_ops_t::append_eltwise(float scale, alg_kind_t alg, float alpha,
     return success;
 }
 
-status_t primitive_attr_t::set_round_mode(round_mode_t round_mode) {
-    using namespace mkldnn::impl::round_mode;
+status_t primitive_attr_t::set_scratchpad_mode(
+        scratchpad_mode_t scratchpad_mode) {
+    using namespace mkldnn::impl::scratchpad_mode;
 
-    const bool ok = one_of(round_mode, nearest, down);
+    const bool ok = one_of(scratchpad_mode, library, user);
     if (!ok)
         return invalid_arguments;
 
-    round_mode_ = round_mode;
+    scratchpad_mode_ = scratchpad_mode;
     return success;
 }
 
@@ -129,26 +130,26 @@ status_t mkldnn_primitive_attr_destroy(primitive_attr_t *attr) {
     return success;
 }
 
-status_t mkldnn_primitive_attr_get_int_output_round_mode(
-        const primitive_attr_t *attr, round_mode_t *round_mode) {
-    if (any_null(attr, round_mode))
+status_t mkldnn_primitive_attr_get_scratchpad_mode(
+        const primitive_attr_t *attr, scratchpad_mode_t *scratchpad_mode) {
+    if (any_null(attr, scratchpad_mode))
         return invalid_arguments;
 
-    *round_mode = attr->round_mode_;
+    *scratchpad_mode = attr->scratchpad_mode_;
 
     return success;
 }
 
-status_t mkldnn_primitive_attr_set_int_output_round_mode(
-        primitive_attr_t *attr, round_mode_t round_mode) {
+status_t mkldnn_primitive_attr_set_scratchpad_mode(
+        primitive_attr_t *attr, scratchpad_mode_t scratchpad_mode) {
     if (any_null(attr))
         return invalid_arguments;
 
-    return attr->set_round_mode(round_mode);
+    return attr->set_scratchpad_mode(scratchpad_mode);
 }
 
 status_t mkldnn_primitive_attr_get_output_scales(const primitive_attr_t *attr,
-        int *count, int *mask, const float **scales) {
+        dim_t *count, int *mask, const float **scales) {
     if (any_null(attr, count, mask, scales))
         return invalid_arguments;
 
@@ -160,7 +161,7 @@ status_t mkldnn_primitive_attr_get_output_scales(const primitive_attr_t *attr,
 }
 
 status_t mkldnn_primitive_attr_set_output_scales(primitive_attr_t *attr,
-        int count, int mask, const float *scales) {
+        dim_t count, int mask, const float *scales) {
     bool ok = !any_null(attr, scales) && count > 0 && mask >= 0;
     if (!ok)
         return invalid_arguments;
@@ -280,7 +281,7 @@ status_t mkldnn_primitive_attr_set_rnn_data_qparams(
 }
 
 status_t mkldnn_primitive_attr_set_rnn_weights_qparams(
-        primitive_attr_t *attr, int count, int mask, const float *scales) {
+        primitive_attr_t *attr, dim_t count, int mask, const float *scales) {
     bool ok = !any_null(attr, scales) && count > 0 && mask >= 0;
     if (!ok)
         return invalid_arguments;

@@ -36,41 +36,47 @@ void compute_ref_conv_eltwise_fwd(const test_convolution_sizes_t &c,
             = (data_t_dst *)(w_bias ? bias.get_data_handle() : nullptr);
     data_t_dst *dst_data = (data_t_dst *)dst.get_data_handle();
 
-    const memory::desc src_d = src.get_primitive_desc().desc();
-    const memory::desc weights_d = weights.get_primitive_desc().desc();
-    const memory::desc dst_d = dst.get_primitive_desc().desc();
+    const memory::desc src_d = src.get_desc();
+    const memory::desc weights_d = weights.get_desc();
+    const memory::desc dst_d = dst.get_desc();
 
-    size_t padded_ic = src_d.data.layout_desc.blocking.padding_dims[1];
-    size_t padded_oc = dst_d.data.layout_desc.blocking.padding_dims[1];
+    auto padded_ic = src_d.data.padded_dims[1];
+    auto padded_oc = dst_d.data.padded_dims[1];
+
+    const mkldnn::impl::memory_desc_wrapper src_mdw(src_d.data);
+    const mkldnn::impl::memory_desc_wrapper weights_mdw(weights_d.data);
+    const mkldnn::impl::memory_desc_wrapper dst_mdw(dst_d.data);
 
     mkldnn::impl::parallel_nd(c.mb, c.ng, c.oc / c.ng, c.oh, c.ow,
-        [&](int n, int g, int oc, int oh, int ow) {
-            size_t oidx = n * padded_oc * c.oh * c.ow
+        [&](memory::dim n, memory::dim g, memory::dim oc, memory::dim oh,
+            memory::dim ow) {
+            memory::dim oidx = n * padded_oc * c.oh * c.ow
                     + g * padded_oc / c.ng * c.oh * c.ow
                     + oc * c.oh * c.ow + oh * c.ow + ow;
 
-            size_t didx = map_index(dst_d, oidx);
+            memory::dim didx = dst_mdw.off_l(oidx, true);
             dst_data[didx] = bias_data
                     ? bias_data[g * c.oc / c.ng + oc] : data_t_dst{0};
 
-            for (int ic = 0; ic < c.ic / c.ng; ic++)
-            for (int kh = 0; kh < c.kh; kh++)
-            for (int kw = 0; kw < c.kw; kw++)
+            for (memory::dim ic = 0; ic < c.ic / c.ng; ic++)
+            for (memory::dim kh = 0; kh < c.kh; kh++)
+            for (memory::dim kw = 0; kw < c.kw; kw++)
             {
-                int ih = oh * c.strh - c.padh + kh * (1 + c.dilh);
+                memory::dim ih = oh * c.strh - c.padh + kh * (1 + c.dilh);
                 if (ih < 0 || ih >= c.ih) continue;
-                int iw = ow * c.strw - c.padw + kw * (1 + c.dilw);
+                memory::dim iw = ow * c.strw - c.padw + kw * (1 + c.dilw);
                 if (iw < 0 || iw >= c.iw) continue;
 
-                size_t iidx = n * padded_ic * c.ih * c.iw
+                memory::dim iidx = n * padded_ic * c.ih * c.iw
                         + g * padded_ic / c.ng * c.ih * c.iw
                         + ic * c.ih * c.iw + ih * c.iw + iw;
-                size_t widx = g * padded_oc / c.ng * padded_ic / c.ng * c.kh * c.kw
+                memory::dim widx = 0
+                        + g * padded_oc / c.ng * padded_ic / c.ng * c.kh * c.kw
                         + oc * padded_ic / c.ng * c.kh * c.kw
                         + ic * c.kh * c.kw + kh * c.kw + kw;
 
-                dst_data[didx] += src_data[map_index(src_d, iidx)]
-                        * weights_data[map_index(weights_d, widx)];
+                dst_data[didx] += src_data[src_mdw.off_l(iidx, true)]
+                        * weights_data[weights_mdw.off_l(widx, true)];
             }
 
             auto &d = dst_data[didx];
@@ -104,6 +110,7 @@ protected:
         ASSERT_TRUE(p.engine_kind == engine::kind::cpu);
         ASSERT_EQ(p.aalgorithm, convolution_direct);
         auto eng = engine(p.engine_kind, 0);
+        auto strm = stream(eng);
         float eltwise_alpha = p.eltwise_alpha;
         float eltwise_beta = p.eltwise_beta;
 
@@ -123,35 +130,35 @@ protected:
         auto c_dst_desc = create_md({ cd.mb, cd.oc, cd.oh, cd.ow },
                 data_type_dst, p.formats.dst_format);
 
-        auto c_src = memory({c_src_desc, eng});
-        auto c_weights = memory({c_weights_desc, eng});
-        auto c_dst = memory({c_dst_desc, eng});
+        auto c_src = memory(c_src_desc, eng);
+        auto c_weights = memory(c_weights_desc, eng);
+        auto c_dst = memory(c_dst_desc, eng);
 
-        auto dst_ref = memory({c_dst_desc, eng});
+        auto dst_ref = memory(c_dst_desc, eng);
 
-        fill_data<data_t_src>(c_src.get_primitive_desc().get_size()
+        fill_data<data_t_src>(c_src.get_desc().get_size()
                 / sizeof(data_t_src), (data_t_src *)c_src.get_data_handle(),
                 data_t_src(0), data_t_src(1));
         check_zero_tail<data_t_src>(1, c_src);
 
         fill_data<data_t_wei>(
-                c_weights.get_primitive_desc().get_size()
+                c_weights.get_desc().get_size()
                 / sizeof(data_t_wei),(data_t_wei *)c_weights.get_data_handle(),
                 data_t_wei(0), data_t_wei(1));
         check_zero_tail<data_t_wei>(1, c_weights);
 
-        bool with_bias = p.formats.bias_format != memory::format::format_undef;
+        bool with_bias = p.formats.bias_format != memory::format_tag::format_tag_undef;
         auto c_bias_desc = with_bias ?
                 create_md({ cd.oc }, data_type_dst, p.formats.bias_format) :
                 create_md({}, data_type_dst, p.formats.bias_format);
-        auto c_bias = memory({c_bias_desc, eng});
+        auto c_bias = memory(c_bias_desc, eng);
         if (with_bias) {
             fill_data<data_t_dst>(
-                    c_bias.get_primitive_desc().get_size() / sizeof(data_t_dst),
+                    c_bias.get_desc().get_size() / sizeof(data_t_dst),
                     (data_t_dst *)c_bias.get_data_handle(), 1., true);
         }
 
-        std::vector<int> padR = { cd.padh, cd.padw };
+        memory::dims padR = { cd.padh, cd.padw };
         for (int i = 0; i < 2; ++i) {
             if ((cd.ih - ((cd.kh - 1) * (cd.dilh + 1) + 1) + cd.padh + padR[0])
                 / cd.strh + 1 != cd.oh)
@@ -181,15 +188,11 @@ protected:
             auto conv_primitive_desc =
                 convolution_forward::primitive_desc(conv_desc, attr, eng);
 
-            auto conv = with_bias
-                ? convolution_forward(conv_primitive_desc,
-                        c_src, c_weights, c_bias, c_dst)
-                : convolution_forward(conv_primitive_desc,
-                        c_src, c_weights, c_dst);
-            std::vector<primitive> pipeline;
-            pipeline.push_back(conv);
-
-            stream(stream::kind::lazy).submit(pipeline).wait();
+            convolution_forward(conv_primitive_desc).execute(strm, {
+                    {MKLDNN_ARG_SRC, c_src},
+                    {MKLDNN_ARG_WEIGHTS, c_weights},
+                    {MKLDNN_ARG_BIAS, c_bias},
+                    {MKLDNN_ARG_DST, c_dst}});
         };
 
         if (catch_expected_failures(test, p.expect_to_fail, p.expected_status))

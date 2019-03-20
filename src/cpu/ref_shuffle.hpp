@@ -20,10 +20,11 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "cpu_shuffle_pd.hpp"
-#include "cpu_engine.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "cpu_shuffle_pd.hpp"
+#include "cpu_primitive.hpp"
 
 namespace mkldnn {
 namespace impl {
@@ -34,29 +35,34 @@ struct ref_shuffle_t : public cpu_primitive_t {
     using shuffle_class = ref_shuffle_t<data_type_size>;
 
     struct pd_t: public cpu_shuffle_pd_t {
-        pd_t(engine_t *engine, const shuffle_desc_t *adesc,
-                const primitive_attr_t *attr,
-                const shuffle_pd_t *hint_fwd_pd)
-            : cpu_shuffle_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_shuffle_pd_t::cpu_shuffle_pd_t;
 
-        DECLARE_COMMON_PD_T("ref:any",shuffle_class);
+        DECLARE_COMMON_PD_T("ref:any", shuffle_class);
 
-        virtual status_t init() override {
-            assert(this->engine()->kind() == engine_kind::cpu);
+        status_t init() {
+            using namespace format_tag;
 
             bool ok = true
-                 && data_type_size ==
-                     types::data_type_size(this->desc()->data_desc.data_type);
-            if (!ok)
-                return status::unimplemented;
+                 && data_type_size
+                    == types::data_type_size(data_md()->data_type);
+            if (!ok) return status::unimplemented;
+
+            if (ndims() == 5) {
+                dat_tag_ = memory_desc_matches_one_of_tag(
+                        *data_md(), nCdhw16c, nCdhw8c, ncdhw, ndhwc);
+            } else if (ndims() == 4) {
+                dat_tag_ = memory_desc_matches_one_of_tag(
+                        *data_md(), nChw16c, nChw8c, nchw, nhwc);
+            } else
+                dat_tag_ = any;
+
             return status::success;
         }
+
+        format_tag_t dat_tag_;
     };
 
-    ref_shuffle_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs)
-    {
+    ref_shuffle_t(const pd_t *apd): cpu_primitive_t(apd) {
         const int axis_size = pd()->axis_size();
         const int group_size = pd()->group_size();
         const int transpose_row = pd()->is_fwd() ? group_size
@@ -73,25 +79,25 @@ struct ref_shuffle_t : public cpu_primitive_t {
 
     typedef typename typesize_traits<data_type_size>::type data_t;
 
-    virtual void execute(event_t *e) const {
-        using namespace memory_format;
-        switch (pd()->data_pd()->desc()->format) {
-        case nCdhw16c: execute_<nCdhw16c>(); break;
-        case nChw16c:  execute_<nChw16c>(); break;
-        case nCdhw8c:  execute_<nCdhw8c>(); break;
-        case nChw8c:   execute_<nChw8c>(); break;
-        case ncdhw:    execute_<ncdhw>(); break;
-        case nchw:     execute_<nchw>(); break;
-        case ndhwc:    execute_<ndhwc>(); break;
-        case nhwc:     execute_<nhwc>(); break;
-        default:       execute_<mkldnn_any>(); break;
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        using namespace format_tag;
+        switch (pd()->dat_tag_) {
+        case nCdhw16c: execute_<nCdhw16c>(ctx); break;
+        case nChw16c:  execute_<nChw16c>(ctx); break;
+        case nCdhw8c:  execute_<nCdhw8c>(ctx); break;
+        case nChw8c:   execute_<nChw8c>(ctx); break;
+        case ncdhw:    execute_<ncdhw>(ctx); break;
+        case nchw:     execute_<nchw>(ctx); break;
+        case ndhwc:    execute_<ndhwc>(ctx); break;
+        case nhwc:     execute_<nhwc>(ctx); break;
+        default:       execute_<any>(ctx); break;
         }
-
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
 private:
-    template<memory_format_t fmt>void execute_() const;
+    template<format_tag_t tag>
+    void execute_(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
     int *rev_transposed_;
 };

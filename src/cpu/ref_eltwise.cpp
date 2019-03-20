@@ -60,17 +60,18 @@ float ref_eltwise_scalar_fwd_t::compute_scalar(float s) {
 }
 
 template <impl::data_type_t data_type>
-void ref_eltwise_fwd_t<data_type>::execute_forward_nCspBc_padded() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
+void ref_eltwise_fwd_t<data_type>::execute_forward_nCspBc_padded(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
+    const memory_desc_wrapper data_d(pd()->src_md());
     const blocking_desc_t &blk = data_d.blocking_desc();
-    const int block = blk.block_dims[1];
+    const int block = blk.inner_blks[0];
 
     const int MB = pd()->MB();
     const int C = pd()->C() / block;
-    const int C_PADDED = blk.padding_dims[1] / block;
+    const int C_PADDED = data_d.padded_dims()[1] / block;
     const int tail = pd()->C() % block;
     const int SP = pd()->D() * pd()->H() * pd()->W();
     const auto alg_kind = pd()->desc()->alg_kind;
@@ -104,14 +105,15 @@ void ref_eltwise_fwd_t<data_type>::execute_forward_nCspBc_padded() const {
 }
 
 template <impl::data_type_t data_type>
-void ref_eltwise_fwd_t<data_type>::execute_forward_generic() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-
+void ref_eltwise_fwd_t<data_type>::execute_forward_generic(
+        const exec_ctx_t &ctx) const {
     /* fast return */
     if (pd()->has_zero_dim_memory()) return;
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+
+    const memory_desc_wrapper data_d(pd()->src_md());
 
     const int MB = pd()->MB();
     const int C = pd()->C();
@@ -147,19 +149,20 @@ void ref_eltwise_fwd_t<data_type>::execute_forward_generic() const {
 }
 
 template <impl::data_type_t data_type>
-void ref_eltwise_fwd_t<data_type>::execute_forward_dense() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
+void ref_eltwise_fwd_t<data_type>::execute_forward_dense(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
+    const memory_desc_wrapper data_d(pd()->src_md());
 
     const ptrdiff_t nelems = static_cast<ptrdiff_t>(data_d.nelems(true));
     const auto alg_kind = pd()->desc()->alg_kind;
     const float alpha = pd()->desc()->alpha;
     const float beta  = pd()->desc()->beta;
 
-    src += data_d.blocking_desc().offset_padding;
-    dst += data_d.blocking_desc().offset_padding;
+    src += data_d.offset0();
+    dst += data_d.offset0();
 
     if (alg_kind == eltwise_relu) {
         // a fast path for relu as the most popular activation
@@ -189,16 +192,17 @@ void ref_eltwise_fwd_t<data_type>::execute_forward_dense() const {
 }
 
 template <impl::data_type_t data_type>
-void ref_eltwise_bwd_t<data_type>::execute_backward_generic() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
-
+void ref_eltwise_bwd_t<data_type>::execute_backward_generic(
+        const exec_ctx_t &ctx) const {
     /* fast return */
     if (pd()->has_zero_dim_memory()) return;
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
-    const memory_desc_wrapper diff_data_d(pd()->diff_src_pd());
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
+
+    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper diff_data_d(pd()->diff_src_md());
 
     const int MB = pd()->MB();
     const int C = pd()->C();
@@ -239,22 +243,23 @@ void ref_eltwise_bwd_t<data_type>::execute_backward_generic() const {
 }
 
 template <impl::data_type_t data_type>
-void ref_eltwise_bwd_t<data_type>::execute_backward_dense() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
+void ref_eltwise_bwd_t<data_type>::execute_backward_dense(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
-    const memory_desc_wrapper diff_data_d(pd()->diff_src_pd());
+    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper diff_data_d(pd()->diff_src_md());
 
     const ptrdiff_t nelems = static_cast<ptrdiff_t>(data_d.nelems(true));
     const auto alg_kind = pd()->desc()->alg_kind;
     const float alpha = pd()->desc()->alpha;
     const float beta = pd()->desc()->beta;
 
-    src += data_d.blocking_desc().offset_padding;
-    diff_dst += diff_data_d.blocking_desc().offset_padding;
-    diff_src += diff_data_d.blocking_desc().offset_padding;
+    src += data_d.offset0();
+    diff_dst += diff_data_d.offset0();
+    diff_src += diff_data_d.offset0();
 
     parallel_nd(nelems, [&](ptrdiff_t e) {
         const data_t dd = diff_dst[e];
@@ -279,13 +284,11 @@ void ref_eltwise_bwd_t<data_type>::execute_backward_dense() const {
 
 template struct ref_eltwise_fwd_t<data_type::f32>;
 template struct ref_eltwise_fwd_t<data_type::s32>;
-template struct ref_eltwise_fwd_t<data_type::s16>;
 template struct ref_eltwise_fwd_t<data_type::s8>;
 template struct ref_eltwise_fwd_t<data_type::u8>;
 
 template struct ref_eltwise_bwd_t<data_type::f32>;
 template struct ref_eltwise_bwd_t<data_type::s32>;
-template struct ref_eltwise_bwd_t<data_type::s16>;
 
 }
 }

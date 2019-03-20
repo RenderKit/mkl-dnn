@@ -14,14 +14,14 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "mkldnn_types.h"
-
 #include "c_types_map.hpp"
-#include "jit_avx512_common_lrn.hpp"
-#include "jit_generator.hpp"
 #include "mkldnn_thread.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "jit_avx512_common_lrn.hpp"
+
+#include "jit_generator.hpp"
 
 #define FWD_RBC 4
 #define BWD_RBC 3
@@ -41,7 +41,6 @@ namespace impl {
 namespace cpu {
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
 using namespace Xbyak;
@@ -318,40 +317,34 @@ status_t jit_avx512_common_lrn_fwd_t::pd_t::init() {
     using namespace prop_kind;
     using namespace alg_kind;
 
-    assert(engine()->kind() == engine_kind::cpu);
-
-    if (!mayiuse(avx512_common)) return unimplemented;
-
-    const memory_desc_wrapper data_d(data_pd_.desc());
+    const memory_desc_wrapper data_d(src_md());
     bool ok = true
-        && one_of(desc()->prop_kind, forward_training, forward_inference)
+        && mayiuse(avx512_common)
+        && is_fwd()
         && !has_zero_dim_memory()
-        && everyone_is(data_type::f32, desc()->data_desc.data_type)
+        && everyone_is(data_type::f32, data_d.data_type())
         && data_d.ndims() == 4
         && data_d.dims()[1] % vsize == 0
         && attr()->has_default_values();
     if (!ok) return unimplemented;
 
     if (desc()->prop_kind == forward_training) {
-        memory_desc_t ws_d;
         dims_t ws_dims = { MB(), C(), H(), 2*W() };
-        mkldnn_memory_desc_init(&ws_d, 4, ws_dims, data_type::f32,
-            memory_format::nChw16c);
-        ws_pd_ = cpu_memory_t::pd_t(engine_, &ws_d);
+        mkldnn_memory_desc_init_by_tag(&ws_md_, 4, ws_dims, data_type::f32,
+                format_tag::nChw16c);
     }
 
     bool args_ok_across = true
         && desc()->alg_kind == lrn_across_channels
         && desc()->local_size == 5
         && desc()->lrn_beta == 0.75
-        && data_d.format() == nChw16c;
+        && data_d.matches_tag(format_tag::nChw16c);
 
     return args_ok_across ? success : unimplemented;
 }
 
-jit_avx512_common_lrn_fwd_t::jit_avx512_common_lrn_fwd_t(const pd_t *apd,
-        const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs)
+jit_avx512_common_lrn_fwd_t::jit_avx512_common_lrn_fwd_t(const pd_t *apd)
+    : cpu_primitive_t(apd)
     , use_h_parallelism(0), ker_(nullptr), ker_first_(nullptr)
     , ker_last_(nullptr) {
     using namespace alg_kind;
@@ -382,10 +375,11 @@ jit_avx512_common_lrn_fwd_t::jit_avx512_common_lrn_fwd_t(const pd_t *apd,
 jit_avx512_common_lrn_fwd_t::~jit_avx512_common_lrn_fwd_t()
 { delete ker_; delete ker_first_; delete ker_last_; }
 
-void jit_avx512_common_lrn_fwd_t::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-    auto ws = reinterpret_cast<data_t*>(this->memory(1));
+void jit_avx512_common_lrn_fwd_t::execute_forward(const exec_ctx_t &ctx) const
+{
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+    auto ws = CTX_OUT_MEM(data_t *, MKLDNN_ARG_WORKSPACE);
 
     const int N = pd()->MB();
     const int C = pd()->C();
@@ -722,48 +716,36 @@ struct jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_kernel_f32:
 };
 
 status_t jit_avx512_common_lrn_bwd_t::pd_t::init() {
-    using namespace prop_kind;
     using namespace alg_kind;
 
-    assert(engine()->kind() == engine_kind::cpu);
-
-    if (!mayiuse(avx512_common)) return unimplemented;
-
-    const memory_desc_wrapper data_d(data_pd_.desc());
+    const memory_desc_wrapper data_d(src_md());
     bool ok = true
-        && utils::one_of(desc()->prop_kind, backward, backward_data)
-        && utils::everyone_is(data_type::f32, desc()->data_desc.data_type)
+        && mayiuse(avx512_common)
+        && !is_fwd()
+        && utils::everyone_is(data_type::f32, data_d.data_type())
         && !has_zero_dim_memory()
         && data_d.ndims() == 4
         && data_d.dims()[1] % vsize == 0
         && attr()->has_default_values();
     if (!ok) return unimplemented;
 
-    memory_desc_t ws_d;
     dims_t ws_dims = { MB(), C(), H(), 2*W() };
-    mkldnn_memory_desc_init(&ws_d, 4, ws_dims, data_type::f32,
-        memory_format::nChw16c);
-    ws_pd_ = cpu_memory_t::pd_t(engine_, &ws_d);
+    mkldnn_memory_desc_init_by_tag(&ws_md_, 4, ws_dims, data_type::f32,
+            format_tag::nChw16c);
 
-    auto fwd_ws_d_ = hint_fwd_pd_->workspace_pd()->desc();
-    bool ws_ok = true
-        && fwd_ws_d_->ndims == ws_pd_.desc()->ndims
-        && fwd_ws_d_->format == ws_pd_.desc()->format
-        && fwd_ws_d_->data_type == ws_pd_.desc()->data_type;
-    if (!ws_ok) return unimplemented;
+    if (!compare_ws(hint_fwd_pd_)) return unimplemented;
 
     bool args_ok_across = true
         && desc()->alg_kind == lrn_across_channels
         && desc()->local_size == 5
         && desc()->lrn_beta == 0.75
-        && data_d.format() == nChw16c;
+        && data_d.matches_tag(format_tag::nChw16c);
 
     return args_ok_across ? success : unimplemented;
 }
 
-jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_bwd_t(const pd_t *apd,
-        const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs)
+jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_bwd_t(const pd_t *apd)
+    : cpu_primitive_t(apd)
     , use_h_parallelism(0),  ker_(nullptr), ker_first_(nullptr)
     , ker_last_(nullptr) {
     const int C = pd()->C();
@@ -791,11 +773,12 @@ jit_avx512_common_lrn_bwd_t::jit_avx512_common_lrn_bwd_t(const pd_t *apd,
 jit_avx512_common_lrn_bwd_t::~jit_avx512_common_lrn_bwd_t()
 { delete ker_; delete ker_first_; delete ker_last_; }
 
-void jit_avx512_common_lrn_bwd_t::execute_backward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto ws = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto diff_src = reinterpret_cast<data_t *>(this->memory(0));
+void jit_avx512_common_lrn_bwd_t::execute_backward(const exec_ctx_t &ctx) const
+{
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto ws = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WORKSPACE);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
     const int N = pd()->MB();
     const int C = pd()->C();

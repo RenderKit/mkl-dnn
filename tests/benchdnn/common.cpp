@@ -381,15 +381,23 @@ int div_up(const int a, const int b){
     return (a + b - 1) / b;
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+int mxcsr_round(float f) { return _mm_cvtss_si32(_mm_load_ss(&f)); }
+#else
+int mxcsr_round(float f) { return (int)nearbyintf(f); }
+#endif
+
 void array_set(char *arr, size_t size) {
     for (size_t i = 0; i < size; ++i)
         arr[i] = 0;
 }
 
 void gemm(const char *layout, const char *transa, const char *transb,
-        int m, int n, int k, const float alpha, const float *a, const int lda,
-        const float *b, const int ldb, const float beta, float *c,
-        const int ldc ) {
+        int64_t m, int64_t n, int64_t k,
+        const float alpha, const float *a, const int64_t lda,
+        const float *b, const int64_t ldb,
+        const float beta, float *c, const int64_t ldc) {
     if (*layout == 'F') {
         mkldnn_sgemm(transa, transb, &m, &n, &k, &alpha, a, &lda, b, &ldb,
                 &beta, c, &ldc);

@@ -28,17 +28,16 @@ namespace impl {
 namespace cpu {
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::memory_tracking::names;
 using namespace mkldnn::impl::utils;
 
-void gemm_convolution_fwd_t::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto dst = reinterpret_cast<data_t*>(this->memory());
+void gemm_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const data_t *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    auto col = scratchpad().get<data_t>(key_conv_gemm_col);
+    auto col = scratchpad(ctx).get<data_t>(key_conv_gemm_col);
 
     const jit_gemm_conv_conf_t &jcp = this->pd()->jcp_;
 
@@ -136,12 +135,13 @@ void gemm_convolution_fwd_t::execute_forward() const {
     });
 }
 
-void gemm_convolution_bwd_data_t::execute_backward_data() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory());
+void gemm_convolution_bwd_data_t::execute_backward_data(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    auto col = scratchpad().get<data_t>(key_conv_gemm_col);
+    auto col = scratchpad(ctx).get<data_t>(key_conv_gemm_col);
 
     const jit_gemm_conv_conf_t &jcp = this->pd()->jcp_;
 
@@ -196,14 +196,15 @@ void gemm_convolution_bwd_data_t::execute_backward_data() const {
     });
 }
 
-void gemm_convolution_bwd_weights_t::execute_backward_weights() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_weights = reinterpret_cast<data_t*>(this->memory(0));
-    auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
+void gemm_convolution_bwd_weights_t::execute_backward_weights(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_weights = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_WEIGHTS);
+    auto diff_bias = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_BIAS);
 
-    auto col = scratchpad().get<data_t>(key_conv_gemm_col);
-    auto wei_reduction = scratchpad().get<data_t>(key_conv_wei_reduction);
+    auto col = scratchpad(ctx).get<data_t>(key_conv_gemm_col);
+    auto wei_reduction = scratchpad(ctx).get<data_t>(key_conv_wei_reduction);
 
     const jit_gemm_conv_conf_t &jcp = this->pd()->jcp_;
 

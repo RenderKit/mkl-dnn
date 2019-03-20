@@ -95,12 +95,9 @@ for more details and implicit rules.
 
 The attribute string *attr_str* is defined as follows (line breaks are for readability):
 ```
-    [irmode={nearest,down};]
     [oscale={none,common,per_oc}[:scale];]
     [post_ops='[{relu,sum[:sum_scale]};]...';]
 ```
-
-Here `irmode` defines the rounding mode for integer output (default is nearest).
 
 Next, `oscale` stands for output_scales. The first parameter is the policy that
 is defined below. The second optional parameter is a scale that specifies
@@ -133,9 +130,6 @@ configurations for **benchdnn**:
 |src type | wei type | dst type | acc type | cfg          | notes
 |:---     |:---      |:---      |:---      |:---          |:---
 | f32     | f32      | f32      | f32      | f32          | inference optimized for sse4.2+, training avx2+
-| s16     | s16      | s32      | s32      | s16s16s32s32 | optimized for processors with support of 4vnni, forward pass only (aka FWD_D, FWD_B)
-| s32     | s16      | s16      | s32      | s32s16s16s32 | optimized for processors with support of 4vnni, backward wrt data only (aka BWD_D)
-| s16     | s32      | s16      | s32      | s16s32s16s32 | optimized for processors with support of 4vnni, backward wrt weights (aka BWD_W, BWD_WB)
 | u8      | s8       | f32      | s32      | u8s8f32s32   | optimized for processors with support of avx512vl, forward pass only (aka FWD_D, FWD_B)
 | u8      | s8       | s32      | s32      | u8s8s32s32   | same notes as for u8s8f32s32
 | u8      | s8       | s8       | s32      | u8s8s8s32    | same notes as for u8s8f32s32
@@ -268,7 +262,7 @@ one common output scale set to 0.5 with rounding mode set to down
 ```
     $ ./benchdnn --conv \
         --cfg=u8s8u8s32 --dir=FWD_D --skip-impl="ref" --allow-unimpl=true \
-        --attr="irmode=down;oscale=common:.5" --batch=inputs/conv_all
+        --attr="oscale=common:.5" --batch=inputs/conv_all
 ```
 
 
@@ -284,7 +278,7 @@ where *harness-knobs* are:
  - `--mb=N` override minibatch that is specified in batch normalization description, default `0` (use mb specified in bnorm-desc)
  - `--dir={FWD_D (forward data /training), FWD_I (forward data /inference), BWD_D (backward data), BWD_DW (backward data + weights)}` direction, default `FWD_D`
  - `--dt={f32, s32, ...}` base data type, default `f32`
- - `--fmt={nchw, nChw16c, ...}` data layout, default `nchw`
+ - `--tag={nchw, nChw16c, ...}` data layout, default `nchw`
  - `--flags=[|G|S|R]` batch normalization flags, default `none` (G -- global stats, S -- use scale shift, R -- fuse with ReLU)
  - `--attr="attr_str"` attributes (see in the convolution section above), default `""` (no attributes set)
  - `--match=regex` check only bnorm that match with regex, default is `".*"`. Notice: Windows may only interpret string arguments surrounded by double quotation marks.
@@ -609,7 +603,7 @@ where *harness-knobs* are:
  - `--match==regex` check only shuffle that match with regex, default is `".*"`. Notice: Windows may only interpret string arguments surrounded by double quotation marks.
  - `--dir={FWD_D (forward data), FWD_B (forward data + bias),FWD_I (forward data inference), BWD_D (backward data), BWD_W (backward weights), BWD_WB (backward weights + bias)}` direction, default `FWD_B`
  - `--dt={f32, s32, ...}` base data type, default `f32`
- - `--fmt={nchw, nChw16c, ...}` data layout, default `nchw`
+ - `--tag={nchw, nChw16c, ...}` data layout, default `nchw`
  - `--axis=` default `1`
  - `--group=` default `1`
  - `--mode=` string that contains flags for benchmark mode. Use `C` or `c` for correctness (used by default), and `P` or `p` for performance 
@@ -693,13 +687,13 @@ where *harness-knobs* are:
  - `--idt={f32, s32, ...}` base input data type, default `f32`
  - `--odt={f32, s32, ...}` base output data type, default `f32`
  - `--dt={f32, s32, ...}` base data type, default `f32`
- - `--ifmt={nchw, nChw16c, ...}` input data layout, default `nchw`
- - `--ofmt={nchw, nChw16c, ...}` output data layout, default `nchw`
- - `--fmt={nchw, nChw16c, ...}` data layout, default `nchw`
+ - `--itag={nchw, nChw16c, ...}` input data layout, default `nchw`
+ - `--otag={nchw, nChw16c, ...}` output data layout, default `nchw`
+ - `--tag={nchw, nChw16c, ...}` data layout, default `nchw`
  - `--def-scales={,,}` input defined scales. separate number by ',' ex : 0.125, 0.25, 0.5, 1, 2, 4, 8
  - `--attr="attr_str"` ip attributes (see in the section below), default `""` (no attributes set)
  - `--both-dir-dt=true|false` , default `false`
- - `--both-dir-fmt=true|false` , default `false`
+ - `--both-dir-tag=true|false` , default `false`
  - `--allow-unimpl=true|false` do not treat unimplemented configuration as an error, default `false`
  - `--run` run reorder bench
  - `--perf-template=template-str` set template for performance report (see section *Performance measurements*)
@@ -740,7 +734,7 @@ table of modifiers below.
 | G         | Giga (1e9)
 
 The definition of expanded problem descriptor is:
-`idt,odt,ifmt,ofmt,attrs,dims`.
+`idt,odt,itag,otag,attrs,dims`.
 
 The default template can be found in reorder/bench_reorder.cpp and is defined as
 `perf,%n,%D,%O,%-t,%-Gp,%0t,%0Gp`. That will produce the following output
@@ -757,9 +751,9 @@ average gigaops (since it corresponds to average time)
 ```
 Here is an example of performance output:
 ```
- perf,4,f32,f32,nchw,nchw,irmode=nearest;oscale=per_oc:0.125;post_ops='',2x64x3x3,1152,4.00244,0.000287824,24.0279,4.79442e-05
+ perf,4,f32,f32,nchw,nchw,oscale=per_oc:0.125;post_ops='',2x64x3x3,1152,4.00244,0.000287824,24.0279,4.79442e-05
 ```
-expanded reorder problem descriptor is `f32,f32,nchw,nchw,irmode=nearest;oscale=per_oc:0.125;post_ops='',2x64x3x3` in the above example.
+expanded reorder problem descriptor is `f32,f32,nchw,nchw,oscale=per_oc:0.125;post_ops='',2x64x3x3` in the above example.
 
 ### Examples (reorder harness)
 

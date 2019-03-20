@@ -28,7 +28,7 @@
 
 namespace reorder {
 
-using dims_t = std::vector<int>;
+using dims_t = std::vector<int64_t>;
 
 struct dt_conf_s {
     mkldnn_data_type_t dt;
@@ -39,14 +39,13 @@ typedef const dt_conf_s *dt_conf_t;
 
 struct reorder_conf_t {
     dims_t dims;
-    mkldnn_memory_format_t fmt_in, fmt_out;
+    mkldnn_format_tag_t tag_in, tag_out;
 };
 
 struct q10n_conf_t {
     dt_conf_t conf_in;
     dt_conf_t conf_out;
     /* TODO: add attrs */
-    attr_t::round_mode_t irmode;
     attr_t::scale_t::policy_t policy;
     float scale;
 };
@@ -69,7 +68,6 @@ extern const char *perf_template; /* performance output template */
 extern const dt_conf_t conf_f32;
 extern const dt_conf_t conf_s8;
 extern const dt_conf_t conf_u8;
-extern const dt_conf_t conf_s16;
 extern const dt_conf_t conf_s32;
 dt_conf_t dt2cfg(mkldnn_data_type_t dt);
 mkldnn_data_type_t cfg2dt(dt_conf_t cfg);
@@ -80,11 +78,6 @@ dims_t str2dims(const char *str);
 void dims2str(const dims_t &dims, char *buffer);
 void prb2str(const prb_t *p, const res_t *res, char *buffer);
 void perf_report(const prb_t *p, const res_t *r, const char *pstr);
-
-inline size_t data_off_f(const prb_t *p, int mb, int ic, int ih, int iw) {
-    const auto &dims = p->reorder.dims;
-    return ((mb * dims[1] + ic) * dims[2] + ih) * dims[3] + iw;
-}
 
 int doit(const prb_t *p, res_t *res);
 int bench(int argc, char **argv, bool main_bench = true);

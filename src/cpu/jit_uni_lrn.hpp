@@ -14,52 +14,50 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_JIT_UNI_LRN_FWD_HPP
-#define CPU_JIT_UNI_LRN_FWD_HPP
+#ifndef CPU_JIT_UNI_LRN_HPP
+#define CPU_JIT_UNI_LRN_HPP
 
 #include "c_types_map.hpp"
-#include "cpu_lrn_pd.hpp"
-#include "cpu_engine.hpp"
-#include "jit_uni_lrn_kernel_f32.hpp"
-#include "jit_generator.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "cpu_isa_traits.hpp"
+#include "cpu_lrn_pd.hpp"
+#include "cpu_primitive.hpp"
 
 namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
-using namespace mkldnn::impl::utils;
+template <cpu_isa_t isa> struct jit_uni_lrn_fwd_kernel_f32;
+template <cpu_isa_t isa> struct jit_uni_lrn_bwd_kernel_f32;
 
 template <cpu_isa_t isa>
 struct jit_uni_lrn_fwd_t: public cpu_primitive_t {
     struct pd_t: public cpu_lrn_fwd_pd_t {
-        pd_t(engine_t *engine, const lrn_desc_t *adesc,
-                const primitive_attr_t *attr, const lrn_fwd_pd_t *hint_fwd_pd)
-            : cpu_lrn_fwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_lrn_fwd_pd_t::cpu_lrn_fwd_pd_t;
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_uni_lrn_fwd_t<isa>);
 
-        virtual status_t init() override;
+        status_t init();
+
+        format_tag_t dat_tag_;
     };
 
-    jit_uni_lrn_fwd_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs);
+    jit_uni_lrn_fwd_t(const pd_t *apd);
     ~jit_uni_lrn_fwd_t();
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_forward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_forward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_forward() const;
+    void execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 
     jit_uni_lrn_fwd_kernel_f32<isa> *ker_, *ker_first_, *ker_last_;
@@ -68,30 +66,29 @@ private:
 template <cpu_isa_t isa>
 struct jit_uni_lrn_bwd_t: public cpu_primitive_t {
     struct pd_t: public cpu_lrn_bwd_pd_t {
-        pd_t(engine_t *engine, const lrn_desc_t *adesc,
-                const primitive_attr_t *attr, const lrn_fwd_pd_t *hint_fwd_pd)
-            : cpu_lrn_bwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_lrn_bwd_pd_t::cpu_lrn_bwd_pd_t;
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_uni_lrn_bwd_t<isa>);
 
-        virtual status_t init() override;
+        status_t init();
+
+        format_tag_t dat_tag_;
     };
 
-    jit_uni_lrn_bwd_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs);
+    jit_uni_lrn_bwd_t(const pd_t *apd);
     ~jit_uni_lrn_bwd_t();
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_backward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_backward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_backward() const;
+    void execute_backward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 
     jit_uni_lrn_bwd_kernel_f32<isa> *ker_, *ker_first_, *ker_last_;

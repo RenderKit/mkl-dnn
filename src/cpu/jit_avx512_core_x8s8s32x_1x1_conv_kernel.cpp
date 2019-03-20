@@ -33,7 +33,6 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
 using namespace Xbyak;
@@ -273,14 +272,8 @@ void jit_avx512_core_x8s8s32x_1x1_conv_kernel::reduce_loop(int load_loop_blk,
                     vpxord(zmm_zero, zmm_zero, zmm_zero);
                     vmaxps(r, zmm_zero, r);
                 }
-                if (jcp.dst_dt != data_type::f32) {
-                    if (attr_.round_mode_ == round_mode::nearest) {
-                        vcvtps2dq(r | T_rn_sae, r);
-                    } else if (attr_.round_mode_ == round_mode::down) {
-                        vcvtps2dq(r | T_rd_sae, r);
-                    } else
-                        assert(!"unimplemented");
-                }
+                if (jcp.dst_dt != data_type::f32)
+                    vcvtps2dq(r, r);
             }
             for (int i_ur = 0; i_ur < ur; ++i_ur) {
                 auto r = vreg_accum(i_load, i_ur);
@@ -557,10 +550,6 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
         || !one_of(dst_d.data_type(),
             data_type::f32, data_type::s32, data_type::s8, data_type::u8))
         return status::unimplemented;
-    if (!one_of(weights_d.format(), gOIhw4i16o4i, OIhw4i16o4i,
-                gOIhw4i16o4i_s8s8, OIhw4i16o4i_s8s8)) {
-        return status::unimplemented;
-    }
     jcp.ver = ver_avx512_core;
     if (mayiuse(avx512_core_vnni))
         jcp.ver = ver_vnni;
@@ -581,8 +570,7 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     jcp.l_pad = cd.padding[0][1];
     jcp.stride_h = cd.strides[0];
     jcp.stride_w = cd.strides[1];
-    jcp.src_fmt = src_d.format();
-    jcp.with_bias = cd.bias_desc.format != memory_format::undef;
+    jcp.with_bias = cd.bias_desc.format_kind != format_kind::undef;
 
     jcp.signed_input = (src_d.data_type() == data_type::s8) ? true : false;
 
@@ -599,11 +587,14 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     if (jcp.with_eltwise)
         jcp.eltwise = p.entry_[eltwise_ind].eltwise;
 
+    format_tag_t dat_tag = format_tag::nhwc;
+    jcp.src_tag = src_d.matches_one_of_tag(dat_tag);
+    jcp.dst_tag = dst_d.matches_one_of_tag(dat_tag);
+
     bool args_ok = true
         && jcp.ngroups == 1
-        && src_d.format() == nhwc
-        && one_of(cd.bias_desc.format, memory_format::undef, any, x)
-        && dst_d.format() == nhwc;
+        && jcp.src_tag == dat_tag
+        && jcp.dst_tag == dat_tag;
     if (!args_ok) return status::unimplemented;
 
     const int simd_w = 16;
@@ -656,6 +647,8 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
 
     if (jcp.mb == 1 && jcp.ic > 128
         && (jcp.oh <= size_treshold && jcp.ow <= size_treshold)) {
+        if (jcp.os <= SMALL_SPATIAL && jcp.oc * jcp.ic < L2_size)
+            max_regs = min_regs; // mobilenet_v2 performance improvement
         jcp.ur = nstl::min(max_regs, jcp.os);
     } else {
         const int spatial = jcp.oh;
@@ -790,11 +783,23 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     jcp.nb_load = div_up(jcp.load_dim, jcp.load_block);
     jcp.nb_reduce = div_up(jcp.reduce_dim, jcp.reduce_block);
 
+    // miniumum size of load dim chunk for work distribution within threads
+    jcp.nb_load_chunk = 1;
+    // peformance improvements for googlenet_v3, mb=1;
+    // TODO: generalize this condition and rewrite it in appropriate manner
+    if (jcp.mb == 1 && jcp.nb_load % 4 == 0 && jcp.ic / jcp.oc >= 4
+            && jcp.ic * jcp.oc <= L2_size) {
+        jcp.nb_load_chunk = 4;
+        jcp.load_grp_count = nstl::max(jcp.nb_load / 4, jcp.load_grp_count);
+    }
+
     const auto &oscales = attr.output_scales_;
     jcp.is_oc_scale = oscales.mask_ == 1 << 1;
     assert(IMPLICATION(!jcp.is_oc_scale, oscales.mask_ == 0));
 
-    jcp.wei_adj_scale = (jcp.signed_input) ? (1.f / 2.f) : 1.f;
+    jcp.wei_adj_scale =
+        (weights_d.extra().flags | memory_extra_flags::scale_adjust)
+        ? weights_d.extra().scale_adjust : 1.f;
 
     return status::success;
 }
@@ -805,7 +810,7 @@ void jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_scratchpad(
     using namespace mkldnn::impl::memory_tracking::names;
 
     if (jcp.signed_input && jcp.ver != ver_vnni) {
-        size_t count = nstl::max(attr.output_scales_.count_, 16);
+        dim_t count = nstl::max<dim_t>(attr.output_scales_.count_, 16);
         scratchpad.book(key_conv_adjusted_scales, sizeof(float) * count);
     }
 }

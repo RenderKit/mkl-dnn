@@ -15,11 +15,8 @@
 *******************************************************************************/
 
 #include "cpu_engine.hpp"
-#include "cpu_memory.hpp"
-#include "type_helpers.hpp"
 
 /*
-#include "cpu/cpu_sum.hpp"
 #include "cpu/ref_sum.hpp"
 #include "cpu/simple_sum.hpp"
 */

@@ -19,8 +19,8 @@
 #include "mkldnn.hpp"
 
 #define EXPAND_FORMATS(src, weights, bias, dst) \
-    { mkldnn::memory::format::src, mkldnn::memory::format::weights, \
-    mkldnn::memory::format::bias, mkldnn::memory::format::dst }
+    { mkldnn::memory::format_tag::src, mkldnn::memory::format_tag::weights, \
+    mkldnn::memory::format_tag::bias, mkldnn::memory::format_tag::dst }
 
 #define ENGINE mkldnn::engine::kind::cpu
 #define ALGORITHM mkldnn::convolution_direct
@@ -73,7 +73,7 @@
 #define CONCAT_WITH_UNDERSCORE_(a,b) a ## _ ## b
 #define CONCAT_WITH_UNDERSCORE(a,b) CONCAT_WITH_UNDERSCORE_(a,b)
 
-#define INST_TEST_CASE_(str, ...) INSTANTIATE_TEST_CASE_P( \
+#define INST_TEST_CASE_(str, ...) INSTANTIATE_TEST_SUITE_P( \
         str, convolution_test, ::testing::Values(__VA_ARGS__))
 #define INST_TEST_CASE(str, ...) INST_TEST_CASE_( \
         CONCAT_WITH_UNDERSCORE(TEST_CASE_NAME_PREFIX, str), __VA_ARGS__)
@@ -88,10 +88,10 @@
     EXPAND_FORMATS(src, weights, bias, dst), /* empty attributes */ {}, \
     {__VA_ARGS__}, true, code }
 
-#define PARAMS_ATTR(src, weights, bias, dst, round_mode, scale, policy, ...) \
+#define PARAMS_ATTR(src, weights, bias, dst, scale, policy, ...) \
     test_convolution_params_t { ENGINE, ALGORITHM, \
     EXPAND_FORMATS(src, weights, bias, dst), \
-    {mkldnn::round_mode, scale, test_convolution_attr_t::scale_t::policy}, \
+    {scale, test_convolution_attr_t::scale_t::policy}, \
     {__VA_ARGS__} }
 
 #ifdef TEST_PARAM_ATTR

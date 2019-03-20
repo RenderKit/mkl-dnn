@@ -91,7 +91,7 @@ int str2desc(desc_t *desc, const char *str) {
         if (!strncmp(p, s, strlen(p))) { \
             ok = 1; s += strlen(p); \
             char *end_s; d. c = cvfunc(s, &end_s); s += (end_s - s); \
-            /* printf("@@@debug: %s: %d\n", p, d. c); */ \
+            /* printf("@@@debug: %s: " IFMT "\n", p, d. c); */ \
         } \
     } while (0)
 #   define CASE_N(c, cvfunc) CASE_NN(#c, c, cvfunc)
@@ -127,11 +127,11 @@ void desc2str(const desc_t *d, char *buffer, bool canonical) {
         buffer += l; rem_len -= l; \
     } while(0)
 
-    if (canonical || d->mb != 2) DPRINT("mb%d", d->mb);
-    DPRINT("ic%d", d->ic);
-    if (d->id > 1) DPRINT("id%d", d->id);
-    DPRINT("ih%d", d->ih);
-    if (canonical || d->iw != d->ih || d->id > 1) DPRINT("iw%d", d->iw);
+    if (canonical || d->mb != 2) DPRINT("mb" IFMT "", d->mb);
+    DPRINT("ic" IFMT "", d->ic);
+    if (d->id > 1) DPRINT("id" IFMT "", d->id);
+    DPRINT("ih" IFMT "", d->ih);
+    if (canonical || d->iw != d->ih || d->id > 1) DPRINT("iw" IFMT "", d->iw);
     if (canonical || d->eps != 1.f/16) DPRINT("eps%g", d->eps);
     DPRINT("n%s", d->name);
 
@@ -142,14 +142,14 @@ void prb2str(const prb_t *p, char *buffer, bool canonical) {
     char desc_buf[max_desc_len];
     char dir_str[32] = {0};
     char dt_str[16] = {0};
-    char fmt_str[32] = {0};
+    char tag_str[32] = {0};
     char flags_str[16] = {0};
     char attr_buf[max_attr_len];
     char check_str[24] = {0};
     desc2str(p, desc_buf, canonical);
     snprintf(dir_str, sizeof(dir_str), "--dir=%s ", dir2str(p->dir));
     snprintf(dt_str, sizeof(dt_str), "--dt=%s ", dt2str(p->dt));
-    snprintf(fmt_str, sizeof(fmt_str), "--fmt=%s ", fmt2str(p->fmt));
+    snprintf(tag_str, sizeof(tag_str), "--tag=%s ", tag2str(p->tag));
     snprintf(flags_str, sizeof(flags_str), "--flags=%s ", flags2str(p->flags));
     bool is_attr_def = p->attr.is_def();
     if (!is_attr_def) {
@@ -166,8 +166,8 @@ void prb2str(const prb_t *p, char *buffer, bool canonical) {
             p->dir == FWD_B ? "" : dir_str,
             p->dt == mkldnn_f32 ? "" : dt_str,
             is_bnorm_3d(p)
-                ? p->fmt == mkldnn_ncdhw ? "" : fmt_str
-                : p->fmt == mkldnn_nchw ? "" : fmt_str,
+                ? p->tag == mkldnn_ncdhw ? "" : tag_str
+                : p->tag == mkldnn_nchw ? "" : tag_str,
             p->flags == (flags_t)0 ? "" : flags_str,
             is_attr_def ? "" : attr_buf,
             desc_buf);

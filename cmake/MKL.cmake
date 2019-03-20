@@ -95,7 +95,8 @@ function(detect_mkl LIBNAME)
     if (MKLINC AND LIBNAME MATCHES "mklml")
         get_filename_component(__mklinc_root "${MKLINC}" PATH)
         find_library(tmp_MKLLIB NAMES "mkl_rt"
-            HINTS ${__mklinc_root}/lib/intel64)
+            HINTS ${__mklinc_root}/lib/intel64
+            NO_DEFAULT_PATH)
         set_if(tmp_MKLLIB MKLINC "")
         unset(tmp_MKLLIB CACHE)
     endif()
@@ -121,10 +122,14 @@ function(detect_mkl LIBNAME)
     endif()
 
     get_filename_component(__mklinc_root "${MKLINC}" PATH)
+
+    unset(MKLLIB CACHE) # make find_library to redo the search
+    # At first, try to locate Intel MKL in the path where the header was found
     find_library(MKLLIB NAMES ${LIBNAME}
-        HINTS   ${MKLROOT}/lib ${MKLROOT}/lib/intel64
-                $ENV{MKLROOT}/lib $ENV{MKLROOT}/lib/intel64
-                ${__mklinc_root}/lib ${__mklinc_root}/lib/intel64)
+        PATHS ${__mklinc_root}/lib ${__mklinc_root}/lib/intel64
+        NO_DEFAULT_PATH)
+    # On failure, check the system paths
+    find_library(MKLLIB NAMES ${LIBNAME})
     if(NOT MKLLIB)
         return()
     endif()

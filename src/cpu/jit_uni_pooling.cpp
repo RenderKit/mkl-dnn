@@ -17,24 +17,21 @@
 #include "mkldnn_types.h"
 
 #include "c_types_map.hpp"
-#include "jit_uni_pooling.hpp"
 #include "type_helpers.hpp"
 #include "nstl.hpp"
+
+#include "jit_uni_pooling.hpp"
 
 namespace mkldnn {
 namespace impl {
 namespace cpu {
 
 template <cpu_isa_t isa>
-void jit_uni_pooling_fwd_t<isa>::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-    auto indices = pd()->desc()->alg_kind == alg_kind::pooling_max ?
-        reinterpret_cast<unsigned char *>(this->memory(1)) : nullptr;
-
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper indices_d(pd()->workspace_pd());
+void jit_uni_pooling_fwd_t<isa>::execute_forward(const data_t *src,
+        data_t *dst, char *indices) const {
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper indices_d(pd()->workspace_md());
     const size_t ind_dt_size = indices
         ? types::data_type_size(indices_d.data_type()) : 0;
 
@@ -71,15 +68,11 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward() const {
 }
 
 template <cpu_isa_t isa>
-void jit_uni_pooling_fwd_t<isa>::execute_forward_3d() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-    auto indices = pd()->desc()->alg_kind == alg_kind::pooling_max ?
-        reinterpret_cast<unsigned char *>(this->memory(1)) : nullptr;
-
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper indices_d(pd()->workspace_pd());
+void jit_uni_pooling_fwd_t<isa>::execute_forward_3d(const data_t *src,
+        data_t *dst, char *indices) const {
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper indices_d(pd()->workspace_md());
     const size_t ind_dt_size = indices
         ? types::data_type_size(indices_d.data_type()) : 0;
 
@@ -129,17 +122,12 @@ void jit_uni_pooling_fwd_t<isa>::execute_forward_3d() const {
     });
 }
 
-
 template <cpu_isa_t isa>
-void jit_uni_pooling_bwd_t<isa>::execute_backward() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
-    auto indices = pd()->desc()->alg_kind == alg_kind::pooling_max ?
-        reinterpret_cast<const char*>(this->input_memory(1)) : nullptr;
-
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper indices_d(pd()->workspace_pd());
+void jit_uni_pooling_bwd_t<isa>::execute_backward(const data_t *diff_dst,
+        const char *indices, data_t *diff_src) const {
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper indices_d(pd()->workspace_md());
     const size_t ind_dt_size = indices
         ? types::data_type_size(indices_d.data_type()) : 0;
 
@@ -178,15 +166,11 @@ void jit_uni_pooling_bwd_t<isa>::execute_backward() const {
 }
 
 template <cpu_isa_t isa>
-void jit_uni_pooling_bwd_t<isa>::execute_backward_3d() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
-    auto indices = pd()->desc()->alg_kind == alg_kind::pooling_max ?
-        reinterpret_cast<const char*>(this->input_memory(1)) : nullptr;
-
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper indices_d(pd()->workspace_pd());
+void jit_uni_pooling_bwd_t<isa>::execute_backward_3d(const data_t *diff_dst,
+        const char *indices, data_t *diff_src) const {
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper indices_d(pd()->workspace_md());
     const size_t ind_dt_size = indices
         ? types::data_type_size(indices_d.data_type()) : 0;
 

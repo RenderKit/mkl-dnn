@@ -828,22 +828,18 @@ static void prb_thread_kernel_balance(tr::prb_t &prb, int &ndims_ker_max) {
 
 struct jit_uni_reorder_t : public cpu_primitive_t {
     struct pd_t : public cpu_reorder_pd_t {
-        pd_t(const cpu_memory_pd_t *input_pd, const cpu_memory_pd_t *output_pd,
-                const primitive_attr_t *attr)
-            : cpu_reorder_pd_t(input_pd, output_pd, attr) {}
+        using cpu_reorder_pd_t::cpu_reorder_pd_t;
 
         DECLARE_COMMON_PD_T("jit:uni", jit_uni_reorder_t);
 
         static status_t create(reorder_pd_t **reorder_pd,
-                const memory_pd_t *input_pd, const memory_pd_t *output_pd,
-                const primitive_attr_t *attr) {
-            const memory_desc_t *imd = input_pd->desc();
-            const memory_desc_t *omd = output_pd->desc();
-
+                engine_t *engine, const primitive_attr_t *attr,
+                engine_t *src_engine, const memory_desc_t *src_md,
+                engine_t *dst_engine, const memory_desc_t *dst_md) {
             auto prb = tr::prb_t();
 
-            status_t prb_init_status = prb_init(prb, *imd, *omd, attr);
-            if (prb_init_status != success) return prb_init_status;
+            status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
+            if (prb_init_status != status::success) return prb_init_status;
 
             DEBUG({ printf("init : "); prb_dump(prb); });
             prb_normalize(prb);
@@ -867,10 +863,13 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
 
             DEBUG({ printf("ker  : "); prb_dump(ker_desc.prb); });
 
-            auto _pd = new pd_t((const cpu_memory_pd_t *)input_pd,
-                    (const cpu_memory_pd_t *)output_pd, attr);
-            if (_pd == nullptr) return out_of_memory;
-            if (_pd->init() != success) { delete _pd; return unimplemented; }
+            auto _pd = new pd_t(engine, attr, src_engine, src_md, dst_engine,
+                    dst_md);
+            if (_pd == nullptr) return status::out_of_memory;
+            if (_pd->init() != status::success) {
+                delete _pd;
+                return status::unimplemented;
+            }
             _pd->prb_ = prb;
             _pd->ker_desc_ = ker_desc;
             return safe_ptr_assign<reorder_pd_t>(*reorder_pd, _pd);
@@ -880,9 +879,7 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
         tr::kernel_t::desc_t ker_desc_;
     };
 
-    jit_uni_reorder_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs) {
+    jit_uni_reorder_t(const pd_t *apd): cpu_primitive_t(apd) {
         kernel_ = tr::kernel_t::create(pd()->ker_desc_);
         assert(kernel_);
     }
@@ -966,12 +963,9 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
         assert(ndims - ndims_ker <= ndims_driver_max);
 
         if (ndims - ndims_ker == 0) {
-            set_rnd_mode(pd()->attr()->round_mode_);
             omp_driver_0d(ndims_ker, in, out, scale);
-            restore_rnd_mode();
         } else {
             parallel(0, [&](const int ithr, const int nthr) {
-                set_rnd_mode(pd()->attr()->round_mode_);
                 switch (ndims - ndims_ker) {
                 case 1: omp_driver_1d(ithr, nthr, ndims_ker, in, out, scale); break;
                 case 2: omp_driver_2d(ithr, nthr, ndims_ker, in, out, scale); break;
@@ -979,18 +973,17 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
                 case 4: omp_driver_4d(ithr, nthr, ndims_ker, in, out, scale); break;
                 default: assert(!"unimplemented");
                 }
-                restore_rnd_mode();
             });
         }
     }
 
-    virtual void execute(event_t *e) const {
-        auto in = reinterpret_cast<const char *>(input_memory(0));
-        auto out = reinterpret_cast<char *>(memory());
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        auto in = CTX_IN_MEM(const char *, MKLDNN_ARG_FROM);
+        auto out = CTX_OUT_MEM(char *, MKLDNN_ARG_TO);
 
         omp_driver(in, out, pd()->attr()->output_scales_.scales_);
 
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
     enum { ndims_driver_max = 4 };
@@ -1001,10 +994,11 @@ private:
 };
 
 status_t jit_uni_reorder_create(reorder_pd_t **reorder_pd,
-        const memory_pd_t *input_pd, const memory_pd_t *output_pd,
-        const primitive_attr_t *attr) {
-    return jit_uni_reorder_t::pd_t::create(reorder_pd, input_pd, output_pd,
-            attr);
+        engine_t *engine, const primitive_attr_t *attr,
+        engine_t *src_engine, const memory_desc_t *src_md,
+        engine_t *dst_engine, const memory_desc_t *dst_md) {
+    return jit_uni_reorder_t::pd_t::create(reorder_pd, engine, attr,
+            src_engine, src_md, dst_engine, dst_md);
 }
 
 }

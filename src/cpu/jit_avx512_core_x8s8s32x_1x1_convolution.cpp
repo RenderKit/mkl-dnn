@@ -28,7 +28,6 @@ namespace impl {
 namespace cpu {
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::memory_tracking::names;
 using namespace mkldnn::impl::utils;
 
@@ -57,16 +56,15 @@ void balance2D(U nthr, U ithr, T ny, T &ny_start, T &ny_end,
 
 /* convolution forward */
 template <data_type_t src_type, data_type_t dst_type>
-void jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t
-                              <src_type, dst_type>::execute_forward() const
+void jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<src_type, dst_type>::
+execute_forward(const exec_ctx_t &ctx) const
 {
-    auto src = reinterpret_cast<const src_data_t *>(this->input_memory(0));
-    auto weights =
-        reinterpret_cast<const wei_data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const char *>(this->input_memory(2));
-    auto dst = reinterpret_cast<dst_data_t *>(this->memory());
+    auto src = CTX_IN_MEM(const src_data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const wei_data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(dst_data_t *, MKLDNN_ARG_DST);
 
-    auto scratchpad = this->scratchpad();
+    auto scratchpad = this->scratchpad(ctx);
 
     if (pd()->jcp_.signed_input && pd()->jcp_.ver != ver_vnni) {
         auto local_scales = scratchpad.template get<float>(
@@ -92,9 +90,9 @@ void jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<src_type, dst_type>
 ::execute_forward_thr(const int ithr, const int nthr, const src_data_t *src,
         const wei_data_t *weights, const char *bias, dst_data_t *dst,
         const memory_tracking::grantor_t &scratchpad) const {
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
 
     const size_t bia_dt_size = pd()->with_bias()
         ? types::data_type_size(pd()->desc()->bias_desc.data_type) : 0;
@@ -129,10 +127,14 @@ void jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<src_type, dst_type>
     const int nb_oc = jcp.nb_load;
     const int os_block = jcp.bcast_block;
 
-
     int bcast_start{0}, bcast_end{0}, ocb_start{0}, ocb_end{0};
     balance2D(nthr, ithr, work_amount, bcast_start, bcast_end,
-        jcp.nb_load, ocb_start, ocb_end, jcp.load_grp_count);
+        jcp.nb_load / jcp.nb_load_chunk, ocb_start, ocb_end,
+        jcp.load_grp_count);
+    if (jcp.nb_load_chunk > 1) {
+        ocb_start *= jcp.nb_load_chunk;
+        ocb_end *= jcp.nb_load_chunk;
+    }
 
     auto init_bcast = [&](int iwork, int &n, int &g, int &bcast_step,
             int &oh, int &ow, int &ih, int &iw)

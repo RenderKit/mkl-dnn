@@ -19,7 +19,6 @@
 #include "nstl.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
-#include "cpu_memory.hpp"
 
 #include <math.h>
 
@@ -67,7 +66,7 @@ bool is_winograd_faster_than_direct(const jit_conv_winograd_conf_t &jcp) {
     /* Determines if current winograd implementation is faster than direct.
        Following conditions are empirical and based on performance data */
     unsigned int ncores_per_socket =
-        cpu.getNumCores(Xbyak::util::intel_cpu_topology_level::core_level);
+        cpu.getNumCores(Xbyak::util::IntelCpuTopologyLevel::CoreLevel);
     unsigned int nthreads = mkldnn_get_max_threads();
 
     if (jcp.prop_kind == prop_kind::forward_inference) {
@@ -234,7 +233,7 @@ bool check_kernel_cond(int dimM_block, int dimM_reg_block, int dimM_simd_block,
 }
 }
 
-using namespace mkldnn::impl::memory_format;
+using namespace mkldnn::impl::format_tag;
 using namespace mkldnn::impl::utils;
 using namespace Xbyak;
 
@@ -1186,22 +1185,27 @@ status_t _jit_avx512_core_fp32_wino_conv_4x3_data_kernel::init_conf_common(
     if ((jcp.ic % simd_w) != 0 || (jcp.oc % simd_w) != 0)
         return status::unimplemented;
 
-    if (src_d.format() != nChw16c)
-        return status::unimplemented;
-    if (!one_of(weights_d.format(), any,
-                with_groups ? gOIhw16i16o : OIhw16i16o, wino_fmt))
-        return status::unimplemented;
-    if (dst_d.format() != nChw16c)
-        return status::unimplemented;
+    format_tag_t dat_tag = nChw16c;
+    jcp.src_tag = src_d.matches_one_of_tag(dat_tag);
+    jcp.dst_tag = dst_d.matches_one_of_tag(dat_tag);
+
+    if (jcp.src_tag != dat_tag) return status::unimplemented;
+    if (jcp.dst_tag != dat_tag) return status::unimplemented;
+
+    if (!one_of(weights_d.format_kind(), format_kind::any, format_kind::wino)) {
+        format_tag_t wei_tag = with_groups ? gOIhw16i16o : OIhw16i16o;
+        jcp.wei_tag = weights_d.matches_one_of_tag(wei_tag);
+        if (jcp.wei_tag != wei_tag)
+            return status::unimplemented;
+    }
 
     bool layout_consistency = true
-            && jcp.ic <= src_d.blocking_desc().padding_dims[1]
-            && jcp.oc <= dst_d.blocking_desc().padding_dims[1]
-            && (weights_d.format() == any || weights_d.format() == wino_fmt
-                    || (jcp.ic <= weights_d.blocking_desc()
-                                            .padding_dims[with_groups + 1]
-                            && jcp.oc <= weights_d.blocking_desc()
-                                            .padding_dims[with_groups + 0]));
+            && jcp.ic <= src_d.padded_dims()[1]
+            && jcp.oc <= dst_d.padded_dims()[1]
+            && (one_of(weights_d.format_kind(),
+                        format_kind::any, format_kind::wino)
+                    || (jcp.ic <= weights_d.padded_dims()[with_groups + 1]
+                        && jcp.oc <= weights_d.padded_dims()[with_groups + 0]));
     if (!layout_consistency)
         return status::unimplemented;
 
@@ -1425,11 +1429,10 @@ bool jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::post_ops_ok(
 
 status_t jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::init_conf(
         jit_conv_winograd_conf_t &jcp, const convolution_desc_t &cd,
-        const cpu_memory_t::pd_t &src_pd, cpu_memory_t::pd_t &weights_pd,
-        const cpu_memory_t::pd_t &dst_pd, const primitive_attr_t &attr) {
+        const memory_desc_t &src_md, memory_desc_t &weights_md,
+        const memory_desc_t &dst_md, const primitive_attr_t &attr) {
 
-    status_t st = init_conf_common(jcp, cd,
-                        *src_pd.desc(), *weights_pd.desc(), *dst_pd.desc());
+    status_t st = init_conf_common(jcp, cd, src_md, weights_md, dst_md);
 
     if (st != status::success)
         return st;
@@ -1439,7 +1442,7 @@ status_t jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::init_conf(
     jcp.jtiles = (jcp.oh + tile_size - 1) / tile_size;
     jcp.ntiles = jcp.mb * jcp.itiles * jcp.jtiles;
 
-    jcp.with_bias = cd.bias_desc.format != memory_format::undef;
+    jcp.with_bias = cd.bias_desc.format_kind != format_kind::undef;
 
     if (!post_ops_ok(jcp, attr))
         return status::unimplemented;
@@ -1470,11 +1473,11 @@ status_t jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::init_conf(
     /* re-create weights primitive descriptor
     and set weights wino_blocking */
     if (cd.prop_kind == mkldnn_forward_inference) {
-        memory_desc_t expect_wei_md = *weights_pd.desc();
+        memory_desc_t expect_wei_md = weights_md;
 
-        expect_wei_md.format = mkldnn_wino_fmt;
+        expect_wei_md.format_kind = format_kind::wino;
         expect_wei_md.data_type = data_type::f32;
-        mkldnn_wino_desc_t &wd = expect_wei_md.layout_desc.wino_desc;
+        mkldnn_wino_desc_t &wd = expect_wei_md.format_desc.wino_desc;
         wd.wino_format = mkldnn_wino_wei_OBaaIBOIio;
         wd.r = 3;
         wd.alpha = 6;
@@ -1489,11 +1492,9 @@ status_t jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::init_conf(
         wd.size = max_size;
         wd.adj_scale = 1.f;
 
-        cpu_memory_t::pd_t new_weights_pd(
-            weights_pd.engine(), &expect_wei_md);
-        if (weights_pd.desc()->format == memory_format::any)
-            weights_pd = new_weights_pd;
-        if (!weights_pd.is_equal(&new_weights_pd))
+        if (weights_md.format_kind == format_kind::any)
+            weights_md = expect_wei_md;
+        if (weights_md != expect_wei_md)
             return status::unimplemented;
     }
 
@@ -2523,7 +2524,7 @@ status_t jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_kernel::init_conf(
     jcp.iwp = jcp.iw + jcp.l_pad + jcp.r_pad;
     jcp.ohp = jcp.oh;
     jcp.owp = jcp.ow;
-    jcp.with_bias = (cd.diff_bias_desc.format != memory_format::undef);
+    jcp.with_bias = (cd.diff_bias_desc.format_kind != format_kind::undef);
     jcp.dilate_h = cd.dilates[0];
     jcp.dilate_w = cd.dilates[1];
 
@@ -2553,18 +2554,22 @@ status_t jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_kernel::init_conf(
         return status::unimplemented;
     if ((jcp.ic % simd_w) != 0 || (jcp.oc % simd_w) != 0)
         return status::unimplemented;
-    if (src_d.format() != nChw16c)
-        return status::unimplemented;
-    if (diff_weights_d.format() != (with_groups ? gOIhw16i16o : OIhw16i16o))
-        return status::unimplemented;
-    if (diff_dst_d.format() != nChw16c)
-        return status::unimplemented;
+
+    format_tag_t dat_tag = nChw16c;
+    format_tag_t wei_tag = with_groups ? gOIhw16i16o : OIhw16i16o;
+    jcp.src_tag = src_d.matches_one_of_tag(dat_tag);
+    jcp.wei_tag = diff_weights_d.matches_one_of_tag(wei_tag);
+    jcp.dst_tag = diff_dst_d.matches_one_of_tag(dat_tag);
+
+    if (jcp.src_tag != dat_tag) return status::unimplemented;
+    if (jcp.wei_tag != wei_tag) return status::unimplemented;
+    if (jcp.dst_tag != dat_tag) return status::unimplemented;
 
     bool layout_consistency = true
-        && jcp.ic <= src_d.blocking_desc().padding_dims[1]
-        && jcp.oc <= diff_dst_d.blocking_desc().padding_dims[1]
-        && jcp.ic <= diff_weights_d.blocking_desc().padding_dims[with_groups + 1]
-        && jcp.oc <= diff_weights_d.blocking_desc().padding_dims[with_groups + 0];
+        && jcp.ic <= src_d.padded_dims()[1]
+        && jcp.oc <= diff_dst_d.padded_dims()[1]
+        && jcp.ic <= diff_weights_d.padded_dims()[with_groups + 1]
+        && jcp.oc <= diff_weights_d.padded_dims()[with_groups + 0];
     if (!layout_consistency) return status::unimplemented;
 
     /******************Kernel blocking Parameters ***********/

@@ -16,13 +16,11 @@
 
 #include <assert.h>
 
-#include "cpu_engine.hpp"
-#include "cpu_memory.hpp"
 #include "type_helpers.hpp"
 #include "verbose.hpp"
 
-#include "cpu_concat.hpp"
-#include "cpu_sum.hpp"
+#include "cpu_engine.hpp"
+#include "cpu_memory.hpp"
 
 //#include "cpu/rnn/ref_rnn.hpp"
 
@@ -69,24 +67,10 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace mkldnn::impl::status;
-
-status_t cpu_engine_t::memory_primitive_desc_create(memory_pd_t **pd,
-        const memory_desc_t *desc) {
-    return safe_ptr_assign<memory_pd_t>(*pd,
-            new cpu_memory_t::pd_t(this, desc));
-}
-
-status_t cpu_engine_t::view_primitive_desc_create(view_pd_t **view_pd,
-            const memory_pd_t *memory_pd, const dims_t dims,
-            const dims_t offsets) {
-    assert(memory_pd->engine() == this);
-    cpu_view_t::pd_t *cpu_vpd = nullptr;
-    status_t status = cpu_view_t::pd_t::create(&cpu_vpd,
-            (const cpu_memory_t::pd_t *)memory_pd, dims, offsets);
-    if (status != success) return status;
-    *view_pd = cpu_vpd;
-    return success;
+status_t cpu_engine_t::memory_create(memory_t **memory,
+        const memory_desc_t *md, void *handle) {
+    return safe_ptr_assign<memory_t>(*memory,
+            new cpu_memory_t(this, md, handle));
 }
 
 using pd_create_f = mkldnn::impl::engine_t::primitive_desc_create_f;
@@ -110,8 +94,6 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_avx512_common_1x1_convolution_fwd_f32_t),
     INSTANCE(jit_avx512_common_1x1_convolution_bwd_data_f32_t),
     INSTANCE(jit_avx512_common_1x1_convolution_bwd_weights_t),
-    INSTANCE(jit_avx512_common_1x1_convolution_fwd_s16s16s32_t),
-    INSTANCE(jit_avx512_common_1x1_convolution_bwd_data_s16s16s32_t),
     */
     INSTANCE(jit_avx512_core_fp32_wino_conv_2x3_fwd_t),
     INSTANCE(jit_avx512_core_fp32_wino_conv_4x3_fwd_t),
@@ -153,7 +135,6 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<s32>),
     INSTANCE(jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<s8>),
     INSTANCE(jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<u8>),
-    INSTANCE(jit_avx512_common_convolution_fwd_t<s16, s16, s32>),
     INSTANCE(jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<u8,f32>),
     INSTANCE(jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<u8,s32>),
     INSTANCE(jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t<u8,u8>),
@@ -170,8 +151,6 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_avx512_core_x8s8s32x_convolution_fwd_t<s8,s32>),
     INSTANCE(jit_avx512_core_x8s8s32x_convolution_fwd_t<s8,u8>),
     INSTANCE(jit_avx512_core_x8s8s32x_convolution_fwd_t<s8,s8>),
-    INSTANCE(jit_avx512_common_convolution_bwd_data_t<s16, s16, s32>),
-    INSTANCE(jit_avx512_common_convolution_bwd_weights_t<s16, s16, s32>),
     INSTANCE(_gemm_x8s8s32x_convolution_fwd_t<u8, s32>),
     INSTANCE(_gemm_x8s8s32x_convolution_fwd_t<u8, u8>),
     INSTANCE(_gemm_x8s8s32x_convolution_fwd_t<u8, s8>),
@@ -184,17 +163,14 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(_gemm_u8s8s32x_convolution_bwd_data_t<u8>),
     INSTANCE(_gemm_u8s8s32x_convolution_bwd_data_t<s8>),
     INSTANCE(_gemm_u8s8s32x_convolution_bwd_data_t<f32>),
-    INSTANCE(ref_convolution_fwd_t<s16, s16, s32, s32>),
     INSTANCE(ref_convolution_fwd_t<u8, s8, f32, s32>),
     INSTANCE(ref_convolution_fwd_t<u8, s8, s32, s32>),
     INSTANCE(ref_convolution_fwd_t<u8, s8, s8, s32>),
     INSTANCE(ref_convolution_fwd_t<u8, s8, u8, s32>),
-    INSTANCE(ref_convolution_bwd_data_t<s32, s16, s16, s32>),
     INSTANCE(ref_convolution_bwd_data_t<f32, s8, u8, s32>),
     INSTANCE(ref_convolution_bwd_data_t<s32, s8, u8, s32>),
     INSTANCE(ref_convolution_bwd_data_t<s8, s8, u8, s32>),
     INSTANCE(ref_convolution_bwd_data_t<u8, s8, u8, s32>),
-    INSTANCE(ref_convolution_bwd_weights_t<s16, s32, s16, s32>),
     */
     /* deconv */
     /*
@@ -237,11 +213,9 @@ static const pd_create_f cpu_impl_list[] = {
     /* eltwise (int) */
     /*
     INSTANCE(ref_eltwise_fwd_t<s32>),
-    INSTANCE(ref_eltwise_fwd_t<s16>),
     INSTANCE(ref_eltwise_fwd_t<s8>),
     INSTANCE(ref_eltwise_fwd_t<u8>),
     INSTANCE(ref_eltwise_bwd_t<s32>),
-    INSTANCE(ref_eltwise_bwd_t<s16>),
     */
     /* softmax */
     /*
@@ -268,11 +242,9 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_uni_i8i8_pooling_fwd_t<avx512_core>),
     INSTANCE(jit_uni_i8i8_pooling_fwd_t<avx2>),
     INSTANCE(ref_pooling_fwd_t<s32>),
-    INSTANCE(ref_pooling_fwd_t<s16, s32>),
     INSTANCE(ref_pooling_fwd_t<s8, s32>),
     INSTANCE(ref_pooling_fwd_t<u8, s32>),
     INSTANCE(ref_pooling_bwd_t<s32>),
-    INSTANCE(ref_pooling_bwd_t<s16, s32>),
     */
     /* lrn */
     /*
@@ -322,8 +294,6 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(ref_inner_product_fwd_t<u8, s8, s8, s32>),
     INSTANCE(ref_inner_product_fwd_t<u8, s8, s32, s32>),
     INSTANCE(ref_inner_product_fwd_t<u8, s8, f32, s32>),
-    INSTANCE(ref_inner_product_fwd_t<s16, s16, s32, s32>),
-    INSTANCE(ref_inner_product_bwd_data_t<s32, s16, s16, s32>),
     */
     /* eol */
     nullptr,
@@ -336,40 +306,6 @@ const pd_create_f* cpu_engine_t::get_implementation_list() const {
 }
 
 cpu_engine_factory_t engine_factory;
-
-namespace {
-// XXX: this is a huge hammer. This disables all and any msan checks on
-// primitives outputs.
-//
-// A proper approach would be an implementation-specific unpoisoning.
-void unpoison_outputs(primitive_t *p)
-{
-    for(auto o: p->outputs()) {
-        assert(o->kind() == primitive_kind::memory);
-        void *p;
-        o->get_data_handle(&p);
-        size_t s = ((memory_pd_t *)o->pd())->get_size();
-        msan_unpoison(p, s);
-    }
-}
-}
-
-status_t cpu_engine_t::submit(primitive_t *p, event_t *e,
-        event_vector &prerequisites) {
-    /* FIXME: this should live in primitive execute function... */
-    if (mkldnn_verbose()->level) {
-        double ms = get_msec();
-        p->execute(e);
-        ms = get_msec() - ms;
-        printf("mkldnn_verbose,exec,%s,%g\n", p->pd()->info(), ms);
-        fflush(0);
-    } else {
-        p->execute(e);
-    }
-    if (msan_enabled)
-        unpoison_outputs(p);
-    return success;
-}
 
 }
 }

@@ -28,7 +28,6 @@ namespace impl {
 namespace cpu {
 
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::memory_tracking::names;
 using namespace mkldnn::impl::utils;
 
@@ -39,18 +38,19 @@ using namespace mkldnn::impl::utils;
 
 /* convolution forward */
 
-void jit_avx2_1x1_convolution_fwd_t::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto dst = reinterpret_cast<data_t *>(this->memory());
+void jit_avx2_1x1_convolution_fwd_t::execute_forward(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const data_t *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
 
     const auto &jcp = kernel_->jcp;
-    auto rtus_space = scratchpad().get<data_t>(key_conv_rtus_space);
+    auto rtus_space = scratchpad(ctx).get<data_t>(key_conv_rtus_space);
 
     const int work_amount = jcp.mb * jcp.ngroups * jcp.nb_bcast;
     const int ndims = dst_d.ndims();
@@ -155,7 +155,7 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward() const {
     };
 
     if (pd()->wants_padded_bias()) {
-        auto padded_bias = scratchpad().get<data_t>(key_conv_padded_bias);
+        auto padded_bias = scratchpad(ctx).get<data_t>(key_conv_padded_bias);
         utils::array_copy(padded_bias, bias, jcp.oc_without_padding);
         utils::array_set(padded_bias + jcp.oc_without_padding, 0.f,
                 jcp.oc - jcp.oc_without_padding);
@@ -165,22 +165,23 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward() const {
     parallel(0, ker);
 
     if (pd()->wants_zero_pad_dst())
-        output_memory_primitive(0)->zero_pad();
+        ctx.memory(MKLDNN_ARG_DST)->zero_pad();
 }
 
 /* convolution backward wtr data */
 
-void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t *>(this->memory());
+void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
 
     const auto &jcp = kernel_->jcp;
-    auto rtus_space = scratchpad().get<data_t>(key_conv_rtus_space);
+    auto rtus_space = scratchpad(ctx).get<data_t>(key_conv_rtus_space);
 
     // TODO (Roma): remove this restriction
     assert(jcp.stride_w == 1 && jcp.stride_h == 1);
@@ -280,9 +281,9 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data() const {
 /* convolution backward wtr weights */
 
 jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
-        const pd_t *apd, const input_vector &inputs,
-        const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs), kernel_(nullptr)
+        const pd_t *apd)
+    : cpu_primitive_t(apd)
+    , kernel_(nullptr)
     , rtus_driver_(nullptr)
 {
     kernel_ = new jit_avx2_1x1_conv_kernel_f32(pd()->jcp_, *pd()->attr());
@@ -292,18 +293,19 @@ jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
     init_rtus_driver<avx2>(this);
 }
 
-void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_weights = reinterpret_cast<data_t *>(this->memory(0));
-    auto diff_bias_in = reinterpret_cast<data_t *>(this->memory(1));
+void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_weights = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_WEIGHTS);
+    auto diff_bias_in = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_BIAS);
 
-    auto scratchpad = this->scratchpad();
+    auto scratchpad = this->scratchpad(ctx);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper diff_weights_d(pd()->diff_weights_pd(0));
-    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_pd(1));
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper diff_weights_d(pd()->diff_weights_md(0));
+    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_md(1));
 
     const auto &jcp = kernel_->jcp;
     auto rtus_space = scratchpad.get<data_t>(key_conv_rtus_space);
@@ -395,11 +397,11 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights() const {
                             + (ic_b * jcp.is + sp) * jcp.ic_block;
                         if (ndims == 3)
                             rp.src = src
-                                + iw * src_d.blocking_desc().strides[0][2];
+                                + iw * src_d.blocking_desc().strides[2];
                         else
                             rp.src = src
-                                + ih * src_d.blocking_desc().strides[0][2]
-                                + iw * src_d.blocking_desc().strides[0][3];
+                                + ih * src_d.blocking_desc().strides[2]
+                                + iw * src_d.blocking_desc().strides[3];
 
                         if (oc_b == 0)
                             rtus_driver_->ker_(&rp);

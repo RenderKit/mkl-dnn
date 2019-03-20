@@ -59,16 +59,16 @@ struct scales_t: public c_compatible {
     }
 
     bool has_default_values() const {
-        for (int c = 0; c < count_; ++c) {
+        for (dim_t c = 0; c < count_; ++c) {
             if(scales_[c] != 1.) return false;
         }
         return true;
     }
 
-    status_t set(int count, int mask, const float *scales);
+    status_t set(dim_t count, int mask, const float *scales);
     status_t set(float single_scale) { return this->set(1, 0, &single_scale); }
 
-    int count_;
+    dim_t count_;
     int mask_;
     float *scales_;
 
@@ -151,26 +151,29 @@ struct mkldnn_post_ops: public mkldnn::impl::c_compatible {
 
 struct mkldnn_primitive_attr: public mkldnn::impl::c_compatible {
     mkldnn_primitive_attr()
-        : round_mode_(mkldnn::impl::round_mode::nearest) {}
+        : scratchpad_mode_(mkldnn::impl::scratchpad_mode::library)
+    {}
 
     mkldnn_primitive_attr *clone() const
     { return new mkldnn_primitive_attr(*this); }
 
+    /** Returns true if the attributes have default values.
+     *
+     * @note The scratchpad_mode_ is not take into account */
     bool has_default_values() const {
        return true
-            && round_mode_ == mkldnn::impl::round_mode::nearest
             && output_scales_.has_default_values()
             && post_ops_.has_default_values()
             && rnn_data_qparams_.has_default_values()
             && rnn_weights_qparams_.has_default_values();
     }
 
-    mkldnn::impl::status_t set_round_mode(
-            mkldnn::impl::round_mode_t round_mode);
+    mkldnn::impl::status_t set_scratchpad_mode(
+            mkldnn::impl::scratchpad_mode_t scratchpad_mode);
     mkldnn::impl::status_t set_post_ops(
             const mkldnn::impl::post_ops_t &post_ops);
 
-    mkldnn::impl::round_mode_t round_mode_;
+    mkldnn::impl::scratchpad_mode_t scratchpad_mode_;
     mkldnn::impl::scales_t output_scales_;
     mkldnn::impl::post_ops_t post_ops_;
     mkldnn::impl::rnn_data_qparams_t rnn_data_qparams_;

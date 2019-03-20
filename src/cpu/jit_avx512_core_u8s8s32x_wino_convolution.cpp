@@ -18,8 +18,6 @@
 
 #include "c_types_map.hpp"
 #include "memory_tracking.hpp"
-#include "cpu_convolution_pd.hpp"
-#include "cpu_engine.hpp"
 #include "mkldnn_thread.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
@@ -33,7 +31,6 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::memory_tracking::names;
 using namespace mkldnn::impl::utils;
 using namespace Xbyak;
@@ -155,7 +152,7 @@ void jit_avx512_core_u8s8s32x_wino_conv_src_trans_t::generate() {
                 vpmovzxbd(zmm_i, vreg_i); // to int32
                 vcvtdq2ps(zmm_i, zmm_i); // to fp32
                 vmulps(zmm_i, zmm_i, zmm_src_alpha); // *alpha
-                vcvtps2dq(zmm_i | T_rn_sae, zmm_i); // to int32
+                vcvtps2dq(zmm_i, zmm_i); // to int32
                 vpmovusdb(vreg_i, zmm_i); // to u8
             }
         }
@@ -439,14 +436,8 @@ void jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t::generate() {
                 }
                 if (maybe_relu(1))
                     vmaxps(zmm, vreg_zero, zmm);
-                if (jcp.dst_dt != data_type::f32) {
-                    if (attr_.round_mode_ == round_mode::nearest)
-                        vcvtps2dq(zmm | T_rn_sae, zmm);
-                    else if (attr_.round_mode_ == round_mode::down)
-                        vcvtps2dq(zmm | T_rd_sae, zmm);
-                    else
-                        assert(!"unimplemented");
-                }
+                if (jcp.dst_dt != data_type::f32)
+                    vcvtps2dq(zmm, zmm);
                 switch (jcp.dst_dt) {
                 case data_type::f32:
                 case data_type::s32:
@@ -529,8 +520,8 @@ struct jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t: public jit_generator {
 
     static status_t init_conf(
             jit_conv_conf_2x3_wino_t &jcp, const convolution_desc_t &cd,
-            cpu_memory_t::pd_t &src_pd, cpu_memory_t::pd_t &weights_pd,
-            cpu_memory_t::pd_t &dst_pd, cpu_memory_t::pd_t &bias_pd,
+            memory_desc_t &src_md, memory_desc_t &weights_md,
+            memory_desc_t &dst_md, memory_desc_t &bias_md,
             const primitive_attr_t &attr);
 
     Zmm vreg_out(int n, int m) {
@@ -692,13 +683,13 @@ bool is_winograd_faster_than_direct(const jit_conv_conf_2x3_wino_t &jcp) {
 
 status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
 ::init_conf(jit_conv_conf_2x3_wino_t &jcp,
-            const convolution_desc_t &cd, cpu_memory_t::pd_t &src_pd,
-            cpu_memory_t::pd_t &wei_pd, cpu_memory_t::pd_t &dst_pd,
-            cpu_memory_t::pd_t &bias_pd, const primitive_attr_t &attr) {
-    const memory_desc_wrapper src_d(&src_pd);
-    const memory_desc_wrapper wei_d(&wei_pd);
-    const memory_desc_wrapper dst_d(&dst_pd);
-    const memory_desc_wrapper bias_d(&bias_pd);
+            const convolution_desc_t &cd, memory_desc_t &src_md,
+            memory_desc_t &wei_md, memory_desc_t &dst_md,
+            memory_desc_t &bias_md, const primitive_attr_t &attr) {
+    const memory_desc_wrapper src_d(&src_md);
+    const memory_desc_wrapper wei_d(&wei_md);
+    const memory_desc_wrapper dst_d(&dst_md);
+    const memory_desc_wrapper bias_d(&bias_md);
 
     const bool with_groups = wei_d.ndims() == src_d.ndims() + 1;
 
@@ -753,8 +744,7 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
         && one_of(jcp.l_pad, 0, 1);
     if (!ok) return status::unimplemented;
 
-    jcp.src_fmt = src_d.format();
-    jcp.with_bias = cd.bias_desc.format != memory_format::undef;
+    jcp.with_bias = cd.bias_desc.format_kind != format_kind::undef;
 
     if (!post_ops_ok(jcp, attr))
         return status::unimplemented;
@@ -946,11 +936,11 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
 
     /* re-create weights primitive descriptor
                                     and set weights wino_blocking */
-    memory_desc_t expect_wei_md = *(wei_pd.desc());
+    memory_desc_t expect_wei_md = wei_md;
 
-    expect_wei_md.format = mkldnn_wino_fmt;
+    expect_wei_md.format_kind = format_kind::wino;
     expect_wei_md.data_type = data_type::s8;
-    mkldnn_wino_desc_t &wd = expect_wei_md.layout_desc.wino_desc;
+    mkldnn_wino_desc_t &wd = expect_wei_md.format_desc.wino_desc;
     wd.wino_format = mkldnn_wino_wei_aaOIoi;
     wd.r = jcp.r;
     wd.alpha = jcp.alpha;
@@ -968,10 +958,9 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
                                 jcp.alpha * jcp.alpha * jcp.oc;
     wd.size = max_size;
 
-    cpu_memory_t::pd_t new_weights_pd(wei_pd.engine(), &expect_wei_md);
-    if (wei_pd.desc()->format == any)
-        wei_pd = new_weights_pd;
-    if (!wei_pd.is_equal(&new_weights_pd))
+    if (wei_md.format_kind == format_kind::any)
+        wei_md = expect_wei_md;
+    if (wei_md != expect_wei_md)
         return status::unimplemented;
 
     const int tilesize = jcp.alpha * jcp.alpha;
@@ -992,8 +981,8 @@ template <data_type_t dst_data_type>
 status_t jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<dst_data_type>::
         pd_t::jit_conf() {
     return jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t::init_conf(
-            jcp_, *this->desc(), this->src_pd_, this->weights_pd_,
-            this->dst_pd_,this->bias_pd_, *this->attr());
+            jcp_, *this->desc(), this->src_md_, this->weights_md_,
+            this->dst_md_,this->bias_md_, *this->attr());
 }
 
 template <data_type_t dst_data_type>
@@ -1007,15 +996,15 @@ init_scratchpad() {
     scratchpad.book(key_wino_M,
             sizeof(acc_data_t) * jcp_.size_wino_dst * nthr_multiplier, PAGE_4K);
 
+    dim_t scale_count = attr()->output_scales_.count_;
     scratchpad.book(key_conv_adjusted_scales,
-            sizeof(float) * nstl::max(attr()->output_scales_.count_, 16));
+            sizeof(float) * nstl::max<dim_t>(scale_count, 16));
 }
 
 template <data_type_t dst_data_type>
 jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<dst_data_type>::
-        jit_avx512_core_u8s8s32x_wino_convolution_fwd_t(const pd_t *apd,
-                const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs, true)
+        jit_avx512_core_u8s8s32x_wino_convolution_fwd_t(const pd_t *apd)
+    : cpu_primitive_t(apd)
 {
     kernel_ = new jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t(
             pd()->jcp_, *pd()->attr());
@@ -1049,24 +1038,24 @@ adjust_oscales(const memory_tracking::grantor_t &scratchpad) const {
 
 template <data_type_t dst_data_type>
 void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<dst_data_type>::
-execute_forward() const {
+execute_forward(const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const src_data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const wei_data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(dst_data_t *, MKLDNN_ARG_DST);
+
     const auto &jcp = kernel_->jcp;
     if (jcp.small_mb)
-        execute_forward_small_mb();
+        execute_forward_small_mb(src, weights, bias, dst, this->scratchpad(ctx));
     else
-        execute_forward_mbN();
+        execute_forward_mbN(src, weights, bias, dst, this->scratchpad(ctx));
 }
 
 template <data_type_t dst_data_type>
 void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<dst_data_type>::
-execute_forward_mbN() const {
-    auto src = reinterpret_cast<const src_data_t *>(input_memory(0));
-    auto wei = reinterpret_cast<const wei_data_t *>(input_memory(1));
-    auto bia = reinterpret_cast<const char *>(input_memory(2));
-    auto dst = reinterpret_cast<dst_data_t *>(memory(0));
-
-    auto scratchpad = this->scratchpad();
-
+execute_forward_mbN(const src_data_t *src, const wei_data_t *wei,
+        const char *bia, dst_data_t *dst,
+        const memory_tracking::grantor_t &scratchpad) const {
     const auto &jcp = kernel_->jcp;
     const float *oscales = adjust_oscales(scratchpad);
 
@@ -1174,14 +1163,9 @@ execute_forward_mbN() const {
 
 template <data_type_t dst_data_type>
 void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<dst_data_type>::
-execute_forward_small_mb() const {
-    auto src = reinterpret_cast<const src_data_t *>(input_memory(0));
-    auto wei = reinterpret_cast<const wei_data_t *>(input_memory(1));
-    auto bia = reinterpret_cast<const char *>(input_memory(2));
-    auto dst = reinterpret_cast<dst_data_t *>(memory(0));
-
-    auto scratchpad = this->scratchpad();
-
+execute_forward_small_mb(const src_data_t *src, const wei_data_t *wei,
+        const char *bia, dst_data_t *dst,
+        const memory_tracking::grantor_t &scratchpad) const {
     const auto &jcp = kernel_->jcp;
     const float *oscales = adjust_oscales(scratchpad);
 

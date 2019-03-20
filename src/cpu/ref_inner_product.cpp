@@ -31,25 +31,24 @@ using math::get_bias;
 
 template <data_type_t src_type, data_type_t wei_type, data_type_t dst_type,
          data_type_t acc_type>
-void ref_inner_product_fwd_t<src_type, wei_type, dst_type, acc_type>
-        ::execute_forward() const {
-    auto src = reinterpret_cast<const src_data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const wei_data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const char *>(this->input_memory(2));
-    auto dst = reinterpret_cast<dst_data_t *>(this->memory());
+void ref_inner_product_fwd_t<src_type, wei_type, dst_type, acc_type>::
+execute_forward(const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const src_data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const wei_data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(dst_data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
-    const memory_desc_wrapper bias_d(pd()->weights_pd(1));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
+    const memory_desc_wrapper bias_d(pd()->weights_md(1));
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC();
 
-    const bool src_has_spatial = utils::one_of(src_d.ndims(), 4, 5);
-
-    const bool is_3d = src_d.ndims() == 5;
+    const bool src_has_spatial = utils::one_of(src_d.ndims(), 3, 4, 5);
+    const int ndims = src_d.ndims() - 2;
 
     const auto &post_ops = pd()->attr()->post_ops_;
     const bool do_relu = post_ops.len_ == 1;
@@ -64,12 +63,22 @@ void ref_inner_product_fwd_t<src_type, wei_type, dst_type, acc_type>
             for (int kd = 0; kd < KD; ++kd) {
                 for (int kh = 0; kh < KH; ++kh) {
                     for (int kw = 0; kw < KW; ++kw) {
-                        if (is_3d)
+                        switch (ndims) {
+                        case 3:
                             d += (acc_data_t)src[src_d.off(mb, ic, kd, kh, kw)]
-                                * weights[weights_d.off(oc, ic, kd, kh, kw)];
-                        else
+                                    * weights[weights_d.off(
+                                              oc, ic, kd, kh, kw)];
+                            break;
+                        case 2:
                             d += (acc_data_t)src[src_d.off(mb, ic, kh, kw)]
-                                * weights[weights_d.off(oc, ic, kh, kw)];
+                                    * weights[weights_d.off(oc, ic, kh, kw)];
+                            break;
+                        case 1:
+                            d += (acc_data_t)src[src_d.off(mb, ic, kw)]
+                                    * weights[weights_d.off(oc, ic, kw)];
+                            break;
+                        default: assert(!"unsupported ndims size");
+                        }
                     }
                 }
             }
@@ -99,9 +108,9 @@ void ref_inner_product_fwd_t<src_type, wei_type, dst_type, acc_type>
         dst[dst_d.off(mb, oc)] = saturate<dst_data_t>(a);
     });
 }
+
 using namespace data_type;
 template struct ref_inner_product_fwd_t<f32>;
-template struct ref_inner_product_fwd_t<s16, s16, s32, s32>;
 template struct ref_inner_product_fwd_t<u8, s8, f32, s32>;
 template struct ref_inner_product_fwd_t<u8, s8, s32, s32>;
 template struct ref_inner_product_fwd_t<u8, s8, s8, s32>;
@@ -110,23 +119,22 @@ template struct ref_inner_product_fwd_t<u8, s8, u8, s32>;
 template <data_type_t diff_src_type, data_type_t wei_type,
          data_type_t diff_dst_type, data_type_t acc_type>
 void ref_inner_product_bwd_data_t<diff_src_type, wei_type, diff_dst_type,
-     acc_type>::execute_backward_data() const {
-    auto diff_dst = reinterpret_cast<const diff_dst_data_t *>(
-            this->input_memory(0));
-    auto weights = reinterpret_cast<const wei_data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<diff_src_data_t*>(this->memory());
+     acc_type>::execute_backward_data(const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const diff_dst_data_t *, MKLDNN_ARG_DIFF_DST);
+    auto weights = CTX_IN_MEM(const wei_data_t *, MKLDNN_ARG_WEIGHTS);
+    auto diff_src = CTX_OUT_MEM(diff_src_data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper weights_d(pd()->weights_pd(0));
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC();
 
-    const bool diff_src_has_spatial = utils::one_of(diff_src_d.ndims(), 4, 5);
-
-    const bool is_3d = diff_src_d.ndims() == 5;
+    const bool diff_src_has_spatial
+            = utils::one_of(diff_src_d.ndims(), 3, 4, 5);
+    const int ndims = diff_src_d.ndims() - 2;
 
     parallel_nd(MB, IC, [&](int mb, int ic) {
         if (diff_src_has_spatial) {
@@ -138,17 +146,36 @@ void ref_inner_product_bwd_data_t<diff_src_type, wei_type, diff_dst_type,
             for (int kw = 0; kw < KW; ++kw) {
                 acc_data_t ds = acc_data_t(0);
                 for (int oc = 0; oc < OC; ++oc) {
-                    if (is_3d)
+                    switch (ndims) {
+                    case 3:
                         ds += (acc_data_t)(diff_dst[diff_dst_d.off(mb, oc)]
-                            * weights[weights_d.off(oc, ic, kd, kh, kw)]);
-                    else
+                                * weights[weights_d.off(oc, ic, kd, kh, kw)]);
+                        break;
+                    case 2:
                         ds += (acc_data_t)(diff_dst[diff_dst_d.off(mb, oc)]
-                            * weights[weights_d.off(oc, ic, kh, kw)]);
+                                * weights[weights_d.off(oc, ic, kh, kw)]);
+                        break;
+                    case 1:
+                        ds += (acc_data_t)(diff_dst[diff_dst_d.off(mb, oc)]
+                                * weights[weights_d.off(oc, ic, kw)]);
+                        break;
+                    default: assert(!"unsupported ndims size");
+                    }
                 }
-                if (is_3d) diff_src[diff_src_d.off(mb, ic, kd, kh, kw)] =
-                    (diff_src_data_t)ds;
-                else diff_src[diff_src_d.off(mb, ic, kh, kw)] =
-                    (diff_src_data_t)ds;
+                switch (ndims) {
+                case 3:
+                    diff_src[diff_src_d.off(mb, ic, kd, kh, kw)]
+                            = (diff_src_data_t)ds;
+                    break;
+                case 2:
+                    diff_src[diff_src_d.off(mb, ic, kh, kw)]
+                            = (diff_src_data_t)ds;
+                    break;
+                case 1:
+                    diff_src[diff_src_d.off(mb, ic, kw)] = (diff_src_data_t)ds;
+                    break;
+                default: assert(!"unsupported ndims size");
+                }
             }
         } else {
             acc_data_t ds = acc_data_t(0);
@@ -162,27 +189,26 @@ void ref_inner_product_bwd_data_t<diff_src_type, wei_type, diff_dst_type,
 }
 
 template struct ref_inner_product_bwd_data_t<f32, f32, f32, f32>;
-template struct ref_inner_product_bwd_data_t<s32, s16, s16, s32>;
 
 template <impl::data_type_t data_type>
-void ref_inner_product_bwd_weights_t<data_type>::execute_backward_weights() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_weights = reinterpret_cast<data_t*>(this->memory(0));
-    auto diff_bias = reinterpret_cast<data_t*>(this->memory(1));
+void ref_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_weights = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_WEIGHTS);
+    auto diff_bias = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_BIAS);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper diff_weights_d(pd()->diff_weights_pd(0));
-    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_pd(1));
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper diff_weights_d(pd()->diff_weights_md(0));
+    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_md(1));
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC();
 
-    const bool src_has_spatial = utils::one_of(src_d.ndims(), 4 ,5);
-
-    const bool is_3d = src_d.ndims() == 5;
+    const bool src_has_spatial = utils::one_of(src_d.ndims(), 3, 4 ,5);
+    const int ndims = src_d.ndims() - 2;
 
     parallel_nd(OC, IC, [&](int oc, int ic) {
         if (src_has_spatial) {
@@ -192,19 +218,38 @@ void ref_inner_product_bwd_weights_t<data_type>::execute_backward_weights() cons
             for (int kd = 0; kd < KD; ++kd) {
                 for (int kh = 0; kh < KH; ++kh) {
                     for (int kw = 0; kw < KW; ++kw) {
-                        data_t *dw = is_3d
-                            ? &diff_weights[
-                            diff_weights_d.off(oc, ic, kd, kh, kw)]
-                            : &diff_weights[
-                            diff_weights_d.off(oc, ic, kh, kw)];
+                        data_t *dw(nullptr);
+                        switch (ndims) {
+                        case 3:
+                            dw = &diff_weights[diff_weights_d.off(
+                                    oc, ic, kd, kh, kw)];
+                            break;
+                        case 2:
+                            dw = &diff_weights[diff_weights_d.off(
+                                    oc, ic, kh, kw)];
+                            break;
+                        case 1:
+                            dw = &diff_weights[diff_weights_d.off(oc, ic, kw)];
+                            break;
+                        default: assert(!"unsupported ndims size");
+                        }
                         *dw = data_t(0);
                         for (int mb = 0; mb < MB; ++mb) {
-                            if (is_3d)
-                                *dw += diff_dst[diff_dst_d.off(mb, oc)] *
-                                    src[src_d.off(mb, ic, kd, kh, kw)];
-                            else
-                                *dw += diff_dst[diff_dst_d.off(mb, oc)] *
-                                    src[src_d.off(mb, ic, kh, kw)];
+                            switch (ndims) {
+                            case 3:
+                                *dw += diff_dst[diff_dst_d.off(mb, oc)]
+                                        * src[src_d.off(mb, ic, kd, kh, kw)];
+                                break;
+                            case 2:
+                                *dw += diff_dst[diff_dst_d.off(mb, oc)]
+                                        * src[src_d.off(mb, ic, kh, kw)];
+                                break;
+                            case 1:
+                                *dw += diff_dst[diff_dst_d.off(mb, oc)]
+                                        * src[src_d.off(mb, ic, kw)];
+                                break;
+                            default: assert(!"unsupported ndims size");
+                            }
                         }
                     }
                 }
@@ -220,7 +265,7 @@ void ref_inner_product_bwd_weights_t<data_type>::execute_backward_weights() cons
     });
 
     if (diff_bias) {
-        diff_bias += diff_bias_d.blocking_desc().offset_padding;
+        diff_bias += diff_bias_d.offset0();
 
         parallel_nd(OC, [&](int oc) {
             data_t *db = &diff_bias[oc];

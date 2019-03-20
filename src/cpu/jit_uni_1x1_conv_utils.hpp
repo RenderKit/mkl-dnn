@@ -50,14 +50,18 @@ inline void rtus_prepare(conv_pd_t *self, const convolution_desc_t *&conv_d,
         == prop_kind::backward_data;
 
     const int ndims = src_d->ndims;
+    const auto dat_tag = ndims == 3
+        ? memory_desc_wrapper(dst_d).matches_one_of_tag(
+                format_tag::nCw8c, format_tag::nCw16c)
+        : memory_desc_wrapper(dst_d).matches_one_of_tag(
+                format_tag::nChw8c, format_tag::nChw16c);
+
     bool rtus_applicable = true
         && utils::pick(ndims - 3,
             (conv_d->strides[0] != 1 && !one_of(conv_d->src_desc.data_type,
-                data_type::s16, data_type::s32)),
+                data_type::s32)),
             (conv_d->strides[0] != 1 || conv_d->strides[1] != 1))
-        && utils::one_of(src_d->format, memory_format::nCw8c,
-            memory_format::nCw16c, memory_format::nChw8c,
-            memory_format::nChw16c);
+        && dat_tag != format_tag::undef;
     for (int d = 2; d < ndims; ++d) {
         /* TODO: relax these conditions (by improving reducer) */
         rtus_applicable = rtus_applicable
@@ -79,14 +83,14 @@ inline void rtus_prepare(conv_pd_t *self, const convolution_desc_t *&conv_d,
             src_d = &(self->rtus_.conv_d_.diff_src_desc = *dst_d);
             self->rtus_.conv_d_.diff_src_desc.dims[1] = ic;
             memory_desc_wrapper::compute_blocking(
-                    self->rtus_.conv_d_.diff_src_desc);
+                    self->rtus_.conv_d_.diff_src_desc, dat_tag);
         } else {
             data_type_t data_type = self->rtus_.conv_d_.src_desc.data_type;
             src_d = &(self->rtus_.conv_d_.src_desc = *dst_d);
             self->rtus_.conv_d_.src_desc.dims[1] = ic;
             self->rtus_.conv_d_.src_desc.data_type = data_type;
             memory_desc_wrapper::compute_blocking(
-                    self->rtus_.conv_d_.src_desc);
+                    self->rtus_.conv_d_.src_desc, dat_tag);
         }
     }
 }
@@ -100,7 +104,7 @@ inline void rtus_prepare_space_info(conv_pd_t *self,
     const size_t factor = utils::pick_by_prop_kind(self->desc()->prop_kind,
             jcp.nb_reduce, jcp.nb_load_blocking_max, jcp.nb_bcast_blocking);
     size_t typesize = types::data_type_size(
-            conv_prop_agnostic_src_d(self->desc())->data_type);
+            conv_prop_invariant_src_d(self->desc())->data_type);
 
     self->rtus_.space_per_thread_ = factor * jcp.is * jcp.ic_block;
     scratchpad.book(memory_tracking::names::key_conv_rtus_space,
@@ -279,11 +283,7 @@ inline void init_rtus_driver(conv_t *self) {
     const int stride_w = cd.strides[ndims - 3];
 
     const bool is_bwd_data = cd.prop_kind == prop_kind::backward_data;
-    const auto &src_d = is_bwd_data ? *conf.diff_src_pd()->desc()
-                                    : *conf.src_pd()->desc();
-    assert((isa == avx2 && utils::one_of(src_d.format, memory_format::nCw8c,
-        memory_format::nChw8c)) || (isa == avx512_common && utils::one_of(
-            src_d.format, memory_format::nCw16c, memory_format::nChw16c)));
+    const auto &src_d = is_bwd_data ? *conf.diff_src_md() : *conf.src_md();
 
     const int ih = ndims == 3 ? 1 : src_d.dims[2];
     const int iw = src_d.dims[ndims - 1];
@@ -293,7 +293,7 @@ inline void init_rtus_driver(conv_t *self) {
     const int ws_step_icb = conf.jcp_.is;
     const bool src_to_ws = !is_bwd_data;
     const size_t typesize = types::data_type_size(
-            conv_prop_agnostic_src_d(self->pd()->desc())->data_type);
+            conv_prop_invariant_src_d(self->pd()->desc())->data_type);
 
     self->rtus_driver_ = new rtus_driver_t<isa>(iw, stride_w, src_step_h,
             src_step_icb, ws_step_icb, src_to_ws, typesize);

@@ -17,6 +17,8 @@
 #include "math_utils.hpp"
 #include "mkldnn_thread.hpp"
 #include "simple_q10n.hpp"
+
+#include "gemm/gemm.hpp"
 #include "gemm_x8s8s32x_inner_product.hpp"
 
 namespace mkldnn {
@@ -24,7 +26,7 @@ namespace impl {
 namespace cpu {
 
 using namespace math;
-using namespace memory_format;
+using namespace format_tag;
 using namespace memory_tracking::names;
 
 template<data_type_t src_type, data_type_t dst_type>
@@ -32,13 +34,11 @@ gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::pp_kernel_t::pp_kernel_t(
         const pd_t *pd, bool dst_is_acc)
     : ker_(nullptr), OC_(pd->OC())
     , bias_data_type_(data_type::undef), bias_data_type_size_(0)
-    , scale_idx_mult_(0), rmode_(round_mode::nearest)
-    , do_bias_(false), do_relu_(false)
+    , scale_idx_mult_(0), do_bias_(false), do_relu_(false)
 {
     using namespace types;
 
     scale_idx_mult_ = (pd->attr()->output_scales_.mask_ == (1 << 1));
-    rmode_ = pd->attr()->round_mode_;
 
     auto &post_ops = pd->attr()->post_ops_;
     do_relu_ = post_ops.len_ == 1;
@@ -63,7 +63,6 @@ void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::pp_kernel_t::generat
 {
     using namespace Xbyak;
     using namespace utils;
-    using namespace round_mode;
 
     // TODO: clean-up
     Reg64 reg_param = abi_param1;
@@ -158,8 +157,7 @@ void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::pp_kernel_t::generat
             vmaxps(vreg_dst(idx), vreg_dst(idx), vreg_zero);
 
         if (dst_type != data_type::f32) {
-            auto rmode_control = (rmode_ == nearest ? T_rn_sae : T_rd_sae);
-            vcvtps2dq(vreg_dst(idx) | rmode_control, vreg_dst(idx));
+            vcvtps2dq(vreg_dst(idx), vreg_dst(idx));
         }
 
         auto dst_addr = ptr[reg_dst + offset * sizeof(dst_data_t)];
@@ -388,25 +386,25 @@ void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::pp_kernel_t::operato
             d *= scales[oc * scale_idx_mult_];
             if (do_relu_ && d < 0)
                 d *= nslope;
-            dst[i] = qz_a1b0<float, dst_data_t>()(d, rmode_);
+            dst[i] = qz_a1b0<float, dst_data_t>()(d);
             oc = (oc == OC_ - 1) ? 0 : oc + 1;
         }
     }
 };
 
 template <data_type_t src_type, data_type_t dst_type>
-void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type
-        >::execute_forward() const {
-    auto src = reinterpret_cast<const src_data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const wei_data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const char *>(this->input_memory(2));
-    auto dst = reinterpret_cast<dst_data_t *>(this->memory());
+void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::execute_forward(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const src_data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const wei_data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(dst_data_t *, MKLDNN_ARG_DST);
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
 
-    bool wei_tr = utils::one_of(pd()->weights_pd()->desc()->format,
-             oihw, oidhw, oi);
+    bool wei_tr = memory_desc_matches_one_of_tag(
+            *pd()->weights_md(), oiw, oihw, oidhw, oi);
 
     const int M = OC;
     const int N = MB;
@@ -422,28 +420,18 @@ void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type
 
     acc_data_t *acc = pd()->dst_is_acc_
         ? (acc_data_t *)dst
-        : scratchpad().template get<acc_data_t>(key_iprod_int_dat_in_acc_dt);
+        : scratchpad(ctx).template get<acc_data_t>(key_iprod_int_dat_in_acc_dt);
 
     const float onef = 1.0, zerof = 0.0;
-
-    if (src_type == data_type::u8) {
-        mkldnn_gemm_s8u8s32(wei_tr ? "T" : "N", "N", "F", &M, &N, &K, &onef,
-                weights, wei_tr ? &K : &M, &off_a, (uint8_t *)src, &K, &off_b, &zerof,
-                acc, &M, &off_c);
-    } else if (src_type == data_type::s8) {
-        mkldnn_gemm_s8s8s32(wei_tr ? "T" : "N", "N", "F", &M, &N, &K, &onef,
-                weights, wei_tr ? &K : &M, &off_a, (int8_t *)src, &K, &off_b, &zerof,
-                acc, &M, &off_c);
-    } else {
-        assert(!"incorrect src type");
-    }
+    gemm_s8x8s32(wei_tr ? "T" : "N", "N", "F", &M, &N, &K, &onef, weights,
+            wei_tr ? &K : &M, &off_a, src, &K, &off_b, &zerof, acc, &M, &off_c);
 
     const bool force_sequential = MB * OC < 2000;
     parallel(force_sequential ? 1 : 0, [&](int ithr, int nthr) {
-            size_t start, end;
-            balance211((size_t)OC * MB, nthr, ithr, start, end);
-            (*pp_kernel_)(dst, acc, bias, scales, nslope, start, end);
-            });
+        size_t start, end;
+        balance211((size_t)OC * MB, nthr, ithr, start, end);
+        (*pp_kernel_)(dst, acc, bias, scales, nslope, start, end);
+    });
 }
 
 using namespace data_type;
@@ -456,6 +444,7 @@ template struct gemm_x8s8s32x_inner_product_fwd_t<s8, f32>;
 template struct gemm_x8s8s32x_inner_product_fwd_t<s8, s32>;
 template struct gemm_x8s8s32x_inner_product_fwd_t<s8, s8>;
 template struct gemm_x8s8s32x_inner_product_fwd_t<s8, u8>;
+
 }
 }
 }

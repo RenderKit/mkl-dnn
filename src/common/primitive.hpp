@@ -22,9 +22,9 @@
 #include "mkldnn.h"
 
 #include "c_types_map.hpp"
-#include "event.hpp"
 #include "nstl.hpp"
 #include "primitive_desc.hpp"
+#include "primitive_exec_types.hpp"
 
 /** \brief A pure virtual primitive class
  *
@@ -45,59 +45,23 @@
  *   bottom for backward pass. Please consider restriction [1] in Level 0.
  */
 struct mkldnn_primitive: public mkldnn::impl::c_compatible {
-    typedef mkldnn::impl::nstl::vector<mkldnn::impl::primitive_at_t>
-        input_vector;
-    typedef mkldnn::impl::nstl::vector<const mkldnn::impl::primitive_t *>
-        output_vector;
-
-    mkldnn_primitive(const mkldnn::impl::primitive_desc_t *pd,
-            const input_vector &inputs, const output_vector &outputs)
-        : pd_(pd->clone())
-        , inputs_(inputs)
-        , outputs_(outputs)
-    {}
+    mkldnn_primitive(const mkldnn::impl::primitive_desc_t *pd)
+        : pd_(pd->clone()) {}
     virtual ~mkldnn_primitive() { delete pd_; }
 
     /** returns primitive's engine */
     mkldnn::impl::engine_t *engine() const { return pd_->engine(); }
     /** returns primitive's inputs */
-    const input_vector &inputs() const { return inputs_; }
-    /** returns primitive's outputs */
-    const output_vector &outputs() const { return outputs_; }
-    /** returns primitive's primitive desc */
     const mkldnn::impl::primitive_desc_t *pd() const { return pd_; }
     /** returns primitive's kind */
     mkldnn::impl::primitive_kind_t kind() const { return pd_->kind(); }
 
-    /** executes primitive with resulting event @p e
-     *
-     * @p e (output)
-     *   a resulting event. It is primitive responsibility to set @p e state
-     *   after actual computations are done
-     *
-     * @remark @b Rational.
-     *   Suppose engine has a task pool and for some reasons submission failed.
-     *   In this case primitive will set @p e's state to event::error
-     */
-    virtual void execute(mkldnn::impl::event_t *e) const = 0;
-
-    /** returns data handle. Applicable for memory primitives only. */
-    virtual mkldnn::impl::status_t get_data_handle(void **handle) const {
-        UNUSED(handle);
-        assert(this->kind() == mkldnn::impl::primitive_kind::memory);
-        return mkldnn::impl::status::invalid_arguments;
-    }
-    /** sets data handle. Applicable for memory primitives only. */
-    virtual mkldnn::impl::status_t set_data_handle(void *handle) {
-        UNUSED(handle);
-        assert(this->kind() == mkldnn::impl::primitive_kind::memory);
-        return mkldnn::impl::status::invalid_arguments;
-    }
+    /** executes primitive with execution context @p ctx */
+    virtual mkldnn::impl::status_t execute(const mkldnn::impl::exec_ctx_t &ctx)
+        const = 0;
 
 protected:
     const mkldnn::impl::primitive_desc_t *pd_;
-    input_vector inputs_;
-    output_vector outputs_;
 
 private:
     mkldnn_primitive() = delete;

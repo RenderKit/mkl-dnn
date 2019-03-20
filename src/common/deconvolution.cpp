@@ -27,7 +27,7 @@ using namespace mkldnn::impl::status;
 using namespace mkldnn::impl::prop_kind;
 using namespace mkldnn::impl::alg_kind;
 using namespace mkldnn::impl::types;
-using namespace mkldnn::impl::memory_format;
+
 namespace {
 status_t deconv_desc_init(deconvolution_desc_t *deconv_desc,
         prop_kind_t prop_kind, alg_kind_t alg_kind,
@@ -58,7 +58,7 @@ status_t deconv_desc_init(deconvolution_desc_t *deconv_desc,
 
     const bool is_fwd = one_of(prop_kind, forward_training, forward_inference);
     const bool with_bias
-            = bias_desc && bias_desc->format != memory_format::undef;
+            = bias_desc && bias_desc->format_kind != format_kind::undef;
     const bool with_groups = weights_desc->ndims == src_desc->ndims + 1;
 
     (prop_kind == backward_data ? dd.diff_src_desc : dd.src_desc) = *src_desc;
@@ -85,7 +85,7 @@ status_t deconv_desc_init(deconvolution_desc_t *deconv_desc,
     const int g = with_groups ? weights_desc->dims[0] : 1;
     bool consistency = true
             && src_desc->ndims == dst_desc->ndims
-            && utils::one_of(src_desc->ndims, 4, 5)
+            && utils::one_of(src_desc->ndims, 3, 4, 5)
             && utils::one_of(weights_desc->ndims, src_desc->ndims,
                     src_desc->ndims + 1)
             && (with_bias ? bias_desc->ndims == 1 : true)

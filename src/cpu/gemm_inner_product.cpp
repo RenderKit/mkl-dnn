@@ -27,22 +27,23 @@ namespace cpu {
 using namespace mkldnn::impl::status;
 using namespace mkldnn::impl::prop_kind;
 using namespace mkldnn::impl::data_type;
-using namespace mkldnn::impl::memory_format;
+using namespace mkldnn::impl::format_tag;
 using namespace mkldnn::impl::primitive_kind;
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_fwd_t<data_type>::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto dst = reinterpret_cast<data_t*>(this->memory());
+void gemm_inner_product_fwd_t<data_type>::execute_forward(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const data_t *, MKLDNN_ARG_BIAS);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC_total_padded();
 
-    bool wei_tr = !utils::one_of(pd()->weights_pd()->desc()->format,
-             hwio, dhwio, io);
+    bool wei_tr = !memory_desc_matches_one_of_tag(
+            *pd()->weights_md(), hwio, dhwio, io);
 
     const auto &post_ops = pd()->attr()->post_ops_;
     const bool do_relu = post_ops.len_ == 1;
@@ -62,17 +63,18 @@ void gemm_inner_product_fwd_t<data_type>::execute_forward() const {
 }
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_bwd_data_t<data_type>::execute_backward_data() const {
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory());
+void gemm_inner_product_bwd_data_t<data_type>::execute_backward_data(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto weights = CTX_IN_MEM(const data_t *, MKLDNN_ARG_WEIGHTS);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC_total_padded();
 
-    bool wei_tr = utils::one_of(pd()->weights_pd()->desc()->format,
-             hwio, dhwio, io);
+    bool wei_tr = memory_desc_matches_one_of_tag(
+            *pd()->weights_md(), hwio, dhwio, io);
 
     float alpha = 1.0, beta = 0.0;
     extended_sgemm(wei_tr ? "T" : "N", "N", &IC, &MB, &OC, &alpha, weights,
@@ -80,23 +82,24 @@ void gemm_inner_product_bwd_data_t<data_type>::execute_backward_data() const {
 }
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_weights = reinterpret_cast<data_t *>(this->memory(0));
-    auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
+void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
+        const exec_ctx_t &ctx) const {
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_weights = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_WEIGHTS);
+    auto diff_bias = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_BIAS);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_pd(1));
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper diff_bias_d(pd()->diff_weights_md(1));
 
-    diff_dst += diff_dst_d.blocking_desc().offset_padding;
+    diff_dst += diff_dst_d.offset0();
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
     const int IC = pd()->IC_total_padded();
 
-    bool wei_tr = utils::one_of(pd()->diff_weights_pd()->desc()->format,
-             hwio, dhwio, io);
+    bool wei_tr = memory_desc_matches_one_of_tag(
+            *pd()->diff_weights_md(), hwio, dhwio, io);
 
     float alpha = 1.0, beta = 0.0;
     if (wei_tr)
@@ -107,7 +110,7 @@ void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights() con
                 &beta, diff_weights, &IC);
 
     if (diff_bias) {
-        diff_bias += diff_bias_d.blocking_desc().offset_padding;
+        diff_bias += diff_bias_d.offset0();
         constexpr int blksize = 8;
         const int OC_blocks = OC / blksize;
         const int rem_OC = OC % blksize;

@@ -25,45 +25,44 @@ namespace cpu {
 using namespace memory_tracking::names;
 
 template <data_type_t data_type>
-void simple_concat_t<data_type>::execute() const {
-    auto scratchpad = this->scratchpad();
+status_t simple_concat_t<data_type>::execute(const exec_ctx_t &ctx) const {
+    auto scratchpad = this->scratchpad(ctx);
     auto iptrs = scratchpad.template get<const data_t *>(key_concat_iptrs);
     auto optrs = scratchpad.template get<data_t *>(key_concat_optrs);
-    auto nelems_to_copy = scratchpad.template get<size_t>(key_concat_nelems);
+    auto nelems_to_copy = scratchpad.template get<dim_t>(key_concat_nelems);
     auto is = scratchpad.template get<strides_t>(key_concat_istrides);
 
     const int num_arrs = pd()->n_inputs();
     const int *perm = pd()->perm_, *iperm = pd()->iperm_;
     const int concat_dim = pd()->concat_dim();
-    auto o_base_ptr = reinterpret_cast<data_t *>(this->memory());
+    auto o_base_ptr = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
     for (int a = 0; a < num_arrs; ++a) {
-        const memory_desc_wrapper i_d(pd()->src_pd(a));
-        const memory_desc_wrapper o_d(pd()->src_image_pd(a));
+        const memory_desc_wrapper i_d(pd()->src_md(a));
+        const memory_desc_wrapper o_d(pd()->src_image_md(a));
 
-        iptrs[a] = reinterpret_cast<const data_t *>(
-                this->input_memory(a)) + i_d.blk_off(0);
+        iptrs[a] = CTX_IN_MEM(const data_t *, MKLDNN_ARG_MULTIPLE_SRC + a)
+            + i_d.blk_off(0);
         optrs[a] = o_base_ptr + o_d.blk_off(0);
         nelems_to_copy[a] = pd()->nelems_to_concat(i_d);
-        for (int i = 0; i < TENSOR_MAX_DIMS; i++) {
+        for (int i = 0; i < MKLDNN_MAX_NDIMS; i++) {
             if (i < perm[concat_dim])
-                is[a][i] = size_t(i_d.blocking_desc().strides[0][iperm[i]]);
+                is[a][i] = size_t(i_d.blocking_desc().strides[iperm[i]]);
             else
                 is[a][i] = 0;
         }
     }
 
-    const memory_desc_wrapper o_d(pd()->src_image_pd());
-    auto &blk = o_d.blocking_desc();
+    const memory_desc_wrapper o_d(pd()->src_image_md(0));
 
     strides_t os = { 0 };
     for (int i = 0; i < perm[concat_dim]; i++)
-        os[i] = o_d.blocking_desc().strides[0][iperm[i]];
+        os[i] = o_d.blocking_desc().strides[iperm[i]];
 
     dims_t phys_dims;
     for (size_t i = 0; i < sizeof(phys_dims)/sizeof(phys_dims[0]); i++)
         phys_dims[i] = (i < (size_t)perm[concat_dim])
-            ?  o_d.dims()[iperm[i]] / blk.block_dims[iperm[i]] : 1;
+            ?  o_d.dims()[iperm[i]] / pd()->blocks_[iperm[i]] : 1;
 
     if (perm[concat_dim] == 0) {
         for (int a = 0; a < num_arrs; ++a) {
@@ -75,7 +74,7 @@ void simple_concat_t<data_type>::execute() const {
     } else {
         parallel_nd(phys_dims[0], phys_dims[1], phys_dims[2], phys_dims[3],
             phys_dims[4], num_arrs,
-            [&](int n0, int n1, int n2, int n3, int n4, int a) {
+            [&](dim_t n0, dim_t n1, dim_t n2, dim_t n3, dim_t n4, int a) {
             // XXX: this code may access uninitialized values in is[*][0-4] --
             // that's why we have to set them to zero although this is
             // probably benign
@@ -90,29 +89,31 @@ void simple_concat_t<data_type>::execute() const {
             // and uses a workaround to make GNU compilers optimize it
             uint8_t *ptro = reinterpret_cast<uint8_t *>(o);
             const uint8_t *ptri = reinterpret_cast<const uint8_t *>(i);
-            const size_t main_part =
+            const dim_t main_part =
                 nelems_to_copy[a] * sizeof(data_t) / sizeof(uint32_t);
-            const size_t tail_part =
-                nelems_to_copy[a] * sizeof(data_t) % sizeof(uint32_t);
+            const dim_t tail_part =
+                nelems_to_copy[a] % sizeof(data_t) / sizeof(uint32_t);
 
             PRAGMA_OMP_SIMD()
-            for (size_t e = 0; e < main_part; ++e) {
+            for (dim_t e = 0; e < main_part; ++e) {
                 *(reinterpret_cast<uint32_t *>(ptro))
                     = *(reinterpret_cast<const uint32_t *>(ptri));
                 ptro += sizeof(uint32_t);
                 ptri += sizeof(uint32_t);
             }
-            for (size_t e = 0; e < tail_part; ++e) {
+            for (dim_t e = 0; e < tail_part; ++e) {
                 *ptro = *ptri;
                 ++ptro;
                 ++ptri;
             }
 #else
             PRAGMA_OMP_SIMD()
-            for (size_t e = 0; e < nelems_to_copy[a]; ++e) o[e] = i[e];
+            for (dim_t e = 0; e < nelems_to_copy[a]; ++e) o[e] = i[e];
 #endif
         });
     }
+
+    return status::success;
 }
 
 template struct simple_concat_t<data_type::f32>;

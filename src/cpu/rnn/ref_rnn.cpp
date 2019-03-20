@@ -69,19 +69,19 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::gates_reduction(
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-gemm_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::gemm)) {
+rnn_gemm_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::gemm)) {
     assert(ldA * ldB * ldC != 0);
     extended_sgemm(&transA, &transB, &m, &n, &k, &alpha, a_, &ldA, b_, &ldB,
             &beta, c_, &ldC, nullptr, pd()->rnn_.use_jit_gemm);
 }
 
 template <>
-gemm_sig((ref_rnn_fwd_u8s8_t::gemm)) {
+rnn_gemm_sig((ref_rnn_fwd_u8s8_t::gemm)) {
     assert(!"non packed gemm is disabled for int8");
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-gemm_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::packed_gemm)) {
+rnn_gemm_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::packed_gemm)) {
 #if (USE_MKL_PACKED_GEMM)
     assert(transA == 'N');
     cblas_sgemm_compute(CblasColMajor, CblasPacked,
@@ -105,7 +105,7 @@ gemm_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::packed_gemm)) {
 }
 
 template <>
-gemm_sig((ref_rnn_fwd_u8s8_t::packed_gemm)) {
+rnn_gemm_sig((ref_rnn_fwd_u8s8_t::packed_gemm)) {
 #if (USE_MKL_PACKED_GEMM)
     int8_t offseta = 0, offsetb = 0;
     int32_t offsetc = 0;
@@ -131,7 +131,7 @@ gemm_sig((ref_rnn_fwd_u8s8_t::packed_gemm)) {
 
 //*************** Grid computations strategy: linear ***************//
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-grid_execution_sig(
+rnn_grid_execution_sig(
         (_ref_rnn_common_t<aprop, src_type, weights_type>::linear_execution)) {
     AOC<src_data_t, 4> ws_states(ws_states_, rnn.n_layer + 1, rnn.n_dir,
             rnn.n_iter + 1, rnn.states_nld * rnn.states_ws_ld);
@@ -235,7 +235,7 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::copy_init_layer(
 
     AOC<src_data_t, 4> ws_states(
             ws_states_, rnn.n_dir, rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
-    auto xt_d = memory_desc_wrapper(pd()->src_pd(0));
+    auto xt_d = memory_desc_wrapper(pd()->src_md(0));
 
     parallel_nd(rnn.n_iter, rnn.mb, [&](int it, int b) {
         auto xxt = xt_ + xt_d.blk_off(it, b);
@@ -256,7 +256,7 @@ void ref_rnn_bwd_f32_t::copy_init_layer(const rnn_conf_t &rnn,
         const float *diff_dst_layer_) const {
     AOC<float, 6> ws_diff_states(ws_diff_states_, rnn.n_layer + 1, rnn.n_dir,
             (rnn.n_states + 1), rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
-    auto diff_dst_layer_d = memory_desc_wrapper(pd()->diff_dst_pd(0));
+    auto diff_dst_layer_d = memory_desc_wrapper(pd()->diff_dst_md(0));
 
     switch (rnn.exec_dir) {
     case bi_concat:
@@ -327,28 +327,27 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::copy_init_iter(
             rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
     float data_shift = pd()->attr()->rnn_data_qparams_.shift_;
     float data_scale = pd()->attr()->rnn_data_qparams_.scale_;
-    round_mode_t rmode = pd()->attr()->round_mode_;
 
-    const bool quantize
-            = pd()->desc()->src_iter_desc.data_type == data_type::f32
-            && rnn.dt_conf != all_f32;
+    const bool quantize = pd()->with_src_iter()
+        && pd()->src_md(1)->data_type == data_type::f32
+        && rnn.dt_conf != all_f32;
     auto maybe_q = [&](input_data_t f) {
         if (quantize) {
             float qf = f * data_scale + data_shift;
-            return qz_a1b0<float, src_data_t>()(qf, rmode);
+            return qz_a1b0<float, src_data_t>()(qf);
         } else
             return (src_data_t)f;
     };
 
-    const bool dequantize
-            = pd()->desc()->src_iter_desc.data_type == data_type::u8;
+    const bool dequantize = pd()->with_src_iter()
+        && pd()->src_md(1)->data_type == data_type::u8;
     auto maybe_deq = [&](input_data_t s) {
         if (dequantize)
             return (((float)s - data_shift) / data_scale);
         else
             return (float)s;
     };
-    auto firstit_states_d = memory_desc_wrapper(pd()->src_pd(1));
+    auto firstit_states_d = memory_desc_wrapper(pd()->src_md(1));
     if (firstit_states_) {
         parallel_nd(
                 rnn.n_layer, rnn.n_dir, rnn.mb, [&](int lay, int dir, int b) {
@@ -381,7 +380,7 @@ void ref_rnn_bwd_f32_t::copy_init_iter(const rnn_conf_t &rnn,
         const float *diff_dst_iter_) const {
     AOC<float, 6> ws_diff_states(ws_diff_states_, rnn.n_layer + 1, rnn.n_dir,
             rnn.n_states + 1, rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
-    auto diff_dst_iter_d = memory_desc_wrapper(pd()->diff_dst_pd(1));
+    auto diff_dst_iter_d = memory_desc_wrapper(pd()->diff_dst_md(1));
     if (diff_dst_iter_) {
         parallel_nd(rnn.n_layer, rnn.n_dir, rnn.n_states, rnn.mb,
                 [&](int lay, int dir, int state, int b) {
@@ -408,14 +407,13 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::copy_res_layer(
         const rnn_conf_t &rnn, dst_data_t *dst_layer_, float *diff_src_layer,
         const src_data_t *ws_states_, const float *ws_diff_states_) const {
 
-    auto dst_layer_d = memory_desc_wrapper(pd()->dst_pd(0));
+    auto dst_layer_d = memory_desc_wrapper(pd()->dst_md(0));
     AOC<const src_data_t, 5> ws_states(ws_states_, rnn.n_layer + 1, rnn.n_dir,
             rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
     float shift = (pd()->attr()->rnn_data_qparams_.shift_);
     float scale = (pd()->attr()->rnn_data_qparams_.scale_);
 
-    const bool dequantize
-            = pd()->desc()->dst_layer_desc.data_type == data_type::f32
+    const bool dequantize = pd()->dst_md(0)->data_type == data_type::f32
             && rnn.dt_conf != all_f32;
     auto maybe_deq = [&](src_data_t s) {
         if (dequantize)
@@ -454,7 +452,7 @@ template <typename dst_data_t>
 void ref_rnn_bwd_f32_t::copy_res_layer(
         const rnn_conf_t &rnn, dst_data_t *dst_layer_, float *diff_src_layer_,
         const src_data_t *ws_states_, const float *ws_diff_states_) const {
-    auto diff_src_layer_d = memory_desc_wrapper(pd()->diff_src_pd(0));
+    auto diff_src_layer_d = memory_desc_wrapper(pd()->diff_src_md(0));
     AOC<const float, 6> ws_diff_states(ws_diff_states_, rnn.n_layer + 1,
             rnn.n_dir, rnn.n_states + 1, rnn.n_iter + 1, rnn.mb,
             rnn.states_ws_ld);
@@ -481,28 +479,28 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::copy_res_iter(
         const rnn_conf_t &rnn, output_data_t *dst_iter_, float *diff_src_iter_,
         const src_data_t *ws_states_, float *ws_c_states_,
         const float *ws_diff_states_) const {
-    auto dst_iter_d = memory_desc_wrapper(pd()->dst_pd(1));
+    auto dst_iter_d = memory_desc_wrapper(pd()->dst_md(1));
     AOC<const src_data_t, 5> ws_states(ws_states_, rnn.n_layer + 1, rnn.n_dir,
             rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
     AOC<const float, 5> ws_c_states(ws_c_states_, rnn.n_layer + 1, rnn.n_dir,
             rnn.n_iter + 1, rnn.mb, rnn.states_ws_ld);
     float data_shift = pd()->attr()->rnn_data_qparams_.shift_;
     float data_scale = pd()->attr()->rnn_data_qparams_.scale_;
-    round_mode_t rmode = pd()->attr()->round_mode_;
 
-    const bool quantize = pd()->desc()->dst_iter_desc.data_type == data_type::u8
-            && rnn.dt_conf != all_f32;
+    const bool quantize = pd()->with_dst_iter()
+        && pd()->dst_md(1)->data_type == data_type::u8
+        && rnn.dt_conf != all_f32;
     auto maybe_q = [&](float f) {
         if (quantize) {
             float qf = f * data_scale + data_shift;
-            return qz_a1b0<float, output_data_t>()(qf, rmode);
+            return qz_a1b0<float, output_data_t>()(qf);
         } else
             return (output_data_t)f;
     };
 
-    const bool dequantize
-            = pd()->desc()->dst_iter_desc.data_type == data_type::f32
-            && rnn.dt_conf != all_f32;
+    const bool dequantize = pd()->with_dst_iter()
+        && pd()->dst_md(1)->data_type == data_type::f32
+        && rnn.dt_conf != all_f32;
     auto maybe_deq = [&](src_data_t s) {
         if (dequantize)
             return (output_data_t)(((float)s - data_shift) / data_scale);
@@ -532,7 +530,7 @@ void ref_rnn_bwd_f32_t::copy_res_iter(
         const rnn_conf_t &rnn, output_data_t *dst_iter_, float *diff_src_iter_,
         const src_data_t *ws_states_, float *ws_c_states_,
         const float *ws_diff_states_) const {
-    auto diff_src_iter_d = memory_desc_wrapper(pd()->diff_src_pd(1));
+    auto diff_src_iter_d = memory_desc_wrapper(pd()->diff_src_md(1));
     AOC<const float, 6> ws_diff_states(ws_diff_states_, rnn.n_layer + 1,
             rnn.n_dir, rnn.n_states + 1, rnn.n_iter + 1, rnn.mb,
             rnn.states_ws_ld);
@@ -549,7 +547,7 @@ void ref_rnn_bwd_f32_t::copy_res_iter(
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-bias_prepare_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::bias_prepare)) {
+rnn_bias_prepare_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::bias_prepare)) {
     /* Original set of bias provided by the user */
     AOC<const float, 5> b(
             b_, rnn.n_layer, rnn.n_dir, rnn.n_bias * rnn.dic);
@@ -578,7 +576,7 @@ bias_prepare_sig((_ref_rnn_common_t<aprop, src_type, weights_type>::bias_prepare
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-bias_finalize_sig(
+rnn_bias_finalize_sig(
         (_ref_rnn_common_t<aprop, src_type, weights_type>::bias_finalize)) {
     if (rnn.dt_conf != all_f32) {
         float data_shift = pd()->attr()->rnn_data_qparams_.shift_;
@@ -597,27 +595,32 @@ bias_finalize_sig(
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-weights_assign_sig((_ref_rnn_common_t<aprop, src_type,
+rnn_weights_assign_sig((_ref_rnn_common_t<aprop, src_type,
         weights_type>::assign_packed_weights)) {
-    AOC<weights_data_t *, 3> weights(weights_, rnn.n_layer, rnn.n_dir, n_parts);
+    assert(md->format_kind == format_kind::rnn_packed);
+    const auto packed_desc = md->format_desc.rnn_packed_desc;
+    AOC<weights_data_t *, 3> weights(weights_,
+            rnn.n_layer, rnn.n_dir, packed_desc.n_parts);
 
     size_t offset_packed = 0;
     for (int l = 0; l < rnn.n_layer; l++)
         for (int d = 0; d < rnn.n_dir; d++) {
-            for (int p = 0; p < n_parts; p++) {
+            for (int p = 0; p < packed_desc.n_parts; p++) {
                 weights(l, d, p) = (weights_data_t *)&w_[offset_packed];
                 offset_packed
-                        += part_weights_pack_size[p] / sizeof(weights_data_t);
+                    += packed_desc.part_pack_size[p] / sizeof(weights_data_t);
             }
         }
 }
 
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-weights_assign_sig(
+rnn_weights_assign_sig(
         (_ref_rnn_common_t<aprop, src_type, weights_type>::assign_weights)) {
-    assert(nld * ld != 0);
+    assert(md->format_kind == format_kind::blocked);
+    const auto &blk = md->format_desc.blocking;
     /* Original set of weights provided by the user */
-    AOC<const weights_data_t, 3> w(w_, rnn.n_layer, rnn.n_dir, nld * ld);
+    AOC<const weights_data_t, 3> w(w_,
+            rnn.n_layer, rnn.n_dir, (int)blk.strides[1]);
     /* Array of pointers for each part of weights */
     AOC<weights_data_t *, 3> weights(weights_, rnn.n_layer, rnn.n_dir, n_parts);
 
@@ -626,54 +629,40 @@ weights_assign_sig(
             size_t offset_weights = 0;
             for (int p = 0; p < n_parts; p++) {
                 weights(i, d, p) = (weights_data_t *)&w(i, d, offset_weights);
-                offset_weights += fmt == memory_format::ldigo ?
-                        gates_per_part[p] * OC_size :
-                        gates_per_part[p] * OC_size * ld;
+                offset_weights += gates_per_part[p] * blk.strides[3];
             }
         }
 }
 
 //********************* Execution function *********************//
 template <prop_kind_t aprop, data_type_t src_type, data_type_t weights_type>
-void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_() const {
+void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_(
+        const exec_ctx_t &ctx) const {
     const rnn_conf_t &rnn = this->pd()->rnn_;
-    int input_idx = 0;
-    int output_idx = 0;
-    auto input = reinterpret_cast<const src_data_t *>(
-            this->input_memory(input_idx++));
-    auto states = pd()->with_src_iter() ? (this->input_memory(input_idx++)) :
-                                          nullptr;
+    auto input = CTX_IN_MEM(const src_data_t *, MKLDNN_ARG_SRC_LAYER);
+    auto states = CTX_IN_MEM(const char *, MKLDNN_ARG_SRC_ITER);
+    auto layer_weights_n_comp = CTX_IN_MEM(const char *, MKLDNN_ARG_WEIGHTS_LAYER);
+    auto iter_weights_n_comp = CTX_IN_MEM(const char *, MKLDNN_ARG_WEIGHTS_ITER);
+    auto bias = CTX_IN_MEM(const float *, MKLDNN_ARG_BIAS);
 
-    const char *layer_weights_n_comp = this->input_memory(input_idx++);
-    auto w_layer
-            = reinterpret_cast<const weights_data_t *>(layer_weights_n_comp);
-    auto w_layer_comp = reinterpret_cast<const float *>(layer_weights_n_comp
-            + rnn.weights_layer_comp_offset);
-    const char *iter_weights_n_comp = this->input_memory(input_idx++);
-    auto w_iter
-            = reinterpret_cast<const weights_data_t *>(iter_weights_n_comp);
-    auto w_iter_comp = reinterpret_cast<const float *>(iter_weights_n_comp
-            + rnn.weights_iter_comp_offset);
-    auto bias = pd()->with_bias() ?
-            reinterpret_cast<const float *>(this->input_memory(input_idx++)) :
-            nullptr;
+    auto dst_last_layer = rnn.is_fwd
+        ? CTX_OUT_MEM(char *, MKLDNN_ARG_DST_LAYER)
+        : const_cast<char *>(CTX_IN_MEM(const char *, MKLDNN_ARG_DST_LAYER));
+    auto dst_last_iter = rnn.is_fwd
+        ? CTX_OUT_MEM(char *, MKLDNN_ARG_DST_ITER)
+        : const_cast<char *>(CTX_IN_MEM(const char *, MKLDNN_ARG_DST_ITER));
 
-    auto dst_last_layer = rnn.is_fwd ? this->memory(output_idx++) :
-                                       this->input_memory(input_idx++);
-    auto dst_last_iter = pd()->with_dst_iter()
-            ? (rnn.is_fwd
-                ? this->memory(output_idx++)
-                : this->input_memory(input_idx++))
-            : nullptr;
+    auto diff_dst_layer = CTX_IN_MEM(const float *, MKLDNN_ARG_DIFF_DST_LAYER);
+    auto diff_dst_iter = CTX_IN_MEM(const float *, MKLDNN_ARG_DIFF_DST_ITER);
 
-    auto diff_dst_layer = rnn.is_fwd ?
-            nullptr :
-            reinterpret_cast<const float *>(this->input_memory(input_idx++));
-    auto diff_dst_iter = rnn.is_fwd || !pd()->with_dst_iter() ?
-            nullptr :
-            reinterpret_cast<const float *>(this->input_memory(input_idx++));
+    auto w_layer = reinterpret_cast<const weights_data_t *>(layer_weights_n_comp);
+    auto w_iter = reinterpret_cast<const weights_data_t *>(iter_weights_n_comp);
+    auto w_iter_comp = reinterpret_cast<const float *>(
+            iter_weights_n_comp + rnn.weights_iter_comp_offset);
+    auto w_layer_comp = reinterpret_cast<const float *>(
+            layer_weights_n_comp + rnn.weights_layer_comp_offset);
 
-    auto scratchpad = this->scratchpad();
+    auto scratchpad = this->scratchpad(ctx);
 
     auto ptr_wei_layer
             = scratchpad.template get<weights_data_t *>(key_rnn_ptrs_wei_layer);
@@ -688,8 +677,9 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_() const {
     char *ws_ptr = nullptr;
     if (rnn.use_workspace)
         ws_ptr = rnn.is_fwd
-            ? this->memory(output_idx++)
-            : const_cast<char *>(this->input_memory(input_idx++));
+            ? CTX_OUT_MEM(char *, MKLDNN_ARG_WORKSPACE)
+            : const_cast<char *>(CTX_IN_MEM(const char *, MKLDNN_ARG_WORKSPACE));
+
     char *base_ptr = rnn.use_workspace ? ws_ptr : scratch_ptr;
     acc_data_t *ws_gates = (acc_data_t *)(base_ptr + ws_gates_offset_);
     src_data_t *ws_states = (src_data_t *)(base_ptr + ws_states_offset_);
@@ -698,21 +688,12 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_() const {
     float *ws_grid = (float *)(base_ptr + ws_grid_comp_offset_);
     float *ws_cell = (float *)(base_ptr + ws_cell_comp_offset_);
 
-    auto diff_src_layer = rnn.is_fwd ?
-            nullptr :
-            reinterpret_cast<float *>(this->memory(output_idx++));
-    auto diff_src_iter = rnn.is_fwd || !pd()->with_src_iter() ?
-            nullptr :
-            reinterpret_cast<float *>(this->memory(output_idx++));
-    auto diff_weights_layer = rnn.is_fwd ?
-            nullptr :
-            reinterpret_cast<float *>(this->memory(output_idx++));
-    auto diff_weights_iter = rnn.is_fwd ?
-            nullptr :
-            reinterpret_cast<float *>(this->memory(output_idx++));
-    auto diff_bias = rnn.is_fwd || !pd()->with_bias() ?
-            nullptr :
-            reinterpret_cast<float *>(this->memory(output_idx++));
+    auto diff_src_layer = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_SRC_LAYER);
+    auto diff_src_iter = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_SRC_ITER);
+
+    auto diff_weights_layer = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_WEIGHTS_LAYER);
+    auto diff_weights_iter = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_WEIGHTS_ITER);
+    auto diff_bias = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_BIAS);
 
     // Fetching extra buffers from scratchpad
     float *ws_bias = (float *)(scratch_ptr + ws_bias_offset_);
@@ -725,12 +706,12 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_() const {
      * dimension */
     (this->*bias_preparation_func)(rnn, ptr_bias, bias, ws_bias);
 
-    (this->*weights_iter_assign_func)(rnn, rnn.weights_iter_fmt,
+    (this->*weights_iter_assign_func)(rnn, pd()->weights_md(1),
             rnn.weights_iter_nld, rnn.weights_iter_ld, rnn.dic,
             rnn.sic, rnn.n_parts_weights_iter, rnn.parts_weights_iter,
             rnn.part_weights_iter_pack_size, ptr_wei_iter, w_iter,
             ptr_bias, bias, ws_bias);
-    (this->*weights_layer_assign_func)(rnn, rnn.weights_layer_fmt,
+    (this->*weights_layer_assign_func)(rnn, pd()->weights_md(0),
             rnn.weights_layer_nld, rnn.weights_layer_ld, rnn.dic, rnn.slc,
             rnn.n_parts_weights_layer, rnn.parts_weights_layer,
             rnn.part_weights_layer_pack_size, ptr_wei_layer, w_layer, ptr_bias,
@@ -778,24 +759,24 @@ void _ref_rnn_common_t<aprop, src_type, weights_type>::execute_() const {
 };
 
 /* Fix for MSVS warning C4661 */
-template<> cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution);
-template<> cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution);
-template<> cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution);
-template<> cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru);
-template<> cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_gru);
-template<> cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru);
-template<> cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru_lbr);
-template<> cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_gru_lbr);
-template<> cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru_lbr);
-template<> elemwise_sig(ref_rnn_fwd_f32_t::rnn_elemwise);
-template<> elemwise_sig(ref_rnn_fwd_u8s8_t::rnn_elemwise);
-template<> elemwise_sig(ref_rnn_bwd_f32_t::rnn_elemwise);
-template<> elemwise_sig(ref_rnn_fwd_f32_t::lstm_elemwise);
-template<> elemwise_sig(ref_rnn_fwd_u8s8_t::lstm_elemwise);
-template<> elemwise_sig(ref_rnn_bwd_f32_t::lstm_elemwise);
-template<> elemwise_sig(ref_rnn_fwd_f32_t::gru_lbr_elemwise);
-template<> elemwise_sig(ref_rnn_fwd_u8s8_t::gru_lbr_elemwise);
-template<> elemwise_sig(ref_rnn_bwd_f32_t::gru_lbr_elemwise);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution);
+template<> rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_gru);
+template<> rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru_lbr);
+template<> rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_gru_lbr);
+template<> rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru_lbr);
+template<> rnn_elemwise_sig(ref_rnn_fwd_f32_t::rnn_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_fwd_u8s8_t::rnn_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_bwd_f32_t::rnn_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_fwd_f32_t::lstm_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_fwd_u8s8_t::lstm_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_bwd_f32_t::lstm_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_fwd_f32_t::gru_lbr_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_fwd_u8s8_t::gru_lbr_elemwise);
+template<> rnn_elemwise_sig(ref_rnn_bwd_f32_t::gru_lbr_elemwise);
 
 template struct _ref_rnn_common_t<prop_kind::forward, data_type::f32, data_type::f32>;
 template struct _ref_rnn_common_t<prop_kind::forward, data_type::u8, data_type::s8>;

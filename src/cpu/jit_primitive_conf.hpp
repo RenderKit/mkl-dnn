@@ -26,10 +26,9 @@ namespace impl {
 namespace cpu {
 
 /* convolution */
-enum conv_version_t {ver_unused, ver_fma, ver_avx512_core, ver_4fma, ver_4vnni,
-                     ver_vnni};
+enum conv_version_t {ver_unused, ver_fma, ver_avx512_core, ver_4fma, ver_vnni};
 enum conv_loop_order_t {loop_cgn, loop_gnc, loop_ngc, loop_gncw, loop_cwgn,
-                            loop_ngcw, loop_nhwcg};
+                            loop_ngcw, loop_nhwcg, loop_nwcg};
 enum conv_1x1_loop_order_t {loop_rbl, loop_rlb, loop_lbr, loop_lrb, loop_blr,
                             loop_brl};
 enum conv_kernel_kind_t {embd_bcast, expl_bcast};
@@ -55,6 +54,7 @@ struct jit_conv_conf_t {
     conv_version_t ver;
     conv_loop_order_t loop_order;
 
+    int simd_w;
     int ndims;
     int mb;
     int ngroups, ic, oc, oc_without_padding, ic_without_padding;
@@ -64,7 +64,7 @@ struct jit_conv_conf_t {
     int kd, kh, kw;
     int stride_d, stride_h, stride_w;
     int dilate_d, dilate_h, dilate_w;
-    memory_format_t src_fmt;
+    format_tag_t src_tag, wei_tag, dst_tag; // temporary workaround
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
@@ -77,8 +77,11 @@ struct jit_conv_conf_t {
     int nb_ic, ic_block;
     int nb_oc, oc_block;
     int nb_ow, ow_block;
-    int nb_ic_blocking, nb_oc_blocking; // blocking of nb_ic and nb_ic
-    int nb_ic_blocking_max;
+    int nb_oc_blocking; /* used in jit kernels for nb_oc work bloking taking
+                           into account vector registers distribution */
+    int nb_oc_blocking_thr_chunk; /* used for distibution of nb_oc work
+                                      within threads */
+    int nb_ic_blocking, nb_ic_blocking_max; // blocking of nb_ic work
     int nb_ic_L2;
     int h_blocking;
     int nb_oc_L2;
@@ -99,7 +102,6 @@ struct jit_conv_conf_t {
     int typesize_out;
     int typesize_bia;
     int typesize_acc;
-    int tr_ow;
     /* avx512_u8s8u8 */
     int ic_nb1, ic_nb2;
     int oc_nb1;
@@ -156,7 +158,7 @@ struct jit_conv_conf_2x3_wino_t {
     int typesize_bia;
     int typesize_acc;
 
-    memory_format_t src_fmt;
+    format_tag_t src_tag, dst_tag; // temporary workaround
     bool with_bias;
     bool small_mb;
 
@@ -343,7 +345,7 @@ struct jit_1x1_conv_conf_t {
     int l_pad, t_pad;
     int kh, kw;
     int stride_h, stride_w;
-    memory_format_t src_fmt;
+    format_tag_t src_tag, wei_tag, dst_tag; // temporary workaround
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
@@ -358,7 +360,7 @@ struct jit_1x1_conv_conf_t {
     int reduce_dim, reduce_block, nb_reduce,
         nb_reduce_blocking, nb_reduce_blocking_max;
     int load_dim, load_block, nb_load,
-        nb_load_blocking, nb_load_blocking_max;
+        nb_load_blocking, nb_load_blocking_max, nb_load_chunk;
     int bcast_dim, bcast_block, nb_bcast,
         nb_bcast_blocking, nb_bcast_blocking_max;
 
@@ -398,7 +400,6 @@ struct jit_gemm_conv_conf_t {
     int kh, kw, kd;
     int stride_h, stride_w, stride_d;
     int dilate_h, dilate_w, dilate_d;
-    memory_format_t src_fmt;
     bool with_bias;
 
     int is, os, ks;
@@ -408,7 +409,6 @@ struct jit_gemm_conv_conf_t {
     ptrdiff_t im2col_sz;
     bool need_wei_reduction;
     bool signed_input;
-    float wei_adj_scale;
     int oh_block;
     int ow_block;
     bool outer_threading;

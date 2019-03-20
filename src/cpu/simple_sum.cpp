@@ -15,6 +15,7 @@
 *******************************************************************************/
 
 #include "mkldnn_thread.hpp"
+
 #include "simple_sum.hpp"
 
 namespace mkldnn {
@@ -22,26 +23,27 @@ namespace impl {
 namespace cpu {
 
 template <data_type_t data_type>
-void simple_sum_t<data_type>::execute() const {
-    auto output = reinterpret_cast<data_t *>(this->memory());
-    const int num_arrs = pd()->n_inputs();
-    const memory_desc_wrapper o_d(pd()->dst_pd());
+status_t simple_sum_t<data_type>::execute(const exec_ctx_t &ctx) const {
+    auto output = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+
+    const memory_desc_wrapper o_d(pd()->dst_md());
     output += o_d.blk_off(0);
-    const size_t nelems = o_d.nelems();
+
+    const int num_arrs = pd()->n_inputs();
     const data_t *input_ptrs[max_num_arrs];
+    const size_t nelems = o_d.nelems();
 
     for (int a = 0; a < num_arrs; ++a) {
-        const memory_desc_wrapper i_d(pd()->src_pd(a));
-
-        input_ptrs[a] = reinterpret_cast<const data_t *>(
-                this->input_memory(a)) + i_d.blk_off(0);
+        const memory_desc_wrapper i_d(pd()->src_md(a));
+        input_ptrs[a] = CTX_IN_MEM(const data_t *, MKLDNN_ARG_MULTIPLE_SRC + a)
+            + i_d.blk_off(0);
     }
 
     const size_t block_size = 16 * 1024 / sizeof(data_type);
     const size_t blocks_number = nelems / block_size;
     const size_t tail = nelems % block_size;
 
-    const auto &scales = pd()->scales_;
+    const auto scales = pd()->scales();
     parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
         balance211(blocks_number, nthr, ithr, start, end);
@@ -78,6 +80,8 @@ void simple_sum_t<data_type>::execute() const {
             }
         }
     });
+
+    return status::success;
 }
 
 template struct simple_sum_t<data_type::f32>;

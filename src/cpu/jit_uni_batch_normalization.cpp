@@ -157,8 +157,8 @@ struct jit_bnorm_t: public jit_generator {
     };
 
     bool is_c_padded() const {
-        const memory_desc_wrapper data_d(bdesc_->src_pd());
-        return bdesc_->C() != data_d.blocking_desc().padding_dims[1];
+        const memory_desc_wrapper data_d(bdesc_->src_md());
+        return bdesc_->C() != data_d.padded_dims()[1];
     }
 
     void compute_static_strides() {
@@ -1093,14 +1093,14 @@ struct uni_bnorm_driver_t: public c_compatible {
         auto rbuf = scratchpad.get<data_t>(key_bnorm_reduction);
         auto barriers = scratchpad.get<barrier::ctx_t>(key_barrier);
 
-        size_t N = bdesc_->MB();
-        size_t C = bdesc_->C();
-        size_t C_PADDED = get_c_padded(bdesc_);
-        size_t D = bdesc_->D();
-        size_t H = bdesc_->H();
-        size_t W = bdesc_->W();
-        int SP = D * H * W;
-        size_t img_size = C_PADDED * D * H * W;
+        dim_t N = bdesc_->MB();
+        dim_t C = bdesc_->C();
+        dim_t C_PADDED = get_c_padded(bdesc_);
+        dim_t D = bdesc_->D();
+        dim_t H = bdesc_->H();
+        dim_t W = bdesc_->W();
+        dim_t SP = D * H * W;
+        dim_t img_size = C_PADDED * D * H * W;
         const int vlen = isa == sse42 ? 32 : cpu_isa_traits<isa>::vlen;
 
         typename jit_bnorm_t<isa>::call_params_t p;
@@ -1110,12 +1110,13 @@ struct uni_bnorm_driver_t: public c_compatible {
         p.spat_size = D * H * W;
         p.chan_size = 1.0f * N * p.spat_size;
 
-        int C_blks = C_PADDED / simd_w;
+        dim_t C_blks = C_PADDED / simd_w;
 
         int C_ithr{0}, C_nthr{0}, N_ithr{0}, N_nthr{0}, S_ithr{0}, S_nthr{0};
-        int C_blk_s{0}, C_blk_e{0}, N_s{0}, N_e{0}, S_s{0}, S_e{0};
+        dim_t C_blk_s{0}, C_blk_e{0}, N_s{0}, N_e{0}, S_s{0}, S_e{0};
 
-        int C_blks_per_iter{ 1 }, iters{ 1 };
+        dim_t C_blks_per_iter{ 1 };
+        int64_t iters{ 1 };
         if (do_blocking_) {
             int num_tensors = bdesc_->is_fwd() ? 1 : 2;
             size_t working_set_size
@@ -1140,7 +1141,7 @@ struct uni_bnorm_driver_t: public c_compatible {
         int global_C_blk_s;
         int global_barriers_per_iter = C_nthr;
 
-        for (int it = 0; it < iters; it++) {
+        for (int64_t it = 0; it < iters; it++) {
             if (it == iters - 1 && iters > 1) {
                 C_blk_s = C_blk_e = N_s = N_e = 0;
                 spatial_thr_allowed = bnorm_utils::thread_balance(do_blocking_,
@@ -1189,8 +1190,7 @@ struct uni_bnorm_driver_t: public c_compatible {
                     + C_blk_s * p.N_nthr + p.N_ithr * C_blks_thr) * simd_w;
             // rbuf1 and rbuf2 have to be disjoint
             p.rbuf2 = p.rbuf1 + C_PADDED * nthr;
-            p.is_cblk_tail =
-                (size_t)((it * C_blks_per_iter + C_blk_e) * simd_w) > C;
+            p.is_cblk_tail = (it * C_blks_per_iter + C_blk_e) * simd_w > C;
 
             size_t iter_bariers
                     = do_blocking_ ? it * global_barriers_per_iter : 0;
@@ -1228,7 +1228,7 @@ private:
     }
 
     static int get_c_padded(const batch_normalization_pd_t *bdesc)
-    { return bdesc->src_pd()->desc()->layout_desc.blocking.padding_dims[1]; }
+    { return bdesc->src_md()->padded_dims[1]; }
 
     const batch_normalization_pd_t *bdesc_;
     bool do_blocking_;
@@ -1240,15 +1240,14 @@ private:
 }
 
 using namespace data_type;
-using namespace memory_format;
+using namespace format_tag;
 using namespace utils;
 
 /* fwd */
 
 template <cpu_isa_t isa>
 status_t jit_uni_batch_normalization_fwd_t<isa>::pd_t::init() {
-    assert(engine()->kind() == engine_kind::cpu);
-    auto desired_fmt = (ndims() == 4)
+    auto desired_fmt_tag = (ndims() == 4)
         ? isa == avx512_common ? nChw16c : nChw8c
         : isa == avx512_common ? nCdhw16c : nCdhw8c;
 
@@ -1257,29 +1256,20 @@ status_t jit_uni_batch_normalization_fwd_t<isa>::pd_t::init() {
         && is_fwd()
         && !has_zero_dim_memory()
         && one_of(ndims(), 4, 5)
-        && desc()->data_desc.data_type == f32
-        && IMPLICATION(use_scaleshift(),
-                desc()->data_scaleshift_desc.data_type == f32)
-        && desc()->data_desc.format == desired_fmt
+        && src_md()->data_type == f32
+        && IMPLICATION(use_scaleshift(), weights_md()->data_type == f32)
+        && memory_desc_matches_tag(*src_md(), desired_fmt_tag)
         && (attr()->has_default_values() || this->with_relu_post_op());
     if (!ok) return status::unimplemented;
 
     if (is_training() && fuse_bn_relu()) {
         if (isa < avx2) return status::unimplemented;
-        bn_init_default_ws(this, this->workspace_pd_, 1);
+        init_default_ws(1);
     }
 
-    if (memory_desc_wrapper(&data_pd_).blocking_desc().padding_dims[1]
-            != this->C() && isa < avx2)
+    if (memory_desc_wrapper(src_md()).padded_dims()[1] != C()
+            && isa < avx2)
         return status::unimplemented;
-
-    if (stats_is_src() || is_training()) {
-        memory_desc_t stats_d;
-        dims_t stats_dims = { C() };
-        mkldnn_memory_desc_init(&stats_d, 1, stats_dims, f32, x);
-        mean_pd_ = cpu_memory_t::pd_t(engine_, &stats_d);
-        variance_pd_ = cpu_memory_t::pd_t(engine_, &stats_d);
-    }
 
     auto scratchpad = scratchpad_registry().registrar();
     uni_bnorm_driver_t<isa>::init_scratchpad(scratchpad, this);
@@ -1289,28 +1279,26 @@ status_t jit_uni_batch_normalization_fwd_t<isa>::pd_t::init() {
 
 template <cpu_isa_t isa>
 jit_uni_batch_normalization_fwd_t<isa>::jit_uni_batch_normalization_fwd_t(
-        const pd_t *apd, const input_vector &inputs,
-        const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs)
+        const pd_t *apd): cpu_primitive_t(apd)
 { bnorm_driver_ = new uni_bnorm_driver_t<isa>(pd()); }
 
 template <cpu_isa_t isa>
-void jit_uni_batch_normalization_fwd_t<isa>::execute(event_t *e) const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-    auto mean = reinterpret_cast<data_t*>(pd()->stats_is_src()
-            ? const_cast<char*>(this->input_memory(1))
-            : this->memory(1));
-    auto var = reinterpret_cast<data_t*>(pd()->stats_is_src()
-            ? const_cast<char*>(this->input_memory(2))
-            : this->memory(2));
+status_t jit_uni_batch_normalization_fwd_t<isa>::execute(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto scale_shift = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SCALE_SHIFT);
 
-    auto idx_scale_shift = 1 + 2*pd()->stats_is_src();
-    auto scale_shift =
-        reinterpret_cast<const data_t *>(this->input_memory(idx_scale_shift));
-    auto ws = reinterpret_cast<uint8_t *>(this->memory(pd()->ws_idx()));
+    auto mean = pd()->stats_is_src()
+        ? const_cast<data_t *>(CTX_IN_MEM(const data_t *, MKLDNN_ARG_MEAN))
+        : CTX_OUT_MEM(data_t *, MKLDNN_ARG_MEAN);
+    auto var = pd()->stats_is_src()
+        ? const_cast<data_t *>(CTX_IN_MEM(const data_t *, MKLDNN_ARG_VARIANCE))
+        : CTX_OUT_MEM(data_t *, MKLDNN_ARG_VARIANCE);
 
-    auto scratchpad = this->scratchpad();
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+    auto ws = CTX_OUT_MEM(uint8_t *, MKLDNN_ARG_WORKSPACE);
+
+    auto scratchpad = this->scratchpad(ctx);
 
     bnorm_driver_->init_barriers(scratchpad);
 
@@ -1318,7 +1306,8 @@ void jit_uni_batch_normalization_fwd_t<isa>::execute(event_t *e) const {
         bnorm_driver_->exec(ithr, nthr, src, nullptr, dst, nullptr,
                 scale_shift, nullptr, mean, var, ws, scratchpad);
     });
-    e->set_state(event_t::ready);
+
+    return status::success;
 }
 
 template <cpu_isa_t isa>
@@ -1329,8 +1318,7 @@ jit_uni_batch_normalization_fwd_t<isa>::~jit_uni_batch_normalization_fwd_t()
 
 template <cpu_isa_t isa>
 status_t jit_uni_batch_normalization_bwd_t<isa>::pd_t::init() {
-    assert(engine()->kind() == engine_kind::cpu);
-    auto desired_fmt = (ndims() == 4)
+    auto desired_fmt_tag = (ndims() == 4)
         ? one_of(isa, sse42, avx2) ? nChw8c : nChw16c
         : one_of(isa, sse42, avx2) ? nCdhw8c : nCdhw16c;
 
@@ -1339,29 +1327,25 @@ status_t jit_uni_batch_normalization_bwd_t<isa>::pd_t::init() {
         && is_bwd()
         && !has_zero_dim_memory()
         && one_of(ndims(), 4, 5)
-        && everyone_is(f32, desc()->data_desc.data_type,
-                desc()->diff_data_desc.data_type)
+        && everyone_is(f32, src_md()->data_type, diff_src_md()->data_type)
         && IMPLICATION(use_scaleshift(),
-                desc()->data_scaleshift_desc.data_type == f32)
-        && everyone_is(desired_fmt, desc()->diff_data_desc.format,
-                desc()->data_desc.format)
+                utils::everyone_is(f32,
+                    weights_md()->data_type,
+                    diff_weights_md()->data_type))
+        && memory_desc_matches_tag(*src_md(), desired_fmt_tag)
+        && memory_desc_matches_tag(*diff_src_md(), desired_fmt_tag)
         && attr()->has_default_values();
     if (!ok) return status::unimplemented;
 
-    if (memory_desc_wrapper(&data_pd_).blocking_desc()
-            .padding_dims[1] != this->C() && isa < avx2)
+    if (memory_desc_wrapper(src_md()).padded_dims()[1] != C()
+            && isa < avx2)
         return status::unimplemented;
 
     if (fuse_bn_relu()) {
         if (isa < avx2) return status::unimplemented;
-        bn_init_default_ws(this, this->workspace_pd_, 1);
-        size_t this_ws_sz = memory_desc_wrapper(this->workspace_pd()).size();
-
-        bool ws_ok = true
-            && hint_fwd_pd_->workspace_pd()
-            && memory_desc_wrapper(hint_fwd_pd_->workspace_pd()).size()
-            == this_ws_sz;
-        if (!ws_ok) return status::unimplemented;
+        init_default_ws(1);
+        if (!compare_ws(hint_fwd_pd_))
+            return status::unimplemented;
     }
 
     /* TODO: extra checks required */
@@ -1374,24 +1358,23 @@ status_t jit_uni_batch_normalization_bwd_t<isa>::pd_t::init() {
 
 template <cpu_isa_t isa>
 jit_uni_batch_normalization_bwd_t<isa>::jit_uni_batch_normalization_bwd_t(
-        const pd_t *apd, const input_vector &inputs,
-        const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs)
+        const pd_t *apd): cpu_primitive_t(apd)
 { bnorm_driver_ = new uni_bnorm_driver_t<isa>(pd()); }
 
 template <cpu_isa_t isa>
-void jit_uni_batch_normalization_bwd_t<isa>::execute(event_t *e) const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto mean = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto var = reinterpret_cast<const data_t *>(this->input_memory(2));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(3));
-    auto scale_shift = reinterpret_cast<const data_t *>(this->input_memory(4));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
-    auto diff_scale_shift = reinterpret_cast<data_t *>(this->memory(1));
-    auto ws = reinterpret_cast<const uint8_t *>(
-            this->input_memory(pd()->ws_idx()));
+status_t jit_uni_batch_normalization_bwd_t<isa>::execute(
+        const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto mean = CTX_IN_MEM(const data_t *, MKLDNN_ARG_MEAN);
+    auto var = CTX_IN_MEM(const data_t *, MKLDNN_ARG_VARIANCE);
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto scale_shift = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SCALE_SHIFT);
+    auto ws = CTX_IN_MEM(const uint8_t *, MKLDNN_ARG_WORKSPACE);
 
-    auto scratchpad = this->scratchpad();
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
+    auto diff_scale_shift = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SCALE_SHIFT);
+
+    auto scratchpad = this->scratchpad(ctx);
 
     bnorm_driver_->init_barriers(scratchpad);
 
@@ -1399,7 +1382,8 @@ void jit_uni_batch_normalization_bwd_t<isa>::execute(event_t *e) const {
         bnorm_driver_->exec(ithr, nthr, src, diff_src, nullptr, diff_dst,
                 scale_shift, diff_scale_shift, mean, var, ws, scratchpad);
     });
-    e->set_state(event_t::ready);
+
+    return status::success;
 }
 
 template <cpu_isa_t isa>

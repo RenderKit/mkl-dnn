@@ -121,19 +121,19 @@ template <typename data_t>
 struct eltwise_test_params {
     engine::kind engine_kind;
     algorithm alg_kind;
-    memory::format data_format;
-    memory::format diff_format;
+    memory::format_tag data_format;
+    memory::format_tag diff_format;
     data_t alpha, beta;
     memory::dims dims;
     bool expect_to_fail;
     mkldnn_status_t expected_status;
 };
 
-size_t n_elems(const memory::desc &md) {
-    size_t p = 1;
-    const int *pdims = md.data.layout_desc.blocking.padding_dims;
+memory::dim n_elems(const memory::desc &md) {
+    memory::dim p = 1;
+    const auto *pdims = md.data.padded_dims;
     for (int i = 0; i < md.data.ndims; ++i)
-        p *= (size_t)(pdims[i]);
+        p *= pdims[i];
     return p;
 }
 
@@ -146,8 +146,8 @@ void check_eltwise_fwd(const eltwise_test_params<data_t> &p,
 
     ASSERT_EQ(md.data.data_type, memory::data_type::f32); // TODO: type assert
 
-    size_t n = n_elems(md);
-    for (size_t i = 0; i < n; ++i) {
+    memory::dim n = n_elems(md);
+    for (memory::dim i = 0; i < n; ++i) {
         data_t s = src_data[i];
         data_t ref_d = 0;
         switch (p.alg_kind) {
@@ -176,8 +176,8 @@ void compare_eltwise_fwd(const eltwise_test_params<data_t> &p,
 
     ASSERT_EQ(md.data.data_type, memory::data_type::f32); // TODO: type assert
 
-    size_t n = n_elems(md);
-    for (size_t i = 0; i < n; ++i) {
+    memory::dim n = n_elems(md);
+    for (memory::dim i = 0; i < n; ++i) {
         if (p.alg_kind == eltwise_soft_relu){
             EXPECT_NEAR(dst_data[i], ref_dst_data[i], 2.e-6);
         }
@@ -197,15 +197,17 @@ void check_eltwise_bwd(const eltwise_test_params<data_t> &p,
     data_t *diff_dst_data = (data_t *)diff_dst.get_data_handle();
     data_t *diff_src_data = (data_t *)diff_src.get_data_handle();
 
-    const memory::desc data_d = src.get_primitive_desc().desc();
-    const memory::desc diff_data_d = diff_src.get_primitive_desc().desc();
+    const memory::desc data_d = src.get_desc();
+    const memory::desc diff_data_d = diff_src.get_desc();
+    const mkldnn::impl::memory_desc_wrapper data_mdw(data_d.data);
+    const mkldnn::impl::memory_desc_wrapper diff_data_mdw(diff_data_d.data);
 
     ASSERT_EQ(md.data.data_type, memory::data_type::f32); // TODO: type assert
 
-    size_t n = n_elems(md);
-    for (size_t i = 0; i < n; ++i) {
-        data_t ref_s = src_data[map_index(data_d, i)];
-        data_t ref_dd = diff_dst_data[map_index(diff_data_d, i)];
+    memory::dim n = n_elems(md);
+    for (memory::dim i = 0; i < n; ++i) {
+        data_t ref_s = src_data[data_mdw.off_l(i)];
+        data_t ref_dd = diff_dst_data[diff_data_mdw.off_l(i)];
         data_t ref_ds = 0;
         switch (p.alg_kind) {
         case eltwise_relu:   ref_ds = relu_bwd(ref_dd, ref_s, p.alpha); break;
@@ -226,7 +228,7 @@ void check_eltwise_bwd(const eltwise_test_params<data_t> &p,
         case eltwise_logistic: ref_ds = logistic_bwd(ref_dd, ref_s); break;
         default: assert(!"unknown alg_kind");
         }
-        EXPECT_NEAR(diff_src_data[map_index(diff_data_d, i)], ref_ds, 1.e-6);
+        EXPECT_NEAR(diff_src_data[diff_data_mdw.off_l(i)], ref_ds, 1.e-6);
     }
 }
 
@@ -244,6 +246,7 @@ private:
     std::shared_ptr<eltwise_forward::primitive_desc> eltwise_prim_desc;
     eltwise_test_params<data_t> p;
     std::shared_ptr<engine> eng;
+    std::shared_ptr<stream> strm;
     memory::data_type data_type;
 
 protected:
@@ -258,6 +261,7 @@ protected:
 
         ASSERT_TRUE(p.engine_kind == engine::kind::cpu);
         eng.reset(new engine(p.engine_kind, 0));
+        strm.reset(new stream(*eng));
 
         data_type = data_traits<data_t>::data_type;
         ASSERT_EQ(data_type, mkldnn::memory::data_type::f32);
@@ -271,9 +275,9 @@ protected:
             p.data_format));
         diff_data_desc.reset(new memory::desc(p.dims, data_type,
             p.diff_format));
-        src.reset(new memory({*data_desc, *eng}));
-        dst.reset(new memory({*data_desc, *eng}));
-        ref_dst.reset(new memory({*data_desc, *eng}));
+        src.reset(new memory(*data_desc, *eng));
+        dst.reset(new memory(*data_desc, *eng));
+        ref_dst.reset(new memory(*data_desc, *eng));
 
         data_t data_median = data_t(0);
         data_t data_deviation
@@ -286,22 +290,20 @@ protected:
                 p.alg_kind, *data_desc, p.alpha, p.beta);
         eltwise_prim_desc.reset(
                 new eltwise_forward::primitive_desc(eltwise_desc, *eng));
-        auto eltwise = eltwise_forward(*eltwise_prim_desc, *src, *dst);
 
-        std::vector<primitive> pipeline;
-        pipeline.push_back(eltwise);
-        auto s = stream(stream::kind::lazy);
-        s.submit(pipeline).wait();
+        eltwise_forward(*eltwise_prim_desc).execute(*strm, {
+                {MKLDNN_ARG_SRC, *src},
+                {MKLDNN_ARG_DST, *dst}});
+
         check_zero_tail<data_t>(0, *dst);
         check_eltwise_fwd(p, *data_desc, *src, *ref_dst);
         check_zero_tail<data_t>(1, *ref_dst);
         compare_eltwise_fwd(p, *data_desc, *dst, *ref_dst);
-
     }
 
     void Backward() {
-        diff_src.reset(new memory({*diff_data_desc, *eng}));
-        diff_dst.reset(new memory({*diff_data_desc, *eng}));
+        diff_src.reset(new memory(*diff_data_desc, *eng));
+        diff_dst.reset(new memory(*diff_data_desc, *eng));
 
         data_t data_median = data_t(0);
         data_t data_deviation
@@ -315,13 +317,11 @@ protected:
                 *diff_data_desc, *data_desc, p.alpha, p.beta);
         auto eltwise_bwd_prim_desc = eltwise_backward::primitive_desc(
                 eltwise_bwd_desc, *eng, *eltwise_prim_desc);
-        auto eltwise_bwd = eltwise_backward(eltwise_bwd_prim_desc, *src,
-                *diff_dst, *diff_src);
 
-        std::vector<primitive> pipeline;
-        pipeline.push_back(eltwise_bwd);
-        auto s = stream(stream::kind::lazy);
-        s.submit(pipeline).wait();
+        eltwise_backward(eltwise_bwd_prim_desc).execute(*strm, {
+                {MKLDNN_ARG_SRC, *src},
+                {MKLDNN_ARG_DIFF_DST, *diff_dst},
+                {MKLDNN_ARG_DIFF_SRC, *diff_src}});
 
         check_zero_tail<data_t>(0, *diff_src);
         check_eltwise_bwd(p, *data_desc, *src, *diff_dst, *diff_src);
@@ -337,7 +337,7 @@ TEST_P(eltwise_test_float, TestsEltwise)
 
 #define EXPAND(args) args
 
-#define EXPAND_FORMATS(data) memory::format::data
+#define EXPAND_FORMATS(data) memory::format_tag::data
 #define EXPAND_DIMS(...) { __VA_ARGS__ }
 
 #define ENGINE engine::kind::cpu
@@ -361,7 +361,7 @@ TEST_P(eltwise_test_float, TestsEltwise)
     EXPAND(PARAMS(eltwise_bounded_relu, __VA_ARGS__)), \
     EXPAND(PARAMS(eltwise_logistic, __VA_ARGS__))
 
-#define INST_TEST_CASE(str, ...) INSTANTIATE_TEST_CASE_P( \
+#define INST_TEST_CASE(str, ...) INSTANTIATE_TEST_SUITE_P( \
         str, eltwise_test_float, ::testing::Values(__VA_ARGS__))
 
 INST_TEST_CASE(SimpleZeroDim,

@@ -21,6 +21,55 @@
 
 #include "cpu_rnn_pd.hpp"
 
+
+#define rnn_elemwise_sig(f)                                               \
+    void f(const rnn_utils::rnn_conf_t &rnn, acc_data_t *ws_gates_,   \
+            src_data_t *states_t_l_, float *c_states_t_l_,            \
+            src_data_t *states_tm1_l_, float *c_states_tm1_l_,        \
+            float *diff_states_t_l_, float *diff_states_t_lp1_,       \
+            float *diff_states_tp1_l_, float *bias_, float *ws_grid_, \
+            float *ws_cell_) const
+
+#define rnn_cell_execution_sig(f)                                             \
+    void f(const rnn_utils::rnn_conf_t &rnn, src_data_t *states_t_l_,     \
+            float *c_states_t_l_, float *diff_states_t_l_,                \
+            weights_data_t **w_layer_, weights_data_t **w_iter_,          \
+            float **bias_, src_data_t *states_t_lm1_,                     \
+            src_data_t *states_tm1_l_, float *c_states_tm1_l_,            \
+            float *diff_states_t_lp1_, float *diff_states_tp1_l_,         \
+            float *diff_w_layer_, float *diff_w_iter_, float *diff_bias_, \
+            acc_data_t *ws_gates_, float *ws_grid_, float *ws_cell_) const
+
+#define rnn_grid_execution_sig(f)                                                 \
+    void f(const rnn_utils::rnn_conf_t &rnn, weights_data_t **weights_layer_, \
+            weights_data_t **weights_states_, float **bias_,                  \
+            src_data_t *ws_states_, float *ws_c_states_,                      \
+            float *ws_diff_states_, acc_data_t *ws_gates_, float *ws_cell_,   \
+            float *ws_grid_, float *diff_weights_layer_,                      \
+            float *diff_weights_iter_, float *diff_bias_) const
+
+#define rnn_gemm_sig(f)                                                     \
+    void f(const char transA, const char transB, int m, int n, int k,   \
+            const float alpha, const weights_data_t *a_, const int ldA, \
+            const src_data_t *b_, const int ldB, const float beta,      \
+            acc_data_t *c_, const int ldC) const
+
+#define rnn_bias_prepare_sig(f)                                                  \
+    void f(const rnn_utils::rnn_conf_t &rnn, float **bias_, const float *b_, \
+            float *scratch_bias_) const
+
+#define rnn_bias_finalize_sig(f)                                       \
+    void f(const rnn_utils::rnn_conf_t &rnn, float *scratch_bias_, \
+            const float *w_iter_comp, const float *w_layer_comp) const
+
+#define rnn_weights_assign_sig(f)                                                \
+    void f(const rnn_utils::rnn_conf_t &rnn, const memory_desc_t *md, int nld,   \
+            int ld, int OC_size, int IC_size, const int n_parts,             \
+            const int *gates_per_part, const size_t *part_weights_pack_size, \
+            weights_data_t **weights_, const weights_data_t *w_,             \
+            float **bias_, const float *b_, float *scratch_bias_) const
+
+
 namespace mkldnn {
 namespace impl {
 namespace cpu {
@@ -76,9 +125,10 @@ struct rnn_conf_t {
             ws_cell_comp_size, ws_grid_comp_size, ws_per_cell, ws_bias_size;
     bool merge_gemm_iter, merge_gemm_layer, use_jit_gemm, use_layer_packed_gemm,
         use_iter_packed_gemm;
-    memory_format_t weights_layer_fmt, weights_iter_fmt, diff_weights_layer_fmt,
-            diff_weights_iter_fmt;
 };
+
+bool is_ldigo(const memory_desc_wrapper &md);
+bool is_ldgoi(const memory_desc_wrapper &md);
 
 int get_good_ld(int dim, int sizeof_dt);
 
@@ -105,7 +155,7 @@ void get_scratchpad_and_workspace_sizes(const rnn_conf_t &rnn,
         size_t &scratchpad_size, size_t &workspace_size);
 status_t set_expected_desc(
         rnn_conf_t &rnn, memory_desc_t &weights_md, bool is_iter);
-status_t set_good_strides(memory_desc_t &weights_md);
+status_t set_good_strides(memory_desc_t &weights_md, format_tag_t tag);
 
 template <typename T>
 struct ws_gates_aoc {

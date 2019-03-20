@@ -19,8 +19,9 @@
 
 #include "c_types_map.hpp"
 #include "memory_tracking.hpp"
+
 #include "cpu_convolution_pd.hpp"
-#include "cpu_engine.hpp"
+#include "cpu_primitive.hpp"
 
 #include "jit_avx512_core_fp32_wino_conv_4x3_kernel.hpp"
 
@@ -126,36 +127,25 @@ struct jit_avx512_core_fp32_wino_conv_4x3_fwd_t
                 JIT_IMPL_NAME_HELPER("jit_wino_4x3:", avx512_core, ""),
                 jit_avx512_core_fp32_wino_conv_4x3_fwd_t);
 
-        virtual status_t init() override
-        {
-            using namespace prop_kind;
-            assert(this->engine()->kind() == engine_kind::cpu);
-            bool ok = true && this->set_default_params() == status::success
-                    && utils::one_of(this->desc()->prop_kind, forward_training,
-                               forward_inference)
-                    && utils::one_of(this->desc()->alg_kind,
-                               alg_kind::convolution_auto,
-                               alg_kind::convolution_winograd)
-                    && utils::everyone_is(data_type::f32,
-                               this->desc()->src_desc.data_type,
-                               this->desc()->weights_desc.data_type,
-                               this->desc()->dst_desc.data_type)
-                    && IMPLICATION(this->with_bias(), data_type::f32
-                                       == this->desc()->bias_desc.data_type);
-            if (!ok)
-                return status::unimplemented;
+        status_t init() {
+            bool ok = true
+                && is_fwd()
+                && utils::one_of(desc()->alg_kind,
+                        alg_kind::convolution_auto,
+                        alg_kind::convolution_winograd)
+                && expect_data_types(data_type::f32, data_type::f32,
+                        data_type::f32, data_type::f32, data_type::f32)
+                && set_default_formats();
+            if (!ok) return status::unimplemented;
 
-            status_t status =
-                jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::init_conf(jcp_,
-                        *this->desc(), this->src_pd_, this->weights_pd_,
-                        this->dst_pd_, *this->attr());
+            status_t status = jit_avx512_core_fp32_wino_conv_4x3_fwd_kernel::
+                init_conf(jcp_, *desc(), src_md_, weights_md_, dst_md_,
+                        *attr());
             if (status != status::success) return status;
+            set_default_alg_kind(alg_kind::convolution_winograd);
 
-            auto scratchpad = this->scratchpad_registry().registrar();
+            auto scratchpad = scratchpad_registry().registrar();
             winograd_avx512_core::init_scratchpad(scratchpad, jcp_);
-            if (status == status::success
-                    && this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_winograd));
 
             return status;
         }
@@ -163,52 +153,42 @@ struct jit_avx512_core_fp32_wino_conv_4x3_fwd_t
         jit_conv_winograd_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override
-        {
-            using namespace memory_format;
-            if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(nChw16c));
-            if (this->dst_pd_.desc()->format == any)
-                CHECK(this->dst_pd_.set_format(nChw16c));
-            if (this->weights_pd_.desc()->format == any
-                    && (this->desc()->prop_kind != mkldnn_forward_inference))
-                CHECK(this->weights_pd_.set_format(
-                        this->with_groups() ? gOIhw16i16o : OIhw16i16o));
-            if (this->bias_pd_.desc()->format == any)
-                CHECK(this->bias_pd_.set_format(x));
-            return status::success;
+        bool set_default_formats() {
+            using namespace format_tag;
+            auto wei_fmt = desc()->prop_kind == prop_kind::forward_training
+                ? (with_groups() ? gOIhw16i16o : OIhw16i16o) : any;
+            return set_default_formats_common(nChw16c, wei_fmt, nChw16c);
         }
     };
 
-    jit_avx512_core_fp32_wino_conv_4x3_fwd_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs)
+    jit_avx512_core_fp32_wino_conv_4x3_fwd_t(const pd_t *apd)
         : _jit_avx512_core_fp32_wino_conv_4x3_t<true>(apd->jcp_, apd->attr())
-        , cpu_primitive_t(apd, inputs, outputs, true)
+        , cpu_primitive_t(apd, true)
          {}
-
-    ~jit_avx512_core_fp32_wino_conv_4x3_fwd_t(){};
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const
-    {
-        float *src = (float *)this->input_memory(0);
-        float *dst = (float *)this->memory();
-        float *weights = (float *)this->input_memory(1);
-        float *bias = (float *)this->input_memory(2);
-        auto scratchpad = this->scratchpad();
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        auto src = CTX_IN_MEM(const float *, MKLDNN_ARG_SRC);
+        auto weights = CTX_IN_MEM(const float *, MKLDNN_ARG_WEIGHTS);
+        auto bias = CTX_IN_MEM(const float *, MKLDNN_ARG_BIAS);
+        auto dst = CTX_OUT_MEM(float *, MKLDNN_ARG_DST);
+
+        auto scratchpad = this->scratchpad(ctx);
 
         switch ((pd()->jcp_).sched_policy) {
         case WSCHED_DATA_W_S_G_D:
-            this->_execute_data_W_S_G_D(src, dst, weights, bias, scratchpad);
+            this->_execute_data_W_S_G_D((float *)src, dst, (float *)weights,
+                    (float *)bias, scratchpad);
             break;
         case WSCHED_DATA_W_SGD:
-            this->_execute_data_W_SGD(src, dst, weights, bias, scratchpad);
+            this->_execute_data_W_SGD((float *)src, dst, (float *)weights,
+                    (float *)bias, scratchpad);
             break;
         default:
             break;
         }
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
 private:
@@ -229,35 +209,26 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t
                 JIT_IMPL_NAME_HELPER("jit_wino_4x3:", avx512_core, ""),
                 jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t);
 
-        virtual status_t init() override
-        {
-            using namespace prop_kind;
-            assert(this->engine()->kind() == engine_kind::cpu);
-            bool ok = true && this->set_default_params() == status::success
-                    && utils::one_of(this->desc()->prop_kind, backward_data)
-                    && utils::one_of(this->desc()->alg_kind,
-                               alg_kind::convolution_auto,
-                               alg_kind::convolution_winograd)
-                    && utils::everyone_is(data_type::f32,
-                               this->desc()->diff_src_desc.data_type,
-                               this->desc()->weights_desc.data_type,
-                               this->desc()->diff_dst_desc.data_type)
-                    && mkldnn_thr_syncable();
-            if (!ok)
-                return status::unimplemented;
+        status_t init() {
+            bool ok = true
+                && mkldnn_thr_syncable()
+                && desc()->prop_kind == prop_kind::backward_data
+                && utils::one_of(desc()->alg_kind,
+                        alg_kind::convolution_auto,
+                        alg_kind::convolution_winograd)
+                && expect_data_types(data_type::f32, data_type::f32,
+                        data_type::undef, data_type::f32, data_type::f32)
+                && set_default_formats();
+            if (!ok) return status::unimplemented;
 
-            status_t status =
-                jit_avx512_core_fp32_wino_conv_4x3_bwd_data_kernel::init_conf(
-                        jcp_, *this->desc(), *this->diff_src_pd_.desc(),
-                        *this->weights_pd_.desc(), *this->diff_dst_pd_.desc());
+            status_t status = jit_avx512_core_fp32_wino_conv_4x3_bwd_data_kernel
+                ::init_conf(jcp_, *desc(), *diff_src_md(), *weights_md(),
+                        *diff_dst_md());
             if (status != status::success) return status;
+            set_default_alg_kind(alg_kind::convolution_winograd);
 
-            auto scratchpad = this->scratchpad_registry().registrar();
+            auto scratchpad = scratchpad_registry().registrar();
             winograd_avx512_core::init_scratchpad(scratchpad, jcp_);
-
-            if (status == status::success
-                    && this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_winograd));
 
             return status;
         }
@@ -265,58 +236,43 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t
         jit_conv_winograd_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override
-        {
-            using namespace memory_format;
-
-            if (this->diff_src_pd_.desc()->format == any)
-                CHECK(this->diff_src_pd_.set_format(nChw16c));
-            if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(nChw16c));
-            if (this->weights_pd_.desc()->format == any)
-                CHECK(this->weights_pd_.set_format(
-                        this->with_groups() ? gOIhw16i16o : OIhw16i16o));
-            return status::success;
+        bool set_default_formats() {
+            using namespace format_tag;
+            auto wei_fmt = with_groups() ? gOIhw16i16o : OIhw16i16o;
+            return set_default_formats_common(nChw16c, wei_fmt, nChw16c);
         }
     };
 
-    jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs)
+    jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t(const pd_t *apd)
         : _jit_avx512_core_fp32_wino_conv_4x3_t<false>(apd->jcp_, apd->attr())
-        , cpu_primitive_t(apd, inputs, outputs, true)
+        , cpu_primitive_t(apd, true)
          {}
-
-    ~jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t(){};
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const
-    {
-        float *diff_dst = (float *)this->input_memory(0);
-        float *diff_src = (float *)this->memory();
-        float *weights = (float *)this->input_memory(1);
-        auto scratchpad = this->scratchpad();
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        auto diff_dst = CTX_IN_MEM(const float *, MKLDNN_ARG_DIFF_DST);
+        auto weights = CTX_IN_MEM(const float *, MKLDNN_ARG_WEIGHTS);
+        auto diff_src = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_SRC);
 
-        if (pd()->desc()->prop_kind == prop_kind::backward_data) {
-            switch ((pd()->jcp_).sched_policy) {
-            case WSCHED_DATA_W_S_G_D:
-                this->_execute_data_W_S_G_D(diff_dst, diff_src, weights, NULL,
-                        scratchpad);
-                break;
+        auto scratchpad = this->scratchpad(ctx);
 
-            case WSCHED_DATA_W_SGD:
-                this->_execute_data_W_SGD(diff_dst, diff_src, weights, NULL,
-                        scratchpad);
-                break;
+        switch ((pd()->jcp_).sched_policy) {
+        case WSCHED_DATA_W_S_G_D:
+            this->_execute_data_W_S_G_D((float *)diff_dst, diff_src,
+                    (float *)weights, NULL, scratchpad);
+            break;
 
-            default:
-                break;
-            }
-        } else {
-            assert(!"invalid prop_kind");
+        case WSCHED_DATA_W_SGD:
+            this->_execute_data_W_SGD((float *)diff_dst, diff_src,
+                    (float *)weights, NULL, scratchpad);
+            break;
+
+        default:
+            break;
         }
 
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
 private:
@@ -329,44 +285,35 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t
         pd_t(engine_t *engine, const convolution_desc_t *adesc,
                 const primitive_attr_t *attr,
                 const convolution_fwd_pd_t *hint_fwd_pd)
-            : cpu_convolution_bwd_weights_pd_t(engine, adesc, attr,
-                    hint_fwd_pd)
+            : cpu_convolution_bwd_weights_pd_t(engine, adesc, attr, hint_fwd_pd)
             , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino_4x3:", avx512_core, ""),
                 jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t);
 
-        virtual status_t init() override
-        {
-            using namespace prop_kind;
-            assert(this->engine()->kind() == engine_kind::cpu);
-            bool ok = true && this->set_default_params() == status::success
-                    && utils::one_of(this->desc()->prop_kind, backward_weights)
-                    && utils::one_of(this->desc()->alg_kind,
-                               alg_kind::convolution_auto,
-                               alg_kind::convolution_winograd)
-                    && utils::everyone_is(data_type::f32,
-                               this->desc()->src_desc.data_type,
-                               this->desc()->diff_dst_desc.data_type,
-                               this->desc()->diff_weights_desc.data_type)
-                    && mkldnn_thr_syncable();
+        status_t init() {
+            bool ok = true
+                && mkldnn_thr_syncable()
+                && desc()->prop_kind == prop_kind::backward_weights
+                && utils::one_of(desc()->alg_kind,
+                        alg_kind::convolution_auto,
+                        alg_kind::convolution_winograd)
+                && expect_data_types(data_type::f32, data_type::f32,
+                        data_type::f32, data_type::f32, data_type::f32)
+                && set_default_formats();
             if (!ok)
                 return status::unimplemented;
 
             status_t status =
                 jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_kernel::
-                init_conf(jcp_, *this->desc(), *this->src_pd_.desc(),
-                        *this->diff_dst_pd_.desc(),
-                        *this->diff_weights_pd_.desc());
+                init_conf(jcp_, *desc(), *src_md(), *diff_dst_md(),
+                        *diff_weights_md());
             if (status != status::success) return status;
+            set_default_alg_kind(alg_kind::convolution_winograd);
 
-            auto scratchpad = this->scratchpad_registry().registrar();
+            auto scratchpad = scratchpad_registry().registrar();
             winograd_avx512_core::init_scratchpad(scratchpad, jcp_);
-
-            if (status == status::success
-                    && this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_winograd));
 
             return status;
         }
@@ -374,26 +321,15 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t
         jit_conv_winograd_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override
-        {
-            using namespace memory_format;
-
-            if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(nChw16c));
-            if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(nChw16c));
-            if (this->diff_weights_pd_.desc()->format == any)
-                CHECK(this->diff_weights_pd_.set_format(
-                        this->with_groups() ? gOIhw16i16o : OIhw16i16o));
-            if (diff_bias_pd_.desc()->format == any)
-                CHECK(diff_bias_pd_.set_format(x));
-            return status::success;
+        bool set_default_formats() {
+            using namespace format_tag;
+            auto wei_fmt = with_groups() ? gOIhw16i16o : OIhw16i16o;
+            return set_default_formats_common(nChw16c, wei_fmt, nChw16c);
         }
     };
 
-    jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs, true)
+    jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t(const pd_t *apd)
+        : cpu_primitive_t(apd, true)
         , kernel_(nullptr)
     {
         kernel_ = new jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_kernel(
@@ -403,40 +339,44 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t
     ~jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t()
     {
         delete kernel_;
-    };
+    }
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const
-    {
-        if (pd()->desc()->prop_kind == prop_kind::backward_weights) {
-            const auto &jcp = kernel_->jcp;
-            switch (jcp.sched_policy) {
-            case WSCHED_WEI_SDGtWo:
-                _execute_backward_weights_SDGtWo(scratchpad());
-                break;
-            case WSCHED_WEI_S_D_Giot_W:
-                _execute_backward_weights_S_D_Giot_W(scratchpad());
-                break;
-            default:
-                assert(jcp.sched_policy != WSCHED_INVALID);
-                break;
-            }
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        auto diff_dst = CTX_IN_MEM(const float *, MKLDNN_ARG_DIFF_DST);
+        auto src = CTX_IN_MEM(const float *, MKLDNN_ARG_SRC);
+        auto diff_weights = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_WEIGHTS);
+        auto diff_bias = CTX_OUT_MEM(float *, MKLDNN_ARG_DIFF_BIAS);
+
+        switch (kernel_->jcp.sched_policy) {
+        case WSCHED_WEI_SDGtWo:
+            _execute_backward_weights_SDGtWo(src, diff_dst, diff_weights,
+                    diff_bias, scratchpad(ctx));
+            break;
+        case WSCHED_WEI_S_D_Giot_W:
+            _execute_backward_weights_S_D_Giot_W(src, diff_dst, diff_weights,
+                    diff_bias, scratchpad(ctx));
+            break;
+        default:
+            assert(kernel_->jcp.sched_policy != WSCHED_INVALID);
+            break;
         }
-        else
-            assert(!"invalid prop_kind");
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
 private:
-    void _execute_backward_weights_SDGtWo(
+    void _execute_backward_weights_SDGtWo(const float *src,
+            const float *diff_dst, float *diff_weights, float *diff_bias,
             const memory_tracking::grantor_t &scratchpad) const;
-    void _execute_backward_weights_S_D_Giot_W(
+    void _execute_backward_weights_S_D_Giot_W(const float *src,
+            const float *diff_dst, float *diff_weights, float *diff_bias,
             const memory_tracking::grantor_t &scratchpad) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
     jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_kernel *kernel_;
 };
+
 }
 }
 }

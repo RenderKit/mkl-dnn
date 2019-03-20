@@ -24,6 +24,7 @@
 
 #include "cpu_barrier.hpp"
 #include "cpu_convolution_pd.hpp"
+#include "cpu_primitive.hpp"
 #include "cpu_reducer.hpp"
 
 #include "jit_transpose_src_utils.hpp"
@@ -43,57 +44,41 @@ struct jit_avx512_common_convolution_fwd_t : public cpu_primitive_t {
                 const typename pd_t::base_class *hint_fwd_pd)
             : cpu_convolution_fwd_pd_t(engine, adesc, attr, hint_fwd_pd)
             , jcp_()
-        {
-        }
+        {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
                 jit_avx512_common_convolution_fwd_t);
 
-        virtual status_t init() override
-        {
-            using namespace prop_kind;
-            assert(this->engine()->kind() == engine_kind::cpu);
+        status_t init() {
             bool ok = true
-                    && utils::one_of(this->desc()->prop_kind, forward_training,
-                               forward_inference)
-                    && utils::one_of(this->desc()->alg_kind,
-                               alg_kind::convolution_auto,
-                               alg_kind::convolution_direct)
-                    && !this->has_zero_dim_memory()
-                    && this->desc()->src_desc.data_type == src_type
-                    && this->desc()->weights_desc.data_type == wei_type
-                    && this->desc()->dst_desc.data_type == dst_type
-                    && IMPLICATION(this->with_bias(), dst_type
-                                       == this->desc()->bias_desc.data_type);
-            if (!ok)
-                return status::unimplemented;
+                && is_fwd()
+                && set_default_alg_kind(alg_kind::convolution_direct)
+                && expect_data_types(src_type, wei_type, dst_type, dst_type,
+                        data_type::undef)
+                && !has_zero_dim_memory();
+            if (!ok) return status::unimplemented;
 
             status_t status = jit_avx512_common_conv_fwd_kernel::init_conf(
-                    jcp_, *this->desc(), this->src_pd_, this->weights_pd_,
-                    this->dst_pd_,this->bias_pd_, *this->attr(),
-                    mkldnn_get_max_threads());
+                    jcp_, *desc(), src_md_, weights_md_, dst_md_, bias_md_,
+                    *attr(), mkldnn_get_max_threads());
             if (status != status::success) return status;
 
             auto scratchpad = scratchpad_registry().registrar();
             jit_avx512_common_conv_fwd_kernel::init_scratchpad(scratchpad,
                     jcp_);
 
-            if (status == status::success
-                    && this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_direct));
             return status;
         }
 
         jit_conv_conf_t jcp_;
     };
 
-    jit_avx512_common_convolution_fwd_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs)
+    jit_avx512_common_convolution_fwd_t(const pd_t *apd)
+        : cpu_primitive_t(apd)
     {
         kernel_ = new jit_avx512_common_conv_fwd_kernel(pd()->jcp_,
-                    *pd()->attr());
+                *pd()->attr());
     }
     ~jit_avx512_common_convolution_fwd_t() { delete kernel_; }
 
@@ -101,28 +86,28 @@ struct jit_avx512_common_convolution_fwd_t : public cpu_primitive_t {
     typedef typename prec_traits<wei_type>::type wei_data_t;
     typedef typename prec_traits<dst_type>::type dst_data_t;
 
-    virtual void execute(event_t *e) const
-    {
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
         if (pd()->ndims() == 3)
-            execute_forward_1d();
+            execute_forward_1d(ctx);
         else if (pd()->ndims() == 4)
-            execute_forward_2d();
+            execute_forward_2d(ctx);
         else if (pd()->ndims() == 5)
-            execute_forward_3d();
+            execute_forward_3d(ctx);
         else
             assert(false);
 
         if (pd()->wants_zero_pad_dst())
-            output_memory_primitive(0)->zero_pad();
+            ctx.memory(MKLDNN_ARG_DST)->zero_pad();
 
-        e->set_state(event_t::ready);
+        return status::success;
     }
 
 private:
-    void prepare_padded_bias(const dst_data_t *&bias) const;
-    void execute_forward_1d() const;
-    void execute_forward_2d() const;
-    void execute_forward_3d() const;
+    void prepare_padded_bias(const dst_data_t *&bias,
+            const memory_tracking::grantor_t &scratchpad) const;
+    void execute_forward_1d(const exec_ctx_t &ctx) const;
+    void execute_forward_2d(const exec_ctx_t &ctx) const;
+    void execute_forward_3d(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 
     jit_avx512_common_conv_fwd_kernel *kernel_;
@@ -145,25 +130,19 @@ struct jit_avx512_common_convolution_bwd_data_t: public cpu_primitive_t {
                 JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
                 jit_avx512_common_convolution_bwd_data_t);
 
-        virtual status_t init() override {
-            using namespace prop_kind;
-            assert(this->engine()->kind() == engine_kind::cpu);
+        status_t init() {
             bool ok = true
-                && this->set_default_params() == status::success
-                && utils::one_of(this->desc()->prop_kind, backward_data) // XXX (this->!)
-                && utils::one_of(this->desc()->alg_kind,
-                           alg_kind::convolution_auto,
-                           alg_kind::convolution_direct)
-                && !this->has_zero_dim_memory()
-                && this->desc()->diff_dst_desc.data_type == diff_dst_type
-                && this->desc()->weights_desc.data_type == wei_type
-                && this->desc()->diff_src_desc.data_type == diff_src_type;
+                && desc()->prop_kind == prop_kind::backward_data
+                && set_default_alg_kind(alg_kind::convolution_direct)
+                && expect_data_types(diff_src_type, wei_type,
+                        data_type::undef, diff_dst_type, data_type::undef)
+                && !has_zero_dim_memory()
+                && set_default_formats();
             if (!ok) return status::unimplemented;
 
             status_t status =
                 jit_avx512_common_conv_bwd_data_kernel_f32::init_conf(jcp_,
-                        *this->desc(), *this->diff_src_pd_.desc(),
-                        *this->weights_pd_.desc(), *this->diff_dst_pd_.desc());
+                        *desc(), *diff_src_md(), *weights_md(), *diff_dst_md());
             if (status != status::success) return status;
 
             auto scratchpad = scratchpad_registry().registrar();
@@ -173,48 +152,23 @@ struct jit_avx512_common_convolution_bwd_data_t: public cpu_primitive_t {
             return status::success;
         }
 
-        inline memory_format_t src_format()
-        {
-            using namespace memory_format;
-            return utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c);
-        }
-        inline memory_format_t wei_format()
-        {
-            using namespace memory_format;
-            if (diff_dst_type == data_type::s16
-                && diff_src_type == data_type::s32
-                && wei_type == data_type::s16) {
-                return  this->with_groups() ? gOIhw8o16i2o : OIhw8o16i2o;
-            } else {
-                return this->with_groups()
-                    ? utils::pick(ndims() - 3, gOIw16o16i, gOIhw16o16i,
-                          gOIdhw16o16i)
-                    : utils::pick(ndims() - 3, OIw16o16i, OIhw16o16i,
-                          OIdhw16o16i);
-            }
-        }
-
         jit_conv_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override {
-            using namespace memory_format;
+        bool set_default_formats() {
+            using namespace format_tag;
 
-            if (this->diff_src_pd_.desc()->format == any)
-                CHECK(this->diff_src_pd_.set_format(src_format()));
-            if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(src_format()));
-            if (this->weights_pd_.desc()->format == any)
-                CHECK(this->weights_pd_.set_format(wei_format()));
-            if (this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_direct));
-            return status::success;
+            auto dat_tag = utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c);
+            auto wei_tag = utils::pick(2 * ndims() - 6 + with_groups(),
+                    OIw16o16i, gOIw16o16i, OIhw16o16i, gOIhw16o16i,
+                    OIdhw16o16i, gOIdhw16o16i);
+
+            return set_default_formats_common(dat_tag, wei_tag, dat_tag);
         }
     };
 
-    jit_avx512_common_convolution_bwd_data_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs)
+    jit_avx512_common_convolution_bwd_data_t(const pd_t *apd)
+        : cpu_primitive_t(apd)
     { kernel_ = new jit_avx512_common_conv_bwd_data_kernel_f32(pd()->jcp_); }
     ~jit_avx512_common_convolution_bwd_data_t() { delete kernel_; };
 
@@ -222,28 +176,22 @@ struct jit_avx512_common_convolution_bwd_data_t: public cpu_primitive_t {
     typedef typename prec_traits<wei_type>::type wei_data_t;
     typedef typename prec_traits<diff_src_type>::type diff_src_data_t;
 
-    virtual void execute(event_t *e) const {
-        switch (pd()->desc()->prop_kind) {
-        case prop_kind::backward_data:
-            if (pd()->ndims() == 3)
-                execute_backward_data_1d();
-            else if (pd()->ndims() == 4)
-                execute_backward_data_2d();
-            else if (pd()->ndims() == 5)
-                execute_backward_data_3d();
-            else
-                assert(false);
-            break;
-        default:
-            assert(!"invalid prop_kind");
-        }
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        if (pd()->ndims() == 3)
+            execute_backward_data_1d(ctx);
+        else if (pd()->ndims() == 4)
+            execute_backward_data_2d(ctx);
+        else if (pd()->ndims() == 5)
+            execute_backward_data_3d(ctx);
+        else
+            assert(false);
+        return status::success;
     }
 
 private:
-    void execute_backward_data_1d() const;
-    void execute_backward_data_2d() const;
-    void execute_backward_data_3d() const;
+    void execute_backward_data_1d(const exec_ctx_t &ctx) const;
+    void execute_backward_data_2d(const exec_ctx_t &ctx) const;
+    void execute_backward_data_3d(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 
     jit_avx512_common_conv_bwd_data_kernel_f32 *kernel_;
@@ -264,24 +212,18 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
                 JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
                 jit_avx512_common_convolution_bwd_weights_t);
 
-        virtual status_t init() override {
-            assert(this->engine()->kind() == engine_kind::cpu);
+        status_t init() {
             bool ok = true
-                && this->desc()->prop_kind == prop_kind::backward_weights
-                && utils::one_of(this->desc()->alg_kind,
-                           alg_kind::convolution_auto,
-                           alg_kind::convolution_direct)
-                && !this->has_zero_dim_memory()
-                && this->desc()->src_desc.data_type == src_type
-                && this->desc()->diff_dst_desc.data_type == diff_dst_type
-                && this->desc()->diff_weights_desc.data_type
-                    == diff_weights_type;
+                && desc()->prop_kind == prop_kind::backward_weights
+                && set_default_alg_kind(alg_kind::convolution_direct)
+                && expect_data_types(src_type, diff_weights_type,
+                        diff_weights_type, diff_dst_type, data_type::undef)
+                && !has_zero_dim_memory();
             if (!ok) return status::unimplemented;
 
-            status_t status =
-                jit_avx512_common_conv_bwd_weights_kernel_f32::init_conf(jcp_,
-                        *this->desc(), this->src_pd_, this->diff_weights_pd_,
-                        this->diff_bias_pd_, this->diff_dst_pd_);
+            status_t status = jit_avx512_common_conv_bwd_weights_kernel_f32::
+                init_conf(jcp_, *desc(), src_md_, diff_weights_md_,
+                        diff_bias_md_, diff_dst_md_);
             if (status != status::success) return status;
 
             init_balancers();
@@ -294,43 +236,11 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
                     scratchpad, memory_tracking::names::prefix_reducer_bia);
             reducer_bia_conf_.init_scratchpad(reducer_bia_scratchpad);
 
-            if (status == status::success &&
-                    this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_direct));
             return status;
-        }
-
-        inline memory_format_t src_format()
-        {
-            using namespace memory_format;
-            return utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c);
-        }
-        inline memory_format_t wei_format()
-        {
-            using namespace memory_format;
-            return this->with_groups()
-                ? utils::pick(ndims() - 3, gOIw16o16i, gOIhw16o16i,
-                      gOIdhw16o16i)
-                : utils::pick(ndims() - 3, OIw16o16i, OIhw16o16i,
-                      OIdhw16o16i);
         }
 
         jit_conv_conf_t jcp_;
         typename cpu_reducer_t<diff_weights_type>::conf_t reducer_bia_conf_;
-
-    protected:
-        virtual status_t set_default_params() override {
-            using namespace memory_format;
-
-            if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(src_format()));
-            if (this->diff_weights_pd_.desc()->format == any)
-                CHECK(this->diff_weights_pd_.set_format(wei_format()));
-            if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(src_format()));
-
-            return status::success;
-        }
 
     private:
         void init_balancers() {
@@ -343,14 +253,11 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
         }
     };
 
-    jit_avx512_common_convolution_bwd_weights_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs);
+    jit_avx512_common_convolution_bwd_weights_t(const pd_t *apd);
     ~jit_avx512_common_convolution_bwd_weights_t() {
         delete kernel_;
         if (trans_kernel_)
             delete trans_kernel_;
-        if (trans_dst_kernel_)
-            delete trans_dst_kernel_;
         if (acc_ker_)
             delete acc_ker_;
         delete reducer_bias_;
@@ -360,14 +267,14 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
     typedef typename prec_traits<diff_dst_type>::type diff_dst_data_t;
     typedef typename prec_traits<diff_weights_type>::type diff_weights_data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_backward_weights();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_backward_weights(ctx);
+        return status::success;
     }
 
 private:
-    void execute_backward_weights() const;
-    void prepare_scratchpad_data() const;
+    void execute_backward_weights(const exec_ctx_t &ctx) const;
+    void prepare_scratchpad_data(const exec_ctx_t &ctx) const;
     struct thread_info_t;
     void compute_diff_weights(const thread_info_t *) const;
     void compute_diff_weights_3d(const thread_info_t *) const;
@@ -382,7 +289,6 @@ private:
 
     jit_avx512_common_conv_bwd_weights_kernel_f32 *kernel_;
     jit_trans_src_t *trans_kernel_;
-    jit_trans_dst_t *trans_dst_kernel_;
     cpu_accumulator_1d_t<diff_weights_type> *acc_ker_;
     cpu_reducer_t<diff_weights_type> *reducer_bias_;
 };

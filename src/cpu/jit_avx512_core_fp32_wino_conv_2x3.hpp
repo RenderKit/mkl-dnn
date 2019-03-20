@@ -20,11 +20,12 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "cpu_convolution_pd.hpp"
-#include "cpu_engine.hpp"
 #include "mkldnn_thread.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "cpu_convolution_pd.hpp"
+#include "cpu_primitive.hpp"
 
 #include "jit_primitive_conf.hpp"
 #include "jit_generator.hpp"
@@ -49,40 +50,30 @@ struct jit_avx512_core_fp32_wino_conv_2x3_fwd_t : public cpu_primitive_t {
                 JIT_IMPL_NAME_HELPER("jit_fp32_wino_2x3:", avx512_core, ""),
                 jit_avx512_core_fp32_wino_conv_2x3_fwd_t);
 
-        virtual status_t init() override {
-            using namespace prop_kind;
-            using namespace memory_format;
-            assert(this->engine()->kind() == engine_kind::cpu);
-            bool ok = true && this->set_default_params() == status::success
-                    && utils::one_of(this->desc()->prop_kind, forward_inference)
-                    && utils::one_of(this->desc()->alg_kind,
-                               alg_kind::convolution_auto,
-                               alg_kind::convolution_winograd)
-                    && this->desc()->src_desc.data_type == data_type::f32
-                    && this->desc()->dst_desc.data_type == data_type::f32
-                    && this->desc()->weights_desc.data_type == data_type::f32
-                    && IMPLICATION(this->with_bias(),
-                               utils::one_of(this->desc()->bias_desc.data_type,
-                                       data_type::f32));
-            if (!ok)
-                return status::unimplemented;
+        status_t init() {
+            bool ok = true
+                && desc()->prop_kind == prop_kind::forward_inference
+                && utils::one_of(desc()->alg_kind,
+                        alg_kind::convolution_auto,
+                        alg_kind::convolution_winograd)
+                && expect_data_types(data_type::f32, data_type::f32,
+                        data_type::f32, data_type::f32, data_type::f32)
+                && set_default_formats();
+            if (!ok) return status::unimplemented;
 
-            memory_desc_t expect_wei_md = *(this->weights_pd_.desc());
+            memory_desc_t expect_wei_md = *weights_md();
             status_t jit_conf_result = jit_conf(expect_wei_md);
-            if (jit_conf_result != success) return jit_conf_result;
+            if (jit_conf_result != status::success) return jit_conf_result;
+            set_default_alg_kind(alg_kind::convolution_winograd);
 
-            cpu_memory_t::pd_t new_weights_pd(this->engine_, &expect_wei_md);
-            if (this->weights_pd_.desc()->format == any)
-                this->weights_pd_ = new_weights_pd;
-            if (!this->weights_pd_.is_equal(&new_weights_pd))
-                return unimplemented;
+            if (weights_md_.format_kind == format_kind::any)
+                weights_md_ = expect_wei_md;
+            if (weights_md_ != expect_wei_md)
+                return status::unimplemented;
 
             init_scratchpad();
 
-            if (this->desc()->alg_kind == alg_kind::convolution_auto)
-               CHECK(this->set_alg_kind(alg_kind::convolution_winograd));
-
-            return success;
+            return status::success;
         }
 
         jit_conv_conf_2x3_wino_t jcp_;
@@ -93,7 +84,7 @@ struct jit_avx512_core_fp32_wino_conv_2x3_fwd_t : public cpu_primitive_t {
         void init_scratchpad() {
             using namespace memory_tracking::names;
 
-            auto scratchpad = this->scratchpad_registry().registrar();
+            auto scratchpad = scratchpad_registry().registrar();
 
             int wino_size_offset = (jcp_.yb / 2) * (jcp_.xb / 2) + jcp_.xb;
 
@@ -109,32 +100,36 @@ struct jit_avx512_core_fp32_wino_conv_2x3_fwd_t : public cpu_primitive_t {
             }
         }
 
-        virtual status_t set_default_params() override {
-            using namespace memory_format;
-            if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(nChw16c));
-            if (this->dst_pd_.desc()->format == any)
-                CHECK(this->dst_pd_.set_format(nChw16c));
-            if (this->bias_pd_.desc()->format == any)
-                CHECK(this->bias_pd_.set_format(x));
-            return status::success;
+        bool set_default_formats() {
+            using namespace format_tag;
+            return set_default_formats_common(nChw16c, any, nChw16c);
         }
     };
 
-    jit_avx512_core_fp32_wino_conv_2x3_fwd_t(const pd_t *apd,
-            const input_vector &inputs, const output_vector &outputs);
-
+    jit_avx512_core_fp32_wino_conv_2x3_fwd_t(const pd_t *apd);
     ~jit_avx512_core_fp32_wino_conv_2x3_fwd_t();
 
-    virtual void execute(event_t *e) const {
-        execute_forward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        auto src = CTX_IN_MEM(const float *, MKLDNN_ARG_SRC);
+        auto wei = CTX_IN_MEM(const float *, MKLDNN_ARG_WEIGHTS);
+        auto bia = CTX_IN_MEM(const float *, MKLDNN_ARG_BIAS);
+        auto dst = CTX_OUT_MEM(float *, MKLDNN_ARG_DST);
+
+        if (pd()->jcp_.small_mb)
+            execute_forward_small_mb(src, wei, bia, dst, this->scratchpad(ctx));
+        else
+            execute_forward_mbN(src, wei, bia, dst, this->scratchpad(ctx));
+
+        return status::success;
     }
 
 private:
-    void execute_forward() const;
-    void execute_forward_small_mb() const;
-    void execute_forward_mbN() const;
+    void execute_forward_small_mb(const float *src, const float *wei,
+            const float *bia, float *dst,
+            const memory_tracking::grantor_t &scratchpad) const;
+    void execute_forward_mbN(const float *src, const float *wei,
+            const float *bia, float *dst,
+            const memory_tracking::grantor_t &scratchpad) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 
     jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t *kernel_;

@@ -43,7 +43,6 @@ if (NOT MKLDNN_THREADING MATCHES "OMP")
     return()
 endif()
 
-
 set(MKLDNN_USES_INTEL_OPENMP FALSE)
 
 if (APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -78,15 +77,26 @@ macro(use_intel_omp_rt)
     # Do not link with compiler-native OpenMP library if Intel MKL is present.
     # Rationale: Intel MKL comes with Intel OpenMP library which is compatible
     # with all libraries shipped with compilers that Intel MKL-DNN supports.
-    if(HAVE_MKL)
+    get_filename_component(MKLIOMP5LIB "${MKLIOMP5LIB}" PATH)
+    find_library(IOMP5LIB
+                NAMES "iomp5" "iomp5md" "libiomp5" "libiomp5md"
+                HINTS  ${MKLIOMP5LIB} )
+    if(IOMP5LIB)
         forbid_link_compiler_omp_rt()
-        list(APPEND EXTRA_SHARED_LIBS ${MKLIOMP5LIB})
+        if (WIN32)
+            get_filename_component(MKLIOMP5DLL "${MKLIOMP5DLL}" PATH)
+            find_file(IOMP5DLL
+                NAMES "libiomp5.dll" "libiomp5md.dll"
+                HINTS ${MKLIOMP5DLL})
+        endif()
+        list(APPEND EXTRA_SHARED_LIBS ${IOMP5LIB})
     else()
         if (MKLDNN_THREADING STREQUAL "OMP:INTEL")
             message(${_omp_severity} "Intel OpenMP runtime could not be found. "
                 "Please either use OpenMP runtime that comes with the compiler "
                 "(via -DMKLDNN_THREADING={OMP,OMP:COMP}), or "
-                "install Intel MKL / Intel MKL-ML (e.g. scripts/prepare_mkl.sh)")
+                "explicitely provide the path to libiomp with the "
+                "-DCMAKE_LIBRARY_PATH option")
         endif()
     endif()
 endmacro()
@@ -99,7 +109,7 @@ elseif(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     append(CMAKE_C_FLAGS "-Xclang -fopenmp")
     append(CMAKE_CXX_FLAGS "-Xclang -fopenmp")
     set(OpenMP_CXX_FOUND true)
-    list(APPEND EXTRA_SHARED_LIBS ${MKLIOMP5LIB})
+    list(APPEND EXTRA_SHARED_LIBS ${IOMP5LIB})
 else()
     find_package(OpenMP)
     #newer version for findOpenMP (>= v. 3.9)
@@ -126,8 +136,8 @@ if (MKLDNN_THREADING MATCHES "OMP")
     endif()
 
     if (MKLDNN_THREADING STREQUAL "OMP:COMP")
-        set(MKLIOMP5LIB "")
-        set(MKLIOMP5DLL "")
+        set(IOMP5LIB "")
+        set(IOMP5DLL "")
     else()
         use_intel_omp_rt()
     endif()
@@ -142,9 +152,9 @@ else()
     return()
 endif()
 
-set_ternary(_omp_lib_msg MKLIOMP5LIB "${MKLIOMP5LIB}" "provided by compiler")
+set_ternary(_omp_lib_msg IOMP5LIB "${IOMP5LIB}" "provided by compiler")
 message(STATUS "OpenMP lib: ${_omp_lib_msg}")
 if(WIN32)
-    set_ternary(_omp_dll_msg MKLIOMP5DLL "${MKLIOMP5LIB}" "provided by compiler")
+    set_ternary(_omp_dll_msg IOMP5DLL "${IOMP5LIB}" "provided by compiler")
     message(STATUS "OpenMP dll: ${_omp_dll_msg}")
 endif()

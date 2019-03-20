@@ -20,131 +20,121 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "cpu_pooling_pd.hpp"
-#include "cpu_engine.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "cpu_pooling_pd.hpp"
+#include "cpu_primitive.hpp"
 
 namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace mkldnn::impl::memory_format;
-
 template <impl::data_type_t data_type>
 struct nchw_pooling_fwd_t: public cpu_primitive_t {
     struct pd_t: public cpu_pooling_fwd_pd_t {
-        pd_t(engine_t *engine, const pooling_desc_t *adesc,
-                const primitive_attr_t *attr,
-                const pooling_fwd_pd_t *hint_fwd_pd)
-            : cpu_pooling_fwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_pooling_fwd_pd_t::cpu_pooling_fwd_pd_t;
 
         DECLARE_COMMON_PD_T("nchw_pooling:any", nchw_pooling_fwd_t);
 
-        virtual status_t init() override {
-            using namespace prop_kind;
-            using namespace alg_kind;
-            assert(engine()->kind() == engine_kind::cpu);
-            auto src_format = src_pd()->desc()->format;
+        status_t init() {
+            const format_tag_t desired_fmt_tag =
+                ndims() == 4 ? format_tag::nchw : format_tag::ncdhw;
+
             bool ok = true
                 && set_default_params() == status::success
-                && utils::one_of(desc()->prop_kind, forward_training,
-                        forward_inference)
-                && utils::one_of(desc()->alg_kind, pooling_max,
-                        pooling_avg_include_padding,
-                        pooling_avg_exclude_padding)
+                && is_fwd()
+                && utils::one_of(desc()->alg_kind, alg_kind::pooling_max,
+                        alg_kind::pooling_avg_include_padding,
+                        alg_kind::pooling_avg_exclude_padding)
                 && !has_zero_dim_memory()
-                && utils::everyone_is(data_type, src_pd()->desc()->data_type,
-                        dst_pd()->desc()->data_type)
-                && utils::one_of(src_format, nchw, ncdhw)
-                && (src_format == dst_pd()->desc()->format)
-                && attr()->has_default_values();
+                && utils::everyone_is(data_type, src_md()->data_type,
+                        dst_md()->data_type)
+                && attr()->has_default_values()
+                && memory_desc_matches_tag(*src_md(), desired_fmt_tag)
+                && memory_desc_matches_tag(*dst_md(), desired_fmt_tag);
             if (!ok) return status::unimplemented;
 
-            bool is_training = desc_.prop_kind == forward_training;
-            if (desc()->alg_kind == pooling_max && is_training) {
-                auto indices_desc = *dst_pd()->desc();
-                indices_desc.data_type = pooling_index_data_type(desc());
-                ws_pd_ = cpu_memory_t::pd_t(engine_, &indices_desc);
-            }
+            bool is_training = desc_.prop_kind == prop_kind::forward_training;
+            if (desc()->alg_kind == alg_kind::pooling_max && is_training)
+                init_default_ws();
 
             return status::success;
         }
     };
 
-    nchw_pooling_fwd_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs) {}
+    nchw_pooling_fwd_t(const pd_t *apd): cpu_primitive_t(apd) {}
     typedef typename prec_traits<data_type>::type data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_forward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_forward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_forward() const;
+    void execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 };
 
 template <impl::data_type_t data_type>
 struct nchw_pooling_bwd_t: public cpu_primitive_t {
     struct pd_t: public cpu_pooling_bwd_pd_t {
-        pd_t(engine_t *engine, const pooling_desc_t *adesc,
-                const primitive_attr_t *attr,
-                const pooling_fwd_pd_t *hint_fwd_pd)
-            : cpu_pooling_bwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_pooling_bwd_pd_t::cpu_pooling_bwd_pd_t;
 
         DECLARE_COMMON_PD_T("nchw:any", nchw_pooling_bwd_t);
 
-        virtual status_t init() override {
-            using namespace prop_kind;
-            using namespace alg_kind;
-            assert(engine()->kind() == engine_kind::cpu);
-            auto diff_dst_format = diff_dst_pd()->desc()->format;
+        status_t init() {
+            const format_tag_t desired_fmt_tag =
+                ndims() == 4 ? format_tag::nchw : format_tag::ncdhw;
+
             bool ok = true
                 && set_default_params() == status::success
-                && utils::one_of(desc()->prop_kind, backward_data)
-                && utils::one_of(desc()->alg_kind, pooling_max,
-                        pooling_avg_include_padding,
-                        pooling_avg_exclude_padding)
+                && !is_fwd()
+                && utils::one_of(desc()->alg_kind, alg_kind::pooling_max,
+                        alg_kind::pooling_avg_include_padding,
+                        alg_kind::pooling_avg_exclude_padding)
                 && !has_zero_dim_memory()
                 && utils::everyone_is(data_type,
-                        diff_dst_pd()->desc()->data_type,
-                        diff_src_pd()->desc()->data_type)
-                && utils::one_of(diff_dst_format, nchw, ncdhw)
-                && (diff_dst_format == diff_src_pd()->desc()->format)
-                && attr()->has_default_values();
+                        diff_dst_md()->data_type,
+                        diff_src_md()->data_type)
+                && attr()->has_default_values()
+                && memory_desc_matches_tag(*diff_dst_md(), desired_fmt_tag)
+                && memory_desc_matches_tag(*diff_src_md(), desired_fmt_tag);
             if (!ok) return status::unimplemented;
 
-            if (desc()->alg_kind == pooling_max) {
+            if (desc()->alg_kind == alg_kind::pooling_max) {
                 bool ws_ok = true
                     && hint_fwd_pd_
-                    && hint_fwd_pd_->workspace_pd()
-                    && utils::one_of(
-                            hint_fwd_pd_->workspace_pd()->desc()->format,
-                            nchw, nChw8c, nChw16c, ncdhw, nCdhw8c, nCdhw16c);
-                if (!ws_ok) return status::unimplemented;
+                    && hint_fwd_pd_->workspace_md();
+                if (!ws_ok)
+                    return status::unimplemented;
 
-                ws_pd_ = *(cpu_memory_t::pd_t*)hint_fwd_pd_->workspace_pd();
+                const auto &ws_blk =
+                    hint_fwd_pd_->workspace_md()->format_desc.blocking;
+                ws_ok = ws_ok
+                    && ws_blk.inner_nblks < 1
+                    && IMPLICATION(ws_blk.inner_nblks == 1,
+                            ws_blk.inner_idxs[0] == 1);
+                if (!ws_ok)
+                    return status::unimplemented;
+
+                ws_md_ = *hint_fwd_pd_->workspace_md();
             }
 
             return status::success;
         }
     };
 
-    nchw_pooling_bwd_t(const pd_t *apd, const input_vector &inputs,
-            const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs) {}
+    nchw_pooling_bwd_t(const pd_t *apd): cpu_primitive_t(apd) {}
     typedef typename prec_traits<data_type>::type data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_backward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_backward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_backward() const;
+    void execute_backward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 };
 

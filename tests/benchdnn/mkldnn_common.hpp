@@ -19,6 +19,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <vector>
+
 #include "mkldnn.h"
 
 #include "common.hpp"
@@ -54,7 +56,6 @@
 template <mkldnn_data_type_t> struct prec_traits;
 template <> struct prec_traits<mkldnn_f32> { typedef float type; };
 template <> struct prec_traits<mkldnn_s32> { typedef int32_t type; };
-template <> struct prec_traits<mkldnn_s16> { typedef int16_t type; };
 template <> struct prec_traits<mkldnn_s8> { typedef int8_t type; };
 template <> struct prec_traits<mkldnn_u8> { typedef uint8_t type; };
 
@@ -63,7 +64,6 @@ inline size_t sizeof_dt(mkldnn_data_type_t dt) {
 #   define CASE(dt) case dt: return sizeof(typename prec_traits<dt>::type)
     CASE(mkldnn_f32);
     CASE(mkldnn_s32);
-    CASE(mkldnn_s16);
     CASE(mkldnn_s8);
     CASE(mkldnn_u8);
 #   undef CASE
@@ -74,22 +74,16 @@ inline size_t sizeof_dt(mkldnn_data_type_t dt) {
 
 /* simplification */
 extern mkldnn_engine_t engine;
-
-inline int execute(mkldnn_primitive_t p) {
-    mkldnn_stream_t stream;
-    DNN_SAFE(mkldnn_stream_create(&stream, mkldnn_eager), CRIT);
-    DNN_SAFE(mkldnn_stream_submit(stream, 1, &p, NULL), CRIT);
-    DNN_SAFE(mkldnn_stream_wait(stream, 1, NULL), CRIT);
-    DNN_SAFE(mkldnn_stream_destroy(stream), CRIT);
-    return OK;
-}
+extern mkldnn_stream_t stream;
 
 inline int init() {
     DNN_SAFE(mkldnn_engine_create(&engine, mkldnn_cpu, 0), CRIT);
+    DNN_SAFE(mkldnn_stream_create(&stream, engine, mkldnn_stream_default_flags), CRIT);
     return OK;
 }
 
 inline int finalize() {
+    DNN_SAFE(mkldnn_stream_destroy(stream), CRIT);
     DNN_SAFE(mkldnn_engine_destroy(engine), CRIT);
     return OK;
 }
@@ -99,5 +93,20 @@ inline const char *query_impl_info(const_mkldnn_primitive_desc_t pd) {
     mkldnn_primitive_desc_query(pd, mkldnn_query_impl_info_str, 0, &str);
     return str;
 }
+
+struct args_t {
+    args_t &set(int arg, mkldnn_memory_t memory) {
+        mkldnn_exec_arg_t a = {arg, memory};
+        args_.push_back(a);
+        return *this;
+    }
+    void clear() { args_.clear(); }
+
+    int size() const { return (int)args_.size(); }
+    const mkldnn_exec_arg_t *args() const { return args_.data(); }
+    operator const mkldnn_exec_arg_t *() const { return args(); }
+private:
+    std::vector<mkldnn_exec_arg_t> args_;
+};
 
 #endif

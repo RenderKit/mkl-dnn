@@ -38,7 +38,7 @@ protected:
 TEST_F(pd_iter_test, TestReLUImpls) {
     mkldnn_memory_desc_t dense_md;
     mkldnn_dims_t dims = {4, 16, 16, 16};
-    EXPECT_EQ(mkldnn_memory_desc_init(&dense_md, 4, dims, mkldnn_f32,
+    EXPECT_EQ(mkldnn_memory_desc_init_by_tag(&dense_md, 4, dims, mkldnn_f32,
                 mkldnn_nchw), ok);
 
     mkldnn_eltwise_desc_t ed;
@@ -48,8 +48,8 @@ TEST_F(pd_iter_test, TestReLUImpls) {
     mkldnn_primitive_desc_iterator_t it;
     mkldnn_status_t rc;
 
-    EXPECT_EQ(rc = mkldnn_primitive_desc_iterator_create(&it, &ed, engine,
-                nullptr), ok); /* there should be at least one impl */
+    EXPECT_EQ(rc = mkldnn_primitive_desc_iterator_create(&it, &ed, nullptr,
+                engine, nullptr), ok); /* there should be at least one impl */
 
     mkldnn_primitive_desc_t pd;
     EXPECT_NE(pd = mkldnn_primitive_desc_iterator_fetch(it), nullptr);
@@ -66,19 +66,18 @@ TEST_F(pd_iter_test, TestReLUImpls) {
 
 TEST(pd_next_impl, TestEltwiseImpl) {
     auto eng = engine(engine::kind::cpu, 0);
-    memory::desc md({8, 32, 4, 4}, memory::data_type::f32, memory::format::nChw8c);
-    memory data({md, eng});
+    memory::desc md({8, 32, 4, 4}, memory::data_type::f32, memory::format_tag::nChw8c);
 
     eltwise_forward::desc ed(prop_kind::forward_training,
             algorithm::eltwise_relu, md, 0, 0);
     eltwise_forward::primitive_desc epd(ed, eng);
 
     std::string impl0(epd.impl_info_str());
-    eltwise_forward(epd, data, data);
+    eltwise_forward e0(epd);
 
     while (epd.next_impl()) {
         std::string impl1(epd.impl_info_str());
-        eltwise_forward(epd, data, data);
+        eltwise_forward e1(epd);
         EXPECT_NE(impl0, impl1);
         impl0 = impl1;
     }

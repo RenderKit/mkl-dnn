@@ -20,10 +20,8 @@ file(GLOB_RECURSE HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.hpp
     )
 #file(GLOB_RECURSE SOURCES
-#    ${CMAKE_CURRENT_SOURCE_DIR}/*.c
-#    ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
-#    ${CMAKE_CURRENT_SOURCE_DIR}/*.h
-#    ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp
+#    ${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp
+#    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.cpp
 #    )
 include_directories(
     ${PROJECT_BINARY_DIR}/include
@@ -273,11 +271,11 @@ target_include_directories(${LIB_NAME} PUBLIC
     $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>
     )
 
-target_link_libraries_build(${LIB_NAME}
+target_link_libraries_private(${LIB_NAME}
     "${EXTRA_SHARED_LIBS};${EXTRA_STATIC_LIBS}")
-target_link_libraries_install(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
+target_link_libraries_public(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
 if(MKLDNN_LIBRARY_TYPE STREQUAL "STATIC")
-    target_link_libraries_install(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
+    target_link_libraries_public(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
 endif()
 
 set(LIB_EXPORT_NAME "${LIB_NAME}-targets")

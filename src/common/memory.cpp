@@ -22,26 +22,24 @@
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
-#include "memory_pd.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
 using namespace mkldnn::impl;
 using namespace mkldnn::impl::utils;
 using namespace mkldnn::impl::status;
-using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::data_type;
 
 namespace {
 bool memory_desc_sanity_check(int ndims,const dims_t dims,
-        data_type_t data_type, memory_format_t format) {
+        data_type_t data_type, format_kind_t format_kind) {
     if (ndims == 0) return true;
 
     bool ok = true
         && dims != nullptr
-        && 0 < ndims && ndims <= TENSOR_MAX_DIMS
-        && one_of(data_type, f32, s32, s16, s8, u8)
-        && format != memory_format::undef;
+        && 0 < ndims && ndims <= MKLDNN_MAX_NDIMS
+        && one_of(data_type, f32, s32, s8, u8)
+        && format_kind != format_kind::undef;
     if (!ok) return false;
     for (int d = 0; d < ndims; ++d)
         if (dims[d] < 0) return false;
@@ -52,37 +50,39 @@ bool memory_desc_sanity_check(int ndims,const dims_t dims,
 bool memory_desc_sanity_check(const memory_desc_t *md) {
     if (md == nullptr) return false;
     return memory_desc_sanity_check(md->ndims, md->dims, md->data_type,
-            md->format);
+            format_kind::any);
 }
 }
 
-status_t mkldnn_memory_desc_init(memory_desc_t *memory_desc, int ndims,
-        const dims_t dims, data_type_t data_type, memory_format_t format) {
+status_t mkldnn_memory_desc_init_by_tag(memory_desc_t *memory_desc, int ndims,
+        const dims_t dims, data_type_t data_type, format_tag_t tag) {
     if (any_null(memory_desc)) return invalid_arguments;
-    if (ndims == 0 || format == memory_format::undef) {
+    if (ndims == 0 || tag == format_tag::undef) {
         *memory_desc = types::zero_md();
         return success;
     }
 
+    format_kind_t format_kind = types::format_tag_to_kind(tag);
+
     /* memory_desc != 0 */
     bool args_ok = !any_null(memory_desc)
-        && memory_desc_sanity_check(ndims, dims, data_type, format);
+        && memory_desc_sanity_check(ndims, dims, data_type, format_kind);
     if (!args_ok) return invalid_arguments;
 
-    memory_desc_t md;
+    auto md = memory_desc_t();
     md.ndims = ndims;
     array_copy(md.dims, dims, ndims);
-    md.primitive_kind = primitive_kind::memory;
     md.data_type = data_type;
-    md.format = format;
+    array_copy(md.padded_dims, dims, ndims);
+    md.format_kind = format_kind;
 
     status_t status = success;
-    if (one_of(format, memory_format::undef, blocked, wino_fmt, rnn_packed)) {
+    if (tag == format_tag::undef) {
         status = invalid_arguments;
-    } else if (format == any) {
+    } else if (tag == format_tag::any) {
         // nop
-    } else if (types::format_normalize(format) == blocked) {
-        status = memory_desc_wrapper::compute_blocking(md);
+    } else if (format_kind == format_kind::blocked) {
+        status = memory_desc_wrapper::compute_blocking(md, tag);
     } else {
         assert(!"unreachable");
         status = invalid_arguments;
@@ -94,60 +94,127 @@ status_t mkldnn_memory_desc_init(memory_desc_t *memory_desc, int ndims,
     return status;
 }
 
-status_t mkldnn_memory_primitive_desc_create(primitive_desc_t **memory_pd,
-        const memory_desc_t *memory_desc, engine_t *engine) {
-    bool args_ok = !any_null(memory_pd, memory_desc, engine)
-        && memory_desc_sanity_check(memory_desc)
-        && memory_desc_wrapper(*memory_desc).is_defined();
+status_t mkldnn_memory_desc_init_by_strides(memory_desc_t *memory_desc,
+        int ndims, const dims_t dims, data_type_t data_type,
+        const dims_t strides) {
+    if (any_null(memory_desc)) return invalid_arguments;
+    if (ndims == 0) {
+        *memory_desc = types::zero_md();
+        return success;
+    }
+
+    /* memory_desc != 0 */
+    bool args_ok = !any_null(memory_desc)
+        && memory_desc_sanity_check(ndims, dims, data_type, format_kind::any);
     if (!args_ok) return invalid_arguments;
-    return engine->memory_primitive_desc_create(
-            (memory_pd_t**)memory_pd, memory_desc);
+
+    auto md = memory_desc_t();
+    md.ndims = ndims;
+    array_copy(md.dims, dims, ndims);
+    md.data_type = data_type;
+    array_copy(md.padded_dims, dims, ndims);
+    md.format_kind = format_kind::blocked;
+
+    dims_t default_strides = {0};
+    if (strides == nullptr) {
+        default_strides[md.ndims - 1] = 1;
+        for (int d = md.ndims - 2; d >= 0; --d)
+            default_strides[d] = default_strides[d + 1] * md.padded_dims[d + 1];
+        strides = default_strides;
+    } else {
+        /* TODO: add sanity check for the provided strides */
+    }
+
+    array_copy(md.format_desc.blocking.strides, strides, md.ndims);
+
+    *memory_desc = md;
+
+    return status::success;
 }
 
-status_t mkldnn_view_primitive_desc_create(primitive_desc_t **view_pd,
-        const primitive_desc_t *memory_pd, const dims_t dims,
+status_t mkldnn_memory_desc_init_submemory(memory_desc_t *md,
+        const memory_desc_t *parent_md, const dims_t dims,
         const dims_t offsets) {
-    const memory_pd_t *mpd =
-        (const memory_pd_t*)memory_pd;
+    if (any_null(md, parent_md) || !memory_desc_sanity_check(parent_md))
+        return invalid_arguments;
 
-    bool args_ok = !any_null(view_pd, memory_pd, dims, offsets)
-        && memory_pd->kind() == primitive_kind::memory
-        && memory_desc_sanity_check(mpd->desc());
-    if (!args_ok) return invalid_arguments;
+    const memory_desc_wrapper src_d(parent_md);
 
-    memory_desc_wrapper md(*mpd->desc());
-    for (int d = 0; d < md.ndims(); ++d) {
+    for (int d = 0; d < src_d.ndims(); ++d) {
         if (dims[d] < 0 || offsets[d] < 0
-                || (offsets[d] + dims[d] > md.dims()[d]))
+                || (offsets[d] + dims[d] > src_d.dims()[d]))
             return invalid_arguments;
     }
-    return memory_pd->engine()->view_primitive_desc_create(
-            (view_pd_t**)view_pd, mpd, dims, offsets);
+
+    if (src_d.format_kind() != format_kind::blocked)
+        return unimplemented;
+
+    dims_t blocks;
+    src_d.compute_blocks(blocks);
+
+    memory_desc_t dst_d = *parent_md;
+    auto &dst_d_blk = dst_d.format_desc.blocking;
+
+    /* TODO: put this into memory_desc_wrapper */
+    for (int d = 0; d < src_d.ndims(); ++d) {
+        /* very limited functionality for now */
+        const bool ok = true
+            && offsets[d] % blocks[d] == 0 /* [r1] */
+            && src_d.padded_offsets()[d] == 0
+            && (false
+                    || dims[d] % blocks[d] == 0
+                    || dims[d] < blocks[d]);
+        if (!ok)
+            return unimplemented;
+
+        const bool is_right_border = offsets[d] + dims[d] == src_d.dims()[d];
+
+        dst_d.dims[d] = dims[d];
+        dst_d.padded_dims[d] = is_right_border
+            ? src_d.padded_dims()[d] - offsets[d] : dst_d.dims[d];
+        dst_d.padded_offsets[d] = src_d.padded_offsets()[d];
+        dst_d.offset0 += /* [r1] */
+            offsets[d] / blocks[d] * dst_d_blk.strides[d];
+    }
+
+    *md = dst_d;
+
+    return success;
 }
 
-int mkldnn_memory_primitive_desc_equal(const primitive_desc_t *lhs,
-        const primitive_desc_t *rhs) {
-    bool args_ok = !any_null(lhs, rhs)
-        && lhs->engine() == rhs->engine()
-        && one_of(lhs->kind(), primitive_kind::memory, primitive_kind::view)
-        && one_of(rhs->kind(), primitive_kind::memory, primitive_kind::view);
-    if (!args_ok) return 0;
-    auto l = (const memory_pd_t *)lhs;
-    auto r = (const memory_pd_t *)rhs;
-    /* FIXME: view! */
-    return l->is_equal(r);
+int mkldnn_memory_desc_equal(const memory_desc_t *lhs,
+        const memory_desc_t *rhs) {
+    if (lhs == rhs) return 1;
+    if (any_null(lhs, rhs)) return 0;
+    return memory_desc_wrapper(*lhs) == memory_desc_wrapper(*rhs);
 }
 
-size_t mkldnn_memory_primitive_desc_get_size(const primitive_desc_t *memory_pd)
-{
-    bool args_ok = !any_null(memory_pd)
-        && memory_pd->kind() == primitive_kind::memory;
-    if (!args_ok) return 0;
-    /* FIXME: view? */
-    return ((memory_pd_t*)memory_pd)->get_size();
+size_t mkldnn_memory_desc_get_size(const memory_desc_t *md) {
+    if (md == nullptr) return 0;
+    return memory_desc_wrapper(*md).size();
 }
 
-status_t mkldnn_memory_get_data_handle(const primitive_t *memory,
+status_t mkldnn_memory_create(memory_t **memory, const memory_desc_t *md,
+        engine_t *engine, void *handle) {
+    if (any_null(memory, engine)) return invalid_arguments;
+    memory_desc_t z_md = types::zero_md();
+    return engine->memory_create(memory, md ? md : &z_md, handle);
+}
+
+status_t mkldnn_memory_get_memory_desc(const memory_t *memory,
+        const memory_desc_t **md) {
+    if (any_null(memory, md)) return invalid_arguments;
+    *md = memory->md();
+    return success;
+}
+
+status_t mkldnn_memory_get_engine(const memory_t *memory, engine_t **engine) {
+    if (any_null(memory, engine)) return invalid_arguments;
+    *engine = memory->engine();
+    return success;
+}
+
+status_t mkldnn_memory_get_data_handle(const memory_t *memory,
         void **handle) {
     if (any_null(handle))
         return invalid_arguments;
@@ -155,144 +222,17 @@ status_t mkldnn_memory_get_data_handle(const primitive_t *memory,
         *handle = nullptr;
         return success;
     }
-    if (memory->kind() != primitive_kind::memory)
-        return invalid_arguments;
     return memory->get_data_handle(handle);
 }
 
-status_t mkldnn_memory_set_data_handle(primitive_t *memory, void *handle) {
-    if (any_null(memory) || memory->kind() != primitive_kind::memory)
-        return invalid_arguments;
+status_t mkldnn_memory_set_data_handle(memory_t *memory, void *handle) {
+    if (any_null(memory)) return invalid_arguments;
     return memory->set_data_handle(handle);
 }
 
-status_t mkldnn_concat_primitive_desc_create_v2(primitive_desc_t **concat_pd,
-        const memory_desc_t *output_d, int n, int concat_dim,
-        const primitive_desc_t **input_pds, const primitive_attr_t *attr) {
-    bool args_ok = !any_null(concat_pd, input_pds) && n > 0;
-    if (!args_ok) return invalid_arguments;
-    for (int i = 0; i < n; ++i) {
-        if (input_pds[i] == nullptr ||
-                input_pds[i]->kind() != primitive_kind::memory)
-            return invalid_arguments;
-    }
-
-    const primitive_attr_t dummy_attr;
-    if (attr == NULL)
-        attr = &dummy_attr;
-
-    auto i_mpds = (const memory_pd_t **)input_pds;
-    engine_t *engine = i_mpds[0]->engine();
-    const int ndims = i_mpds[0]->desc()->ndims;
-    const dims_t &dims = i_mpds[0]->desc()->dims;
-    const data_type_t dt = i_mpds[0]->desc()->data_type;
-
-    int concat_dim_sz = dims[concat_dim];
-    for (int i = 1; i < n; ++i) {
-        if (i_mpds[i]->engine() != engine) return invalid_arguments;
-        if (i_mpds[i]->desc()->ndims != ndims) return invalid_arguments;
-        for (int d = 0; d < ndims; ++d) {
-            if (d == concat_dim) continue;
-            if (i_mpds[i]->desc()->dims[d] != dims[d])
-                return invalid_arguments;
-        }
-        if (i_mpds[i]->desc()->data_type != dt) return invalid_arguments;
-        concat_dim_sz += i_mpds[i]->desc()->dims[concat_dim];
-    }
-
-    memory_desc_t dummy_output_d;
-    if (output_d) {
-        if (output_d->ndims != ndims) return invalid_arguments;
-        for (int d = 0; d < ndims; ++d) {
-            if (output_d->dims[d] !=
-                    (d == concat_dim ? concat_dim_sz : dims[d]))
-                return invalid_arguments;
-        }
-    } else {
-        dummy_output_d = *i_mpds[0]->desc();
-        dummy_output_d.dims[concat_dim] = concat_dim_sz;
-        dummy_output_d.format = memory_format::any;
-        output_d = &dummy_output_d;
-    }
-
-    auto c_pd = reinterpret_cast<concat_pd_t **>(concat_pd);
-
-    for (auto c = engine->get_concat_implementation_list(); *c; ++c) {
-        if ((*c)(c_pd, output_d, n, concat_dim, i_mpds, attr) == success) {
-            (*c_pd)->init_info();
-            return success;
-        }
-    }
-    return unimplemented;
-}
-
-status_t mkldnn_concat_primitive_desc_create(primitive_desc_t **concat_pd,
-        const memory_desc_t *output_d, int n, int concat_dim,
-        const primitive_desc_t **input_pds) {
-    return mkldnn_concat_primitive_desc_create_v2(concat_pd, output_d, n,
-            concat_dim, input_pds, nullptr);
-}
-
-status_t mkldnn_sum_primitive_desc_create_v2(primitive_desc_t **sum_pd,
-        const memory_desc_t *output_d, int n, const float *scales,
-        const primitive_desc_t **input_pds, const primitive_attr_t *attr) {
-    bool args_ok = !any_null(sum_pd, input_pds, scales) && n > 0;
-    if (!args_ok) return invalid_arguments;
-    for (int i = 0; i < n; ++i) {
-        if (input_pds[i] == nullptr ||
-                input_pds[i]->kind() != primitive_kind::memory)
-            return invalid_arguments;
-    }
-
-    const primitive_attr_t dummy_attr;
-    if (attr == NULL)
-        attr = &dummy_attr;
-
-    auto i_mpds = (const memory_pd_t **)input_pds;
-    engine_t *engine = i_mpds[0]->engine();
-    const int ndims = i_mpds[0]->desc()->ndims;
-    const dims_t &dims = i_mpds[0]->desc()->dims;
-    const data_type_t dt = i_mpds[0]->desc()->data_type;
-
-    for (int i = 1; i < n; ++i) {
-        if (i_mpds[i]->engine() != engine) return invalid_arguments;
-        if (i_mpds[i]->desc()->ndims != ndims) return invalid_arguments;
-        for (int d = 0; d < ndims; ++d) {
-            if (i_mpds[i]->desc()->dims[d] != dims[d])
-                return invalid_arguments;
-        }
-        if (i_mpds[i]->desc()->data_type != dt) return invalid_arguments;
-    }
-
-    memory_desc_t dummy_output_d;
-    if (output_d) {
-        if (output_d->ndims != ndims) return invalid_arguments;
-        for (int d = 0; d < ndims; ++d) {
-            if (output_d->dims[d] != dims[d])
-                return invalid_arguments;
-        }
-    } else {
-        dummy_output_d = *i_mpds[0]->desc();
-        dummy_output_d.format = memory_format::any;
-        output_d = &dummy_output_d;
-    }
-
-    auto s_pd = reinterpret_cast<sum_pd_t **>(sum_pd);
-
-    for (auto s = engine->get_sum_implementation_list(); *s; ++s) {
-        if ((*s)(s_pd, output_d, n, scales, i_mpds, attr) == success) {
-            (*s_pd)->init_info();
-            return success;
-        }
-    }
-    return unimplemented;
-}
-
-status_t mkldnn_sum_primitive_desc_create(primitive_desc_t **sum_pd,
-        const memory_desc_t *output_d, int n, const float *scales,
-        const primitive_desc_t **input_pds) {
-    return mkldnn_sum_primitive_desc_create_v2(sum_pd, output_d, n, scales,
-            input_pds, nullptr);
+status_t mkldnn_memory_destroy(memory_t *memory) {
+    delete memory;
+    return success;
 }
 
 // vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s

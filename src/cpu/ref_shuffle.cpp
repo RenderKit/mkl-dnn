@@ -27,18 +27,20 @@ namespace mkldnn {
 namespace impl {
 namespace cpu {
 
-using namespace memory_format;
+using namespace format_tag;
 
 template <int data_type_size>
-template <mkldnn_memory_format_t fmt>
-void ref_shuffle_t<data_type_size>::execute_() const {
+template <mkldnn_format_tag_t tag>
+void ref_shuffle_t<data_type_size>::execute_(const exec_ctx_t &ctx) const {
     using namespace prop_kind;
     using namespace utils;
 
-    const memory_desc_wrapper data_d(pd()->data_pd());
+    const memory_desc_wrapper data_d(pd()->data_md());
 
-    auto input = reinterpret_cast<const data_t*>(this->input_memory(0));
-    auto output = reinterpret_cast<data_t*>(this->memory(0));
+    auto i_arg = pd()->is_fwd() ? MKLDNN_ARG_SRC : MKLDNN_ARG_DIFF_DST;
+    auto o_arg = pd()->is_fwd() ? MKLDNN_ARG_DST : MKLDNN_ARG_DIFF_SRC;
+    auto input = CTX_IN_MEM(const data_t *, i_arg);
+    auto output = CTX_OUT_MEM(data_t *, o_arg);
 
     const int axis = pd()->axis();
     const int axis_size = pd()->axis_size();
@@ -55,10 +57,10 @@ void ref_shuffle_t<data_type_size>::execute_() const {
         HW = H * W;
         SP = D * HW;
     }
-    const size_t stride_mb = data_d.blocking_desc().strides[0][0];
-    constexpr int blksize = one_of(fmt, nChw16c, nCdhw16c) ? 16 : 8;
+    const size_t stride_mb = data_d.blocking_desc().strides[0];
+    constexpr int blksize = one_of(tag, nChw16c, nCdhw16c) ? 16 : 8;
 
-    if (axis == 1 && one_of(fmt, nChw16c, nChw8c, nCdhw16c, nCdhw16c)) {
+    if (axis == 1 && one_of(tag, nChw16c, nChw8c, nCdhw16c, nCdhw16c)) {
 #if MKLDNN_THR == MKLDNN_THR_OMP
 #       pragma omp parallel for collapse(3) schedule(static)
         for (int mb = 0; mb < MB; ++mb)
@@ -90,14 +92,14 @@ void ref_shuffle_t<data_type_size>::execute_() const {
             }
         });
 #endif
-    } else if (axis == 1 && one_of(fmt, nhwc, ndhwc)) {
+    } else if (axis == 1 && one_of(tag, nhwc, ndhwc)) {
         parallel_nd(MB, SP, [&](int mb, int sp) {
             const size_t off = mb * stride_mb + sp * C;
             PRAGMA_OMP_SIMD()
             for (int c = 0; c < C; ++c)
                 output[off + c] = input[off + rev_transposed_[c]];
         });
-    } else if (axis == 1 && one_of(fmt, nchw, ncdhw)) {
+    } else if (axis == 1 && one_of(tag, nchw, ncdhw)) {
         parallel_nd(MB, C, [&](int mb, int c) {
             const size_t output_off = mb * stride_mb + c * SP;
             const size_t input_off = mb * stride_mb + rev_transposed_[c] * SP;
@@ -124,25 +126,25 @@ void ref_shuffle_t<data_type_size>::execute_() const {
     }
 }
 
-template void ref_shuffle_t<4>::execute_<nCdhw16c>() const;
-template void ref_shuffle_t<4>::execute_<nChw16c>() const;
-template void ref_shuffle_t<4>::execute_<nCdhw8c>() const;
-template void ref_shuffle_t<4>::execute_<nChw8c>() const;
-template void ref_shuffle_t<4>::execute_<ncdhw>() const;
-template void ref_shuffle_t<4>::execute_<nchw>() const;
-template void ref_shuffle_t<4>::execute_<ndhwc>() const;
-template void ref_shuffle_t<4>::execute_<nhwc>() const;
-template void ref_shuffle_t<4>::execute_<any>() const;
+template void ref_shuffle_t<4>::execute_<nCdhw16c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<nChw16c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<nCdhw8c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<nChw8c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<ncdhw>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<nchw>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<ndhwc>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<nhwc>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<4>::execute_<any>(const exec_ctx_t &ctx) const;
 
-template void ref_shuffle_t<1>::execute_<nCdhw16c>() const;
-template void ref_shuffle_t<1>::execute_<nChw16c>() const;
-template void ref_shuffle_t<1>::execute_<nCdhw8c>() const;
-template void ref_shuffle_t<1>::execute_<nChw8c>() const;
-template void ref_shuffle_t<1>::execute_<ncdhw>() const;
-template void ref_shuffle_t<1>::execute_<nchw>() const;
-template void ref_shuffle_t<1>::execute_<ndhwc>() const;
-template void ref_shuffle_t<1>::execute_<nhwc>() const;
-template void ref_shuffle_t<1>::execute_<any>() const;
+template void ref_shuffle_t<1>::execute_<nCdhw16c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<nChw16c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<nCdhw8c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<nChw8c>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<ncdhw>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<nchw>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<ndhwc>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<nhwc>(const exec_ctx_t &ctx) const;
+template void ref_shuffle_t<1>::execute_<any>(const exec_ctx_t &ctx) const;
 
 }
 }

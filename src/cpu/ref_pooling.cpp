@@ -30,20 +30,20 @@ namespace impl {
 namespace cpu {
 
 template <data_type_t data_type, data_type_t acc_type>
-void ref_pooling_fwd_t<data_type, acc_type>::execute_forward() const {
+void ref_pooling_fwd_t<data_type, acc_type>::execute_forward(
+        const exec_ctx_t &ctx) const {
     using namespace alg_kind;
     using namespace prop_kind;
 
     auto alg = pd()->desc()->alg_kind;
 
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t *>(this->memory(0));
-    auto ws = alg == pooling_max && pd()->desc()->prop_kind == forward_training
-        ? reinterpret_cast<unsigned char *>(this->memory(1)) : nullptr;
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+    auto ws = CTX_OUT_MEM(unsigned char *, MKLDNN_ARG_WORKSPACE);
 
-    const memory_desc_wrapper src_d(pd()->src_pd());
-    const memory_desc_wrapper dst_d(pd()->dst_pd());
-    const memory_desc_wrapper ws_d(pd()->workspace_pd());
+    const memory_desc_wrapper src_d(pd()->src_md());
+    const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper ws_d(pd()->workspace_md());
     const data_type_t ws_dt = ws ? ws_d.data_type() : data_type::undef;
 
     const int ID = pd()->ID();
@@ -191,17 +191,17 @@ void ref_pooling_fwd_t<data_type, acc_type>::execute_forward() const {
 }
 
 template <data_type_t data_type, data_type_t acc_type>
-void ref_pooling_bwd_t<data_type, acc_type>::execute_backward() const {
+void ref_pooling_bwd_t<data_type, acc_type>::execute_backward(
+        const exec_ctx_t &ctx) const {
     using namespace alg_kind;
 
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto ws = pd()->desc()->alg_kind != alg_kind::pooling_max ? nullptr
-        : reinterpret_cast<const unsigned char *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t *>(this->memory(0));
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto ws = CTX_IN_MEM(const unsigned char *, MKLDNN_ARG_WORKSPACE);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
-    const memory_desc_wrapper ws_d(pd()->workspace_pd());
-    const memory_desc_wrapper diff_src_d(pd()->diff_src_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
+    const memory_desc_wrapper diff_src_d(pd()->diff_src_md());
+    const memory_desc_wrapper ws_d(pd()->workspace_md());
 
     const int ID = pd()->ID();
     const int IH = pd()->IH();
@@ -368,13 +368,11 @@ void ref_pooling_bwd_t<data_type, acc_type>::execute_backward() const {
 
 template struct ref_pooling_fwd_t<data_type::f32>;
 template struct ref_pooling_fwd_t<data_type::s32>;
-template struct ref_pooling_fwd_t<data_type::s16, data_type::s32>;
 template struct ref_pooling_fwd_t<data_type::s8, data_type::s32>;
 template struct ref_pooling_fwd_t<data_type::u8, data_type::s32>;
 
 template struct ref_pooling_bwd_t<data_type::f32>;
 template struct ref_pooling_bwd_t<data_type::s32>;
-template struct ref_pooling_bwd_t<data_type::s16, data_type::s32>;
 
 }
 }

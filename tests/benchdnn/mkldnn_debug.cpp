@@ -34,7 +34,6 @@ mkldnn_data_type_t str2dt(const char *str) {
         return CONCAT2(mkldnn_, _dt);
     CASE(s8);
     CASE(u8);
-    CASE(s16);
     CASE(s32);
     CASE(f32);
 #undef CASE
@@ -42,37 +41,15 @@ mkldnn_data_type_t str2dt(const char *str) {
     return mkldnn_f32;
 }
 
-const char *rmode2str(mkldnn_round_mode_t rmode) {
-#define CASE(_rmode) \
-    if (CONCAT2(mkldnn_round_, _rmode) == rmode) return STRINGIFY(_rmode)
-    CASE(nearest);
-    CASE(down);
-#undef CASE
-    assert(!"unknown round mode");
-    return "unknown round mode";
+const char *tag2str(mkldnn_format_tag_t tag) {
+    return mkldnn_fmt_tag2str(tag);
 }
 
-mkldnn_round_mode_t str2rmode(const char *str) {
-#define CASE(_rmd) do { \
-    if (!strncasecmp(STRINGIFY(_rmd), str, strlen(STRINGIFY(_rmd)))) \
-        return CONCAT2(mkldnn_round_, _rmd); \
-} while (0)
-    CASE(nearest);
-    CASE(down);
-#undef CASE
-    assert(!"unknown round_mode");
-    return mkldnn_round_nearest;
-}
-
-const char *fmt2str(mkldnn_memory_format_t fmt) {
-    return mkldnn_fmt2str(fmt);
-}
-
-mkldnn_memory_format_t str2fmt(const char *str) {
-#define CASE(_fmt) do { \
-    if (!strcmp(STRINGIFY(_fmt), str) \
-            || !strcmp("mkldnn_" STRINGIFY(_fmt), str)) \
-        return CONCAT2(mkldnn_, _fmt); \
+mkldnn_format_tag_t str2tag(const char *str) {
+#define CASE(_tag) do { \
+    if (!strcmp(STRINGIFY(_tag), str) \
+            || !strcmp("mkldnn_" STRINGIFY(_tag), str)) \
+        return CONCAT2(mkldnn_, _tag); \
 } while (0)
     CASE(x);
     CASE(nc);
@@ -94,18 +71,17 @@ mkldnn_memory_format_t str2fmt(const char *str) {
     CASE(Oiw16o);
     CASE(Owi16o);
     CASE(OIw8i16o2i);
+    CASE(OIw4i16o4i);
     CASE(oihw);
     CASE(ihwo);
     CASE(hwio);
     CASE(iohw);
-    CASE(hwio_s8s8);
     CASE(dhwio);
     CASE(OIhw8i8o);
     CASE(OIhw16i16o);
     CASE(OIhw8i16o2i);
     CASE(OIdhw8i16o2i);
     CASE(OIhw4i16o4i);
-    CASE(OIhw4i16o4i_s8s8);
     CASE(OIhw8o16i2o);
     CASE(OIhw8o8i);
     CASE(OIhw16o16i);
@@ -117,19 +93,19 @@ mkldnn_memory_format_t str2fmt(const char *str) {
     CASE(goihw);
     CASE(hwigo);
     CASE(giohw);
-    CASE(hwigo_s8s8);
     CASE(goiw);
     CASE(gOIw16i16o);
     CASE(gOIw16o16i);
     CASE(gOiw16o);
     CASE(gOwi16o);
     CASE(gOIw8i16o2i);
+    CASE(gOIw4i16o4i);
+    CASE(Goiw16g);
     CASE(gOIhw8i8o);
     CASE(gOIhw16i16o);
     CASE(gOIhw8i16o2i);
     CASE(gOIdhw8i16o2i);
     CASE(gOIhw4i16o4i);
-    CASE(gOIhw4i16o4i_s8s8);
     CASE(gOIhw8o16i2o);
     CASE(gOIhw8o8i);
     CASE(gOIhw16o16i);
@@ -139,9 +115,6 @@ mkldnn_memory_format_t str2fmt(const char *str) {
     CASE(gOhwi16o);
     CASE(Goihw8g);
     CASE(Goihw16g);
-    CASE(Goihw16g_s8s8);
-    CASE(oIhw8i);
-    CASE(oIhw16i);
     CASE(ncdhw);
     CASE(ndhwc);
     CASE(oidhw);
@@ -163,6 +136,6 @@ mkldnn_memory_format_t str2fmt(const char *str) {
     CASE(ldgoi);
     CASE(ldgo);
 #undef CASE
-    assert(!"unknown memory format");
-    return mkldnn_format_undef;
+    assert(!"unknown memory format tag");
+    return mkldnn_format_tag_undef;
 }

@@ -30,15 +30,15 @@ namespace impl {
 namespace cpu {
 
 template <impl::data_type_t data_type>
-void nchw_pooling_fwd_t<data_type>::execute_forward() const {
+void nchw_pooling_fwd_t<data_type>::execute_forward(
+        const exec_ctx_t &ctx) const {
     using namespace alg_kind;
 
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t*>(this->memory(0));
-    auto ws = pd()->desc()->alg_kind == alg_kind::pooling_max ?
-        reinterpret_cast<unsigned char *>(this->memory(1)) : nullptr;
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+    auto ws = CTX_OUT_MEM(unsigned char *, MKLDNN_ARG_WORKSPACE);
 
-    const memory_desc_wrapper ws_d(pd()->workspace_pd());
+    const memory_desc_wrapper ws_d(pd()->workspace_md());
     const data_type_t ws_dt = ws ? ws_d.data_type() : data_type::undef;
 
     const int MB = pd()->MB();
@@ -170,15 +170,15 @@ void nchw_pooling_fwd_t<data_type>::execute_forward() const {
 }
 
 template <impl::data_type_t data_type>
-void nchw_pooling_bwd_t<data_type>::execute_backward() const {
+void nchw_pooling_bwd_t<data_type>::execute_backward(
+        const exec_ctx_t &ctx) const {
     using namespace alg_kind;
 
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto ws = pd()->desc()->alg_kind != alg_kind::pooling_max ? nullptr :
-        reinterpret_cast<const unsigned char *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t*>(this->memory(0));
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto ws = CTX_IN_MEM(const unsigned char *, MKLDNN_ARG_WORKSPACE);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper ws_d(pd()->workspace_pd());
+    const memory_desc_wrapper ws_d(pd()->workspace_md());
 
     const int MB = pd()->MB();
     const int C = pd()->C();
@@ -218,7 +218,8 @@ void nchw_pooling_bwd_t<data_type>::execute_backward() const {
     };
 
     auto ker_max = [=](const data_t *d, int mb, int c, int od, int oh, int ow) {
-        auto b_c = ws_d.blocking_desc().block_dims[1];
+        auto b_c = ws_d.blocking_desc().inner_nblks == 0
+            ? 1 : ws_d.blocking_desc().inner_blks[0];
         auto ws_offset = is_3d
             ? ws_d.blk_off(mb, c / b_c, od, oh, ow) + c % b_c
             : ws_d.blk_off(mb, c / b_c, oh, ow) + c % b_c;

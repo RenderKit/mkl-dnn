@@ -39,10 +39,6 @@ mkldnn_primitive_attr_t create_mkldnn_rnn_attr(const rnn_prb_t *p) {
     mkldnn_primitive_attr_t mkldnn_attr = NULL;
 
     DNN_SAFE_V(mkldnn_primitive_attr_create(&mkldnn_attr));
-    if (p->attr.irmode != attr_t::round_mode_t::NEAREST)
-        DNN_SAFE_V(mkldnn_primitive_attr_set_int_output_round_mode(
-                mkldnn_attr, (mkldnn_round_mode_t)p->attr.irmode));
-
     if (p->scale_policy == PER_OC) {
         DNN_SAFE_V(mkldnn_primitive_attr_set_rnn_weights_qparams(
                 mkldnn_attr, p->dic * p->n_gates(), 0x3, p->wei_oc_scales));
@@ -67,12 +63,11 @@ int fill_memory(const rnn_prb_t *p, rnn_data_kind_t kind, dnn_mem_t &mem1,
 #else
     const size_t nelems = mem2.nelems();
 #endif
-    size_t nchunks = mkldnn_get_max_threads();
-    size_t chunk_size = (nelems + nchunks - 1) / nchunks;
 
     dt_conf_t c = p->cfg[kind];
     float mean = c.f_mean, var = c.f_var, min = c.f_min, max = c.f_max;
     mkldnn::impl::parallel(0, [&](int ithr, int nthr) {
+        size_t chunk_size = (nelems + nthr - 1) / nthr;
         size_t idx_start = ithr * chunk_size;
         size_t idx_end = MIN2(idx_start + chunk_size, nelems);
         std::minstd_rand msr;
@@ -113,64 +108,64 @@ inline int init_pd(const rnn_prb_t *p, mkldnn_rnn_desc_t rd[2],
     mkldnn_dims_t bias_dims
             = { p->n_layer, p->n_directions(), p->n_gates() + is_gru_lbr, p->dic };
     // mkldnn_tnc
-    int lastlay_dlc = (p->direction == mkldnn_bidirectional_concat)
+    int64_t lastlay_dlc = (p->direction == mkldnn_bidirectional_concat)
             ? 2 * p->dlc
             : p->dlc;
     mkldnn_dims_t dst_last_layer_dims = { p->n_iter, p->mb, lastlay_dlc };
 
-    DNN_SAFE(mkldnn_memory_desc_init(
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(
                      &input_d, 3, input_dims, p->cfg[input].dt, mkldnn_tnc),
             WARN);
-    input_d.layout_desc.blocking.strides[0][0] += the_stride;
+    input_d.format_desc.blocking.strides[0] += the_stride;
 
     mkldnn_dims_t states_dims
             = { p->n_layer, p->n_directions(), p->n_states(), p->mb, p->sic };
-    DNN_SAFE(mkldnn_memory_desc_init(&states_d, 5, states_dims,
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&states_d, 5, states_dims,
                      p->cfg[states].dt, mkldnn_ldsnc),
             WARN);
 
-    states_d.layout_desc.blocking.strides[0][3] = p->sic + the_stride;
-    states_d.layout_desc.blocking.strides[0][2]
-            = states_d.layout_desc.blocking.strides[0][3] * states_d.dims[3]
+    states_d.format_desc.blocking.strides[3] = p->sic + the_stride;
+    states_d.format_desc.blocking.strides[2]
+            = states_d.format_desc.blocking.strides[3] * states_d.dims[3]
             + the_stride;
     for (int d = 1; d >= 0; --d)
-        states_d.layout_desc.blocking.strides[0][d]
-                = states_d.layout_desc.blocking.strides[0][d + 1]
+        states_d.format_desc.blocking.strides[d]
+                = states_d.format_desc.blocking.strides[d + 1]
                 * states_d.dims[d + 1];
 
-    DNN_SAFE(mkldnn_memory_desc_init(&weights_input_d, 5, weights_input_dims,
-                     p->cfg[weights_input].dt, mkldnn_any),
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&weights_input_d, 5, weights_input_dims,
+                     p->cfg[weights_input].dt, mkldnn_format_tag_any),
             WARN);
 
-    DNN_SAFE(mkldnn_memory_desc_init(&weights_states_d, 5, weights_states_dims,
-                     p->cfg[weights_states].dt, mkldnn_any),
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&weights_states_d, 5, weights_states_dims,
+                     p->cfg[weights_states].dt, mkldnn_format_tag_any),
             WARN);
 
-    DNN_SAFE(mkldnn_memory_desc_init(
-                     &bias_d, 4, bias_dims, p->cfg[bias].dt, mkldnn_any),
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(
+                     &bias_d, 4, bias_dims, p->cfg[bias].dt, mkldnn_format_tag_any),
             WARN);
 
-    DNN_SAFE(mkldnn_memory_desc_init(&dst_last_layer_d, 3, dst_last_layer_dims,
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&dst_last_layer_d, 3, dst_last_layer_dims,
                      p->cfg[dst_last_layer].dt, mkldnn_tnc),
             WARN);
-    dst_last_layer_d.layout_desc.blocking.strides[0][0] += the_stride;
+    dst_last_layer_d.format_desc.blocking.strides[0] += the_stride;
 
     mkldnn_dims_t dst_last_iteration_dims
             = { p->n_layer, p->n_directions(), p->n_states(), p->mb, p->dic };
-    DNN_SAFE(mkldnn_memory_desc_init(&dst_last_iteration_d, 5,
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&dst_last_iteration_d, 5,
                      dst_last_iteration_dims, p->cfg[dst_last_iteration].dt,
                      mkldnn_ldsnc),
             WARN);
 
-    dst_last_iteration_d.layout_desc.blocking.strides[0][3]
+    dst_last_iteration_d.format_desc.blocking.strides[3]
             = p->sic + the_stride;
-    dst_last_iteration_d.layout_desc.blocking.strides[0][2]
-            = dst_last_iteration_d.layout_desc.blocking.strides[0][3]
+    dst_last_iteration_d.format_desc.blocking.strides[2]
+            = dst_last_iteration_d.format_desc.blocking.strides[3]
                     * dst_last_iteration_d.dims[3]
             + the_stride;
     for (int d = 1; d >= 0; --d)
-        dst_last_iteration_d.layout_desc.blocking.strides[0][d]
-                = dst_last_iteration_d.layout_desc.blocking.strides[0][d + 1]
+        dst_last_iteration_d.format_desc.blocking.strides[d]
+                = dst_last_iteration_d.format_desc.blocking.strides[d + 1]
                 * dst_last_iteration_d.dims[d + 1];
 
     mkldnn_alg_kind_t kind = alg2kind(p->alg);
@@ -194,30 +189,30 @@ inline int init_pd(const rnn_prb_t *p, mkldnn_rnn_desc_t rd[2],
     }
 
     if (is_bwd) {
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_input_d, 3, input_dims,
-                         p->cfg[dst_diff_input].dt, mkldnn_any),
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_input_d, 3, input_dims,
+                         p->cfg[dst_diff_input].dt, mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_states_d, 5, states_dims,
-                         p->cfg[dst_diff_states].dt, mkldnn_any),
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_states_d, 5, states_dims,
+                         p->cfg[dst_diff_states].dt, mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_weights_input_d, 5,
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_weights_input_d, 5,
                          weights_input_dims, p->cfg[dst_diff_weights_input].dt,
-                         mkldnn_any),
+                         mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_weights_states_d, 5,
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_weights_states_d, 5,
                          weights_states_dims,
-                         p->cfg[dst_diff_weights_states].dt, mkldnn_any),
+                         p->cfg[dst_diff_weights_states].dt, mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_bias_d, 4, bias_dims,
-                         p->cfg[dst_diff_bias].dt, mkldnn_any),
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_bias_d, 4, bias_dims,
+                         p->cfg[dst_diff_bias].dt, mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_last_layer_d, 3,
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_last_layer_d, 3,
                          dst_last_layer_dims, p->cfg[diff_last_layer].dt,
-                         mkldnn_any),
+                         mkldnn_format_tag_any),
                 WARN);
-        DNN_SAFE(mkldnn_memory_desc_init(&diff_last_iteration_d, 5,
+        DNN_SAFE(mkldnn_memory_desc_init_by_tag(&diff_last_iteration_d, 5,
                          dst_last_iteration_dims,
-                         p->cfg[diff_last_iteration].dt, mkldnn_any),
+                         p->cfg[diff_last_iteration].dt, mkldnn_format_tag_any),
                 WARN);
         DNN_SAFE(mkldnn_rnn_backward_desc_init(&rd[1], p->prop, &rcd,
                          p->direction, &input_d, &states_d, &weights_input_d,
@@ -231,7 +226,7 @@ inline int init_pd(const rnn_prb_t *p, mkldnn_rnn_desc_t rd[2],
     auto mkldnn_attr = create_mkldnn_rnn_attr(p);
     mkldnn_status_t init_status = mkldnn_success;
     for (int i = 0; i < 1 + (int)is_bwd; i++) {
-        init_status = mkldnn_primitive_desc_create_v2(
+        init_status = mkldnn_primitive_desc_create(
                 &(rpd[i]), &(rd[i]), mkldnn_attr, engine, NULL);
         if (init_status == mkldnn_unimplemented)
             return r->state = UNIMPLEMENTED, OK;
@@ -240,28 +235,26 @@ inline int init_pd(const rnn_prb_t *p, mkldnn_rnn_desc_t rd[2],
     }
     mkldnn_primitive_attr_destroy(mkldnn_attr);
 
-    auto q = [=](mkldnn_query_t query, int rpd_idx, int index = 0) {
-        return *mkldnn_primitive_desc_query_memory_d(
-                mkldnn_primitive_desc_query_pd(rpd[rpd_idx], query, index));
-    };
+    auto q = [=](mkldnn_query_t query, int rpd_idx, int index = 0)
+    { return *mkldnn_primitive_desc_query_md(rpd[rpd_idx], query, index); };
 
     for (int i = 0; i < 1 + (int)is_bwd; i++) {
-        rd[i].src_layer_desc = q(mkldnn_query_src_pd, i);
-        rd[i].src_iter_desc = q(mkldnn_query_src_pd, i, 1);
-        rd[i].weights_layer_desc = q(mkldnn_query_weights_pd, i);
-        rd[i].weights_iter_desc = q(mkldnn_query_weights_pd, i, 1);
-        rd[i].bias_desc = q(mkldnn_query_weights_pd, i, 2);
-        rd[i].dst_layer_desc = q(mkldnn_query_dst_pd, i);
-        rd[i].dst_iter_desc = q(mkldnn_query_dst_pd, i, 1);
+        rd[i].src_layer_desc = q(mkldnn_query_src_md, i);
+        rd[i].src_iter_desc = q(mkldnn_query_src_md, i, 1);
+        rd[i].weights_layer_desc = q(mkldnn_query_weights_md, i);
+        rd[i].weights_iter_desc = q(mkldnn_query_weights_md, i, 1);
+        rd[i].bias_desc = q(mkldnn_query_weights_md, i, 2);
+        rd[i].dst_layer_desc = q(mkldnn_query_dst_md, i);
+        rd[i].dst_iter_desc = q(mkldnn_query_dst_md, i, 1);
     }
     if (is_bwd) {
-        rd[1].diff_src_layer_desc = q(mkldnn_query_diff_src_pd, 1);
-        rd[1].diff_src_iter_desc = q(mkldnn_query_diff_src_pd, 1, 1);
-        rd[1].diff_weights_layer_desc = q(mkldnn_query_diff_weights_pd, 1);
-        rd[1].diff_weights_iter_desc = q(mkldnn_query_diff_weights_pd, 1, 1);
-        rd[1].diff_bias_desc = q(mkldnn_query_diff_weights_pd, 1, 2);
-        rd[1].diff_dst_layer_desc = q(mkldnn_query_diff_dst_pd, 1);
-        rd[1].diff_dst_iter_desc = q(mkldnn_query_diff_dst_pd, 1, 1);
+        rd[1].diff_src_layer_desc = q(mkldnn_query_diff_src_md, 1);
+        rd[1].diff_src_iter_desc = q(mkldnn_query_diff_src_md, 1, 1);
+        rd[1].diff_weights_layer_desc = q(mkldnn_query_diff_weights_md, 1);
+        rd[1].diff_weights_iter_desc = q(mkldnn_query_diff_weights_md, 1, 1);
+        rd[1].diff_bias_desc = q(mkldnn_query_diff_weights_md, 1, 2);
+        rd[1].diff_dst_layer_desc = q(mkldnn_query_diff_dst_md, 1);
+        rd[1].diff_dst_iter_desc = q(mkldnn_query_diff_dst_md, 1, 1);
     }
 
     return OK;
@@ -389,11 +382,10 @@ int doit(const rnn_prb_t *p, res_t *r) {
         diff_last_iteration_fp
                 = new dnn_mem_t(diff_dst_iter_dt_d, fp, mkldnn_ldsnc);
 
-        const auto ws_pd = mkldnn_primitive_desc_query_pd(
-                rpd[0], mkldnn_query_workspace_pd, 0);
-        SAFE(ws_pd != NULL ? OK : FAIL, WARN);
-        workspace_dt
-                = new dnn_mem_t(*mkldnn_primitive_desc_query_memory_d(ws_pd));
+        const auto ws_md = mkldnn_primitive_desc_query_md(
+                rpd[0], mkldnn_query_workspace_md, 0);
+        SAFE(ws_md != NULL ? OK : FAIL, WARN);
+        workspace_dt = new dnn_mem_t(*ws_md);
     }
 
     SAFE(fill_memory(p, input, *input_dt, *input_fp), WARN);
@@ -435,16 +427,26 @@ int doit(const rnn_prb_t *p, res_t *r) {
                 WARN);
     }
 
+    args_t args;
+
     // Running the forward pass
     {
-        mkldnn_primitive_at_t inputs[] = { { input_dt->p_, 0 },
-            { states_dt->p_, 0 }, { weights_input_dt->p_, 0 },
-            { weights_states_dt->p_, 0 }, { bias_dt->p_, 0 } };
-        const_mkldnn_primitive_t outputs[] = { dst_last_layer_dt->p_,
-            dst_last_iteration_dt->p_, workspace_dt ? workspace_dt->p_ : 0 };
+        DNN_SAFE(mkldnn_primitive_create(&c, rpd[0]), WARN);
+        DNN_SAFE(mkldnn_primitive_desc_destroy(rpd[0]), CRIT);
+
+        args.set(MKLDNN_ARG_SRC_LAYER, input_dt->m_);
+        args.set(MKLDNN_ARG_SRC_ITER, states_dt->m_);
+        args.set(MKLDNN_ARG_WEIGHTS_LAYER, weights_input_dt->m_);
+        args.set(MKLDNN_ARG_WEIGHTS_ITER, weights_states_dt->m_);
+        args.set(MKLDNN_ARG_BIAS, bias_dt->m_);
+
+        args.set(MKLDNN_ARG_DST_LAYER, dst_last_layer_dt->m_);
+        args.set(MKLDNN_ARG_DST_ITER, dst_last_iteration_dt->m_);
+        if (workspace_dt)
+            args.set(MKLDNN_ARG_WORKSPACE, workspace_dt->m_);
+
 #ifdef CALL_MKLDNN_RNN
-        DNN_SAFE(mkldnn_primitive_create(&c, rpd[0], inputs, outputs), WARN);
-        SAFE(execute(c), WARN);
+        DNN_SAFE(mkldnn_primitive_execute(c, stream, args.size(), args), WARN);
 #endif
         if ((p->prop == mkldnn_forward) && (bench_mode & CORR)) {
             compute_ref_fwd(p, *input_fp, *states_fp, *weights_input_fp,
@@ -463,20 +465,31 @@ int doit(const rnn_prb_t *p, res_t *r) {
     }
 
     if (is_bwd) {
-        mkldnn_primitive_at_t inputs[] = {
-            { input_dt->p_, 0 }, { states_dt->p_, 0 },
-            { bwd_weights_input_dt->p_, 0 }, { bwd_weights_states_dt->p_, 0 },
-            { bias_dt->p_, 0 }, { dst_last_layer_dt->p_, 0 },
-            { dst_last_iteration_dt->p_, 0 }, { diff_last_layer_dt->p_, 0 },
-            { diff_last_iteration_dt->p_, 0 }, { workspace_dt->p_, 0 },
-        };
-        const_mkldnn_primitive_t outputs[] = { dst_diff_input_dt->p_,
-            dst_diff_states_dt->p_, dst_diff_weights_input_dt->p_,
-            dst_diff_weights_states_dt->p_, dst_diff_bias_dt->p_ };
+        args.clear();
+        DNN_SAFE(mkldnn_primitive_destroy(c), CRIT);
+
+        DNN_SAFE(mkldnn_primitive_create(&c, rpd[1]), WARN);
+        DNN_SAFE(mkldnn_primitive_desc_destroy(rpd[1]), CRIT);
+
+        args.set(MKLDNN_ARG_SRC_LAYER, input_dt->m_);
+        args.set(MKLDNN_ARG_SRC_ITER, states_dt->m_);
+        args.set(MKLDNN_ARG_WEIGHTS_LAYER, bwd_weights_input_dt->m_);
+        args.set(MKLDNN_ARG_WEIGHTS_ITER, bwd_weights_states_dt->m_);
+        args.set(MKLDNN_ARG_BIAS, bias_dt->m_);
+        args.set(MKLDNN_ARG_DST_LAYER, dst_last_layer_dt->m_);
+        args.set(MKLDNN_ARG_DST_ITER, dst_last_iteration_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_DST_LAYER, diff_last_layer_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_DST_ITER, diff_last_iteration_dt->m_);
+        args.set(MKLDNN_ARG_WORKSPACE, workspace_dt->m_);
+
+        args.set(MKLDNN_ARG_DIFF_SRC_LAYER, dst_diff_input_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_SRC_ITER, dst_diff_states_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_WEIGHTS_LAYER, dst_diff_weights_input_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_WEIGHTS_ITER, dst_diff_weights_states_dt->m_);
+        args.set(MKLDNN_ARG_DIFF_BIAS, dst_diff_bias_dt->m_);
 
 #ifdef CALL_MKLDNN_RNN
-        DNN_SAFE(mkldnn_primitive_create(&c, rpd[1], inputs, outputs), WARN);
-        SAFE(execute(c), WARN);
+        DNN_SAFE(mkldnn_primitive_execute(c, stream, args.size(), args), WARN);
 #endif
 
         if (bench_mode & CORR) {
@@ -526,7 +539,7 @@ int doit(const rnn_prb_t *p, res_t *r) {
         t.reset();
         while (true) {
 #ifdef CALL_MKLDNN_RNN
-            SAFE(execute(c), WARN);
+            DNN_SAFE(mkldnn_primitive_execute(c, stream, args.size(), args), WARN);
 #endif
             t.stamp();
             const bool stop = false
@@ -579,8 +592,6 @@ int doit(const rnn_prb_t *p, res_t *r) {
 
     delete workspace_dt;
 
-    DNN_SAFE(mkldnn_primitive_desc_destroy(rpd[0]), CRIT);
-    DNN_SAFE(mkldnn_primitive_desc_destroy(rpd[1]), CRIT);
     DNN_SAFE(mkldnn_primitive_destroy(c), CRIT);
 
     return OK;

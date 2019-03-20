@@ -48,58 +48,58 @@ static int prepare_fwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &mean,
      * ALG_0: mean is set to 0
      * ALG_1: mean is set to 2^p, where p \in {-2, -1, ..., 4}
      * ALG_AUTO: choose between ALG_0 and ALG_1 automatically */
-    const int exact_bits = 24;
-    const int L = p->mb * p->id * p->ih * p->iw;
-    const int logL = (int)ceilf(log2f(L));
+    const int64_t exact_bits = 24;
+    const int64_t L = p->mb * p->id * p->ih * p->iw;
+    const int64_t logL = (int64_t)ceilf(log2f(L));
 
     assert(logL <= 0 || (1<<(logL-1)) < L);
     assert(L <= (1<<logL));
 
-    const int min_flex_bits = 3;
-    const int want_flex_bits = 6;
+    const int64_t min_flex_bits = 3;
+    const int64_t want_flex_bits = 6;
 
     check_alg_t alg = p->check_alg;
     if (alg == ALG_AUTO) /* choose appropriate checking algorithm */
         alg = (exact_bits - logL) / 2 - 1 >= min_flex_bits ? ALG_1 : ALG_0;
 
-    const int flex_bits = alg == ALG_0
+    const int64_t flex_bits = alg == ALG_0
         ? want_flex_bits : ((exact_bits - logL) / 2 - 1);
 
     if (flex_bits < min_flex_bits)
         return FAIL;
 
-    const int flex_mask = (1 << flex_bits) - 1;
+    const int64_t flex_mask = (1 << flex_bits) - 1;
 
     /* density: (exact_bits - log_2(L * density)) / 2 >= flex_bits */
     const float density = alg == ALG_0
         ? 1.f * (1 << (exact_bits - 2 * flex_bits)) / L : 1.f;
     assert((exact_bits - ceilf(log2f(L * density))) / 2 >= flex_bits);
 
-    print(6, "check_alg: %s, density = %g, flex_bits = %d\n",
+    print(6, "check_alg: %s, density = %g, flex_bits = " IFMT "\n",
             check_alg2str(alg), density, flex_bits);
 
-    mkldnn::impl::parallel_nd(p->ic, [&](int c) {
+    mkldnn::impl::parallel_nd(p->ic, [&](int64_t c) {
         const float m = ((float *)mean)[c] =
             alg == ALG_0 ? 0.f : 0.25f * (1 << (c % 7));
         float v = 0; /* current variance */
 
-        for (int mb = 0; mb < p->mb; ++mb) {
-            size_t l_base = mb * p->id * p->ih * p->iw + c * 239 * 2; // l[0] must be even
+        for (int64_t mb = 0; mb < p->mb; ++mb) {
+            int64_t l_base = mb * p->id * p->ih * p->iw + c * 239 * 2; // l[0] must be even
             float *s = (float *)src + data_off(p, mb, c, 0, 0, 0);
 
-            for (int d = 0; d < p->id; ++d)
-            for (int h = 0; h < p->ih; ++h)
-            for (int w = 0; w < p->iw; ++w) {
+            for (int64_t d = 0; d < p->id; ++d)
+            for (int64_t h = 0; h < p->ih; ++h)
+            for (int64_t w = 0; w < p->iw; ++w) {
 
-                const int sp = d * p->ih * p->iw + h * p->iw + w;
-                const size_t l = l_base + sp;
+                const int64_t sp = d * p->ih * p->iw + h * p->iw + w;
+                const int64_t l = l_base + sp;
 
                 if (alg == ALG_0 && !flip_coin(l/2 * 257ULL, density)) {
                     s[sp] = 0;
                     continue;
                 }
 
-                const size_t gen = (l / 2 * 1637) & flex_mask;
+                const int64_t gen = (l / 2 * 1637) & flex_mask;
                 const int sgn = l % 2 == 0 ? 1 : -1; /* [a1] */
                 const float f = 1.f * sgn * gen / (1 << flex_bits);
 
@@ -126,7 +126,7 @@ static int prepare_fwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &mean,
 }
 
 /** @brief L = 2^k * P, P % 2 != 0 */
-static void decompose2(int L, int &k, int &P) {
+static void decompose2(int64_t L, int64_t &k, int64_t &P) {
     P = L;
     for (k = 0; P % 2 == 0; ++k)
         P /= 2;
@@ -134,9 +134,9 @@ static void decompose2(int L, int &k, int &P) {
 
 static int prepare_bwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &d_dst,
         dnn_mem_t &mean, dnn_mem_t &var, dnn_mem_t &ss, dnn_mem_t &mask) {
-    const int exact_bits = 24;
+    const int64_t exact_bits = 24;
 
-    const int L = p->mb * p->id * p->ih * p->iw;
+    const int64_t L = p->mb * p->id * p->ih * p->iw;
     if (L < 2)
         return FAIL;
 
@@ -153,64 +153,64 @@ static int prepare_bwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &d_dst,
      * but that might happen iff L is less than 2^exact_bits, hence
      * restriction [r1]. */
 
-    int k, P;
+    int64_t k, P;
     decompose2(L, k, P);
 
-    int log2P = (int)ceilf(log2f(P));
+    int64_t log2P = (int64_t)ceilf(log2f(P));
     if (log2P >= exact_bits)
         return FAIL; /* [r1] */
 
-    const int max_k = L > (1<<20) ? 8 : 4;
+    const int64_t max_k = L > (1<<20) ? 8 : 4;
     if (k > max_k && exact_bits - log2P > max_k + 4) {
         log2P += (k - max_k);
         P <<= k - max_k;
         k = max_k;
     }
 
-    const int param_dd_p2 = 7;   // factor_dd <- 2^{0, .., -param_db_p2+1}
-    const int param_dd_gen = 32; // gen_dd <- {1, .., param_dd_gen}
+    const int64_t param_dd_p2 = 7;   // factor_dd <- 2^{0, .., -param_db_p2+1}
+    const int64_t param_dd_gen = 32; // gen_dd <- {1, .., param_dd_gen}
 
-    const int param_f_p2 = 1;    // factor_f <- 2^{-param_dg_p2}
-    const int param_f_gen = 16;  // gen_f <- {2..param_s_gen}
+    const int64_t param_f_p2 = 1;    // factor_f <- 2^{-param_dg_p2}
+    const int64_t param_f_gen = 16;  // gen_f <- {2..param_s_gen}
 
     const float ub_dg = param_dd_gen * param_f_gen / 2 * L;
     const float ub_db = param_dd_gen * L;
     const float density = MIN3(1.f, (1<<exact_bits) / ub_dg,
             (1<<exact_bits) / ub_db);
 
-    print(5, "prep_bwd: k:%d, P:%d log2P:%d, density = %g\n",
+    print(5, "prep_bwd: k:" IFMT ", P:" IFMT " log2P:" IFMT ", density = %g\n",
             k, P, log2P, density);
 
-    mkldnn::impl::parallel_nd(p->ic, [&](int c) {
+    mkldnn::impl::parallel_nd(p->ic, [&](int64_t c) {
         const float m = ((float *)mean)[c] = c % 2;
 
         /* var + eps \in {1/4, 1, 4} */
         const float ve_denom = 4.f / (1 << 2 * (c % 3));
         ((float *)var)[c] = ve_denom - p->eps;
 
-        const int dd_p2 = (c * 127 % param_dd_p2);
+        const int64_t dd_p2 = (c * 127 % param_dd_p2);
         const float factor_dd = 1.f / (1 << dd_p2);
 
-        const int f_p2 = 1 + (c % param_f_p2);
+        const int64_t f_p2 = 1 + (c % param_f_p2);
         const float factor_f = 1.f / (1 << f_p2);
 
         const float target_db = factor_dd * P;
         const float target_dg = ve_denom * 2 * target_db;
 
         float dg = 0, db = 0; /* current d_beta and d_gamma */
-        for (int mb = 0; mb < p->mb; ++mb) {
-            const int l_base = mb * p->id * p->ih * p->iw;
+        for (int64_t mb = 0; mb < p->mb; ++mb) {
+            const int64_t l_base = mb * p->id * p->ih * p->iw;
 
             const auto off = data_off(p, mb, c, 0, 0, 0);
             float *s = (float *)src + off;
             float *dd = (float *)d_dst + off;
             float *rmask = (float *)mask + off;
 
-            for (int d = 0; d < p->id; ++d)
-            for (int h = 0; h < p->ih; ++h)
-            for (int w = 0; w < p->iw; ++w) {
+            for (int64_t d = 0; d < p->id; ++d)
+            for (int64_t h = 0; h < p->ih; ++h)
+            for (int64_t w = 0; w < p->iw; ++w) {
 
-                const int sp = d * p->ih * p->iw + h * p->iw + w;
+                const int64_t sp = d * p->ih * p->iw + h * p->iw + w;
                 if (!flip_coin(l_base + sp, density) && l_base + sp + 100 < L) {
                     dd[sp] = 0;
                     s[sp] = m;
@@ -218,9 +218,9 @@ static int prepare_bwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &d_dst,
                     continue;
                 }
                 if (l_base + sp + 2 >= L) continue; /* last 2 are special */
-                const int l = l_base + sp * 7 + c * 19 + mb * 13;
+                const int64_t l = l_base + sp * 7 + c * 19 + mb * 13;
 
-                int rmask_v = 1;
+                int64_t rmask_v = 1;
                 if (p->flags & FUSE_BN_RELU)
                     rmask[sp] = rmask_v = l % 5 != 1;
 
@@ -247,9 +247,9 @@ static int prepare_bwd(const prb_t *p, dnn_mem_t &src, dnn_mem_t &d_dst,
              *
              * Here l0 -- last index, l1 -- last but one.
              * More over, let's assume src[l1] = 1 and src[l0] = -1. */
-            size_t l0 = data_off(p, p->mb - 1, c, p->id - 1, p->ih - 1,
-                p->iw - 1);
-            size_t l1 = l0 - 1;
+            int64_t l0 = data_off(p, p->mb - 1, c, p->id - 1, p->ih - 1,
+                    p->iw - 1);
+            int64_t l1 = l0 - 1;
             if (p->id == 1 && p->ih == 1 && p->iw == 1)
                 l1 = data_off(p, p->mb - 2, c, p->id - 1, p->ih - 1, p->iw - 1);
 
@@ -290,14 +290,14 @@ static int compare(const prb_t *p, data_kind_t kind, const dnn_mem_t &fp_mem,
     const bool rely_on_norm = false
         || (kind == DATA && (p->dir & FLAG_BWD) && (p->flags | GLOB_STATS));
 
-    const size_t nelems = kind == DATA
-        ? (size_t)p->mb * p->ic * p->id * p->ih * p->iw
-        : (size_t)p->ic * (kind == SS ? 2 : 1);
+    const int64_t nelems = kind == DATA
+        ? p->mb * p->ic * p->id * p->ih * p->iw
+        : p->ic * (kind == SS ? 2 : 1);
     r->total += rely_on_norm ? 1 : nelems;
 
     diff_norm_t diff_norm;
 
-    for (size_t i = 0; i < nelems; ++i) {
+    for (int64_t i = 0; i < nelems; ++i) {
         const float fp = ((const float *)fp_mem)[i];
         const float dt = ((const float *)dt_mem)[i];
         diff_norm.update(fp, dt);
@@ -315,17 +315,19 @@ static int compare(const prb_t *p, data_kind_t kind, const dnn_mem_t &fp_mem,
             || (!ok && (r->errors < 10 || verbose >= 10))
             || (verbose >= 50 && i < 30);
         if (dump) {
-            const int ind_str_len = 32;
+            const int ind_str_len = 64;
             char ind_str[ind_str_len] = {'\0'};
             if (kind == DATA) {
-                int mb, c, d, h, w;
+                int64_t mb, c, d, h, w;
                 inv_data_off(p, i, mb, c, d, h, w);
-                snprintf(ind_str, ind_str_len, "%d,%d,%d,%d,%d", mb, c, d,h, w);
+                snprintf(ind_str, ind_str_len, "" IFMT "," IFMT ",", mb, c);
+                snprintf(ind_str, ind_str_len, "" IFMT "," IFMT "," IFMT "",
+                        d, h, w);
             } else if (kind == SS) {
-                snprintf(ind_str, ind_str_len, "%d,%d",
-                        (int)i / p->ic, (int)i % p->ic);
+                snprintf(ind_str, ind_str_len, "" IFMT "," IFMT "",
+                        i / p->ic, i % p->ic);
             } else {
-                snprintf(ind_str, ind_str_len, "%d", (int)i);
+                snprintf(ind_str, ind_str_len, "" IFMT "", i);
             }
 
             print(0, "[%lu][%s%s][%s] fp:%8g dt:%8g diff:%8g rdiff:%8g\n",
@@ -371,7 +373,7 @@ static int compare(const prb_t *p, data_kind_t kind, const dnn_mem_t &fp_mem,
 int check_fwd_ws(const dnn_mem_t &data_dt, const dnn_mem_t &ws_dt, res_t *r) {
     /* so far we know ws is just bit-mask of whether value was negative or
      * positive */
-    const size_t nelems = data_dt.nelems(true);
+    const int64_t nelems = data_dt.nelems(true);
     const float *d = (const float *)data_dt;
     const uint8_t *ws = (const uint8_t *)ws_dt;
 
@@ -384,8 +386,8 @@ int check_fwd_ws(const dnn_mem_t &data_dt, const dnn_mem_t &ws_dt, res_t *r) {
     /* more internal knowledge: data_dt and ws_dt are expected to have exactly
      * the same data layout, and data_dt padded regions are expected to be
      * zero, and the respective ws_dt elements should be set accordingly */
-    for (size_t i = 0; i < nelems; i += 8) {
-        for (size_t j = 0; j < MIN2(8, nelems - i); ++j) {
+    for (int64_t i = 0; i < nelems; i += 8) {
+        for (int64_t j = 0; j < MIN2(8, nelems - i); ++j) {
             const bool want = *d > 0;
             const bool bit_set = ws_type == ws_byte ? *ws : !!(*ws & (1<<j));
 
@@ -420,8 +422,8 @@ static int init_pd(const prb_t *p, mkldnn_batch_normalization_desc_t &bd,
     mkldnn_memory_desc_t data_d;
     mkldnn_dims_t data_dims = {p->mb, p->ic, p->ih, p->iw};
     mkldnn_dims_t data_dims_3d = {p->mb, p->ic, p->id, p->ih, p->iw};
-    DNN_SAFE(mkldnn_memory_desc_init(&data_d, is_bnorm_3d(p) ? 5 : 4,
-        is_bnorm_3d(p) ? data_dims_3d : data_dims, p->dt, p->fmt), WARN);
+    DNN_SAFE(mkldnn_memory_desc_init_by_tag(&data_d, is_bnorm_3d(p) ? 5 : 4,
+        is_bnorm_3d(p) ? data_dims_3d : data_dims, p->dt, p->tag), WARN);
 
     auto flags = (mkldnn_batch_normalization_flag_t)p->flags;
     if (p->dir & FLAG_FWD) {
@@ -444,10 +446,10 @@ static int init_pd(const prb_t *p, mkldnn_batch_normalization_desc_t &bd,
         mkldnn_batch_normalization_desc_t bd_fwd;
         DNN_SAFE(mkldnn_batch_normalization_forward_desc_init(&bd_fwd,
                     mkldnn_forward_training, &data_d, p->eps, flags), WARN);
-        DNN_SAFE(mkldnn_primitive_desc_create_v2(&hint_fwd_pd, &bd_fwd, NULL,
+        DNN_SAFE(mkldnn_primitive_desc_create(&hint_fwd_pd, &bd_fwd, NULL,
                     engine, NULL), WARN);
     }
-    mkldnn_status_t init_status = mkldnn_primitive_desc_create_v2(&bpd, &bd,
+    mkldnn_status_t init_status = mkldnn_primitive_desc_create(&bpd, &bd,
             mkldnn_attr, engine, hint_fwd_pd);
 
     mkldnn_primitive_desc_destroy(hint_fwd_pd);
@@ -485,13 +487,13 @@ static int cvt_mask_to_ws(const prb_t *p, const dnn_mem_t &mask_fp,
     mkldnn_dims_t data_dims_3d = {p->mb, p->ic, p->id, p->ih, p->iw};
 
     dnn_mem_t data(is_bnorm_3d(p) ? 5 : 4,
-        is_bnorm_3d(p) ? data_dims_3d : data_dims, mkldnn_f32, p->fmt);
+        is_bnorm_3d(p) ? data_dims_3d : data_dims, mkldnn_f32, p->tag);
     SAFE(data.reorder(mask_fp), WARN);
 
     dnn_mem_t mean(1, &p->ic, mkldnn_f32, mkldnn_x);
     dnn_mem_t var(1, &p->ic, mkldnn_f32, mkldnn_x);
-    for (int c = 0; c < p->ic; ++c) ((float *)mean)[c] = 0.5;
-    for (int c = 0; c < p->ic; ++c) ((float *)var)[c] = 1;
+    for (int64_t c = 0; c < p->ic; ++c) ((float *)mean)[c] = 0.5;
+    for (int64_t c = 0; c < p->ic; ++c) ((float *)var)[c] = 1;
 
     mkldnn_batch_normalization_desc_t bd;
     auto flags = (mkldnn_batch_normalization_flag_t)
@@ -500,17 +502,20 @@ static int cvt_mask_to_ws(const prb_t *p, const dnn_mem_t &mask_fp,
                 mkldnn_forward_training, &data.md_, 0, flags), WARN);
 
     mkldnn_primitive_desc_t bpd;
-    DNN_SAFE(mkldnn_primitive_desc_create_v2(&bpd, &bd, NULL, engine, NULL),
+    DNN_SAFE(mkldnn_primitive_desc_create(&bpd, &bd, NULL, engine, NULL),
             WARN);
 
     mkldnn_primitive_t b{};
-    mkldnn_primitive_at_t inputs[3] = {
-        {data.p_, 0}, {mean.p_, 0}, {var.p_, 0}};
-    const_mkldnn_primitive_t outputs[2] = {data.p_, ws_dt.p_};
-    DNN_SAFE(mkldnn_primitive_create(&b, bpd, inputs, outputs), WARN);
-    SAFE(execute(b), WARN);
-
+    DNN_SAFE(mkldnn_primitive_create(&b, bpd), WARN);
     DNN_SAFE(mkldnn_primitive_desc_destroy(bpd), CRIT);
+
+    args_t args;
+    args.set(MKLDNN_ARG_SRC, data.m_);
+    args.set(MKLDNN_ARG_MEAN, mean.m_);
+    args.set(MKLDNN_ARG_VARIANCE, var.m_);
+    args.set(MKLDNN_ARG_DST, data.m_);
+    args.set(MKLDNN_ARG_WORKSPACE, ws_dt.m_);
+    DNN_SAFE(mkldnn_primitive_execute(b, stream, args.size(), args), WARN);
     DNN_SAFE(mkldnn_primitive_destroy(b), CRIT);
 
     return OK;
@@ -533,11 +538,11 @@ int doit(const prb_t *p, res_t *r) {
 
     const mkldnn_dims_t dims1d = {p->ic};
     const mkldnn_dims_t dims2d = {2, p->ic};
-    const auto src_format = is_bnorm_3d(p) ? mkldnn_ncdhw : mkldnn_nchw;
+    const auto src_tag = is_bnorm_3d(p) ? mkldnn_ncdhw : mkldnn_nchw;
 
-    dnn_mem_t data_fp(data_dt_d, fp, src_format),
+    dnn_mem_t data_fp(data_dt_d, fp, src_tag),
               data_dt(data_dt_d);
-    dnn_mem_t d_data_fp(data_dt_d, fp, src_format),
+    dnn_mem_t d_data_fp(data_dt_d, fp, src_tag),
               d_data_dt(data_dt_d);
 
     dnn_mem_t mean_fp(1, dims1d, fp, mkldnn_x),
@@ -553,57 +558,55 @@ int doit(const prb_t *p, res_t *r) {
     dnn_mem_t ws_fp(data_fp.md_);
     dnn_mem_t *p_ws_dt = NULL;
     if ((p->flags & FUSE_BN_RELU) && !(p->dir & FLAG_INF)) {
-        const auto ws_pd = mkldnn_primitive_desc_query_pd(bpd,
-                mkldnn_query_workspace_pd, 0);
-        SAFE(ws_pd != NULL ? OK : FAIL, WARN);
-        p_ws_dt = new dnn_mem_t(*mkldnn_primitive_desc_query_memory_d(ws_pd));
+        const auto ws_md = mkldnn_primitive_desc_query_md(bpd,
+                mkldnn_query_workspace_md, 0);
+        SAFE(ws_md != NULL ? OK : FAIL, WARN);
+        p_ws_dt = new dnn_mem_t(*ws_md);
     } else {
         p_ws_dt = new dnn_mem_t();
     }
     dnn_mem_t &ws_dt = *p_ws_dt;
 
+    DNN_SAFE(mkldnn_primitive_create(&b, bpd), WARN);
+    DNN_SAFE(mkldnn_primitive_desc_destroy(bpd), CRIT);
+
+    args_t args;
+
     if (p->dir & FLAG_FWD) {
         if (prepare_fwd(p, data_fp, mean_fp, var_fp, ss_fp) != OK)
             return r->state = MISTRUSTED, OK;
 
-        mkldnn_primitive_at_t inputs[4];
-        const_mkldnn_primitive_t outputs[4];
-
-        int idx = 0;
-
         SAFE(data_dt.reorder(data_fp), WARN);
-        inputs[idx++] = {data_dt.p_, 0};
+
+        /* always in-place so far... */
+        args.set(MKLDNN_ARG_SRC, data_dt.m_);
+        args.set(MKLDNN_ARG_DST, data_dt.m_);
 
         if (p->flags & GLOB_STATS) {
+            /* prepare mean & var if they are inputs */
             SAFE(mean_dt.reorder(mean_fp), WARN);
             SAFE(var_dt.reorder(var_fp), WARN);
-            inputs[idx++] = {mean_dt.p_, 0};
-            inputs[idx++] = {var_dt.p_, 0};
         }
+        args.set(MKLDNN_ARG_MEAN, mean_dt.m_);
+        args.set(MKLDNN_ARG_VARIANCE, var_dt.m_);
+
         if (p->flags & USE_SCALESHIFT) {
             SAFE(ss_dt.reorder(ss_fp), WARN);
-            inputs[idx++] = {ss_dt.p_, 0};
-        }
-
-        idx = 0;
-        outputs[idx++] = data_dt.p_; /* always in-place so far... */
-        if (!(p->flags & GLOB_STATS)) {
-            outputs[idx++] = mean_dt.p_;
-            outputs[idx++] = var_dt.p_;
+            args.set(MKLDNN_ARG_SCALE_SHIFT, ss_dt.m_);
         }
 
         if (p->flags & FUSE_BN_RELU)
-            outputs[idx++] = ws_dt.p_;
+            args.set(MKLDNN_ARG_WORKSPACE, ws_dt.m_);
 
-        DNN_SAFE(mkldnn_primitive_create(&b, bpd, inputs, outputs), WARN);
-        SAFE(execute(b), WARN);
+        DNN_SAFE(mkldnn_primitive_execute(b, stream, args.size(), args), WARN);
+
         if (bench_mode & CORR) {
             compute_ref_fwd(p, data_fp, mean_fp, var_fp, ss_fp, data_fp);
             if (!(p->flags & GLOB_STATS) && !(p->dir & FLAG_INF)) {
                 SAFE(compare(p, MEAN, mean_fp, mean_dt, r), WARN);
                 SAFE(compare(p, VAR, var_fp, var_dt, r), WARN);
             }
-            dnn_mem_t data(data_dt, fp, src_format);
+            dnn_mem_t data(data_dt, fp, src_tag);
             SAFE(compare(p, DATA, data_fp, data, r), WARN);
             if ((p->flags & FUSE_BN_RELU) && !(p->dir & FLAG_INF))
                 SAFE(check_fwd_ws(data_dt, ws_dt, r), WARN);
@@ -613,39 +616,32 @@ int doit(const prb_t *p, res_t *r) {
                 != OK)
             return r->state = MISTRUSTED, OK;
 
-        mkldnn_primitive_at_t inputs[6];
-        const_mkldnn_primitive_t outputs[2];
-
-        int idx = 0;
-
         SAFE(data_dt.reorder(data_fp), WARN);
-        inputs[idx++] = {data_dt.p_, 0};
+        args.set(MKLDNN_ARG_SRC, data_dt.m_);
+
+        SAFE(d_data_dt.reorder(d_data_fp), WARN);
+        /* always in-place so far... */
+        args.set(MKLDNN_ARG_DIFF_DST, d_data_dt.m_);
+        args.set(MKLDNN_ARG_DIFF_SRC, d_data_dt.m_);
 
         SAFE(mean_dt.reorder(mean_fp), WARN);
         SAFE(var_dt.reorder(var_fp), WARN);
-        inputs[idx++] = {mean_dt.p_, 0};
-        inputs[idx++] = {var_dt.p_, 0};
-
-        SAFE(d_data_dt.reorder(d_data_fp), WARN);
-        inputs[idx++] = {d_data_dt.p_, 0};
+        args.set(MKLDNN_ARG_MEAN, mean_dt.m_);
+        args.set(MKLDNN_ARG_VARIANCE, var_dt.m_);
 
         if (p->flags & USE_SCALESHIFT) {
             SAFE(ss_dt.reorder(ss_fp), WARN);
-            inputs[idx++] = {ss_dt.p_, 0};
+            args.set(MKLDNN_ARG_SCALE_SHIFT, ss_dt.m_);
+            args.set(MKLDNN_ARG_DIFF_SCALE_SHIFT, d_ss_dt.m_);
         }
 
         if (p->flags & FUSE_BN_RELU) {
             SAFE(cvt_mask_to_ws(p, ws_fp, ws_dt), WARN);
-            inputs[idx++] = {ws_dt.p_, 0};
+            args.set(MKLDNN_ARG_WORKSPACE, ws_dt.m_);
         }
 
-        idx = 0;
-        outputs[idx++] = d_data_dt.p_; /* always in-place so far... */
-        if ((p->flags & USE_SCALESHIFT) && (p->dir & FLAG_WEI))
-            outputs[idx++] = d_ss_dt.p_;
+        DNN_SAFE(mkldnn_primitive_execute(b, stream, args.size(), args), WARN);
 
-        DNN_SAFE(mkldnn_primitive_create(&b, bpd, inputs, outputs), WARN);
-        SAFE(execute(b), WARN);
         if (bench_mode & CORR) {
             compute_ref_bwd(p, data_fp, mean_fp, var_fp, d_data_fp, ss_fp,
                     ws_fp, d_data_fp, d_ss_fp);
@@ -661,7 +657,7 @@ int doit(const prb_t *p, res_t *r) {
         auto &t = r->timer;
         t.reset();
         while (true) {
-            SAFE(execute(b), WARN);
+            DNN_SAFE(mkldnn_primitive_execute(b, stream, args.size(), args), WARN);
             t.stamp();
             const bool stop = false
                 || (fix_times_per_prb && t.times() >= fix_times_per_prb)
@@ -673,7 +669,6 @@ int doit(const prb_t *p, res_t *r) {
     }
 
     delete p_ws_dt;
-    DNN_SAFE(mkldnn_primitive_desc_destroy(bpd), CRIT);
     DNN_SAFE(mkldnn_primitive_destroy(b), CRIT);
 
     return OK;

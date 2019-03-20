@@ -74,6 +74,7 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
 
     d.g = 1; d.mb = 2; d.sd = d.sh = d.sw = 1; d.dd = d.dh = d.dw = 0;
     d.has_groups = false, d.name = "\"wip\"";
+    d.pw = -1; d.ph = -1; d.pd = -1;
 
     const char *s = str;
     assert(s);
@@ -106,47 +107,50 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
     if (d.ic == 0 || d.oc == 0) return FAIL;
     if (d.sd <= 0 || d.sh <= 0 || d.sw <= 0) return FAIL;
 
-    auto compute_out = [](bool is_deconv, int i, int k, int s, int p, int d) {
+    auto compute_out = [](bool is_deconv, int64_t i, int64_t k, int64_t s,
+            int64_t p, int64_t d) {
         if (is_deconv)
             return (i - 1) * s + (k - 1) * (d + 1) + 2 * p + 1;
         else
             return (i - ((k - 1) * (d + 1) + 1) + 2 * p) / s + 1;
     };
-    auto compute_pad = [](bool is_deconv, int o, int i, int k, int s, int d) {
+    auto compute_pad = [](bool is_deconv, int64_t o, int64_t i, int64_t k,
+            int64_t s, int64_t d) {
         if (is_deconv)
             return ((i - 1) * s - o + ((k - 1) * (d + 1) + 1)) / 2;
         else
             return ((o - 1) * s - i + ((k - 1) * (d + 1) + 1)) / 2;
     };
 
-    const bool no_d = (d.id | d.kd | d.od | d.pd | d.dd) == 0 && d.sd == 1;
-    const bool no_h = (d.ih | d.kh | d.oh | d.ph | d.dh) == 0 && d.sh == 1;
-    const bool no_w = (d.iw | d.kw | d.ow | d.pw | d.dw) == 0 && d.sw == 1;
-
+    const bool no_d = (d.id | d.kd | d.od | d.dd) == 0 && d.sd == 1 && d.pd < 1;
+    const bool no_h = (d.ih | d.kh | d.oh | d.dh) == 0 && d.sh == 1 && d.ph < 1;
+    const bool no_w = (d.iw | d.kw | d.ow | d.dw) == 0 && d.sw == 1 && d.pw < 1;
     if (!no_h) {
         if (!d.ih || !d.kh) return FAIL;
-
-        if (!d.oh) d.oh = compute_out(is_deconv, d.ih, d.kh, d.sh, d.ph, d.dh);
-        else if (!d.ph && d.oh != compute_out(is_deconv, d.ih, d.kh, d.sh, d.ph, d.dh))
+        if (!d.oh) {
+            d.ph = 0;
+            d.oh = compute_out(is_deconv, d.ih, d.kh, d.sh, d.ph, d.dh);
+        } else if (d.ph < 0)
             d.ph = compute_pad(is_deconv, d.oh, d.ih, d.kh, d.sh, d.dh);
     }
 
     if (!no_w) {
         if (!d.iw || !d.kw) return FAIL;
-
-        if (!d.ow) d.ow = compute_out(is_deconv, d.iw, d.kw, d.sw, d.pw, d.dw);
-        else if (!d.pw && d.ow != compute_out(is_deconv, d.iw, d.kw, d.sw, d.pw, d.dw))
+        if (!d.ow) {
+            d.pw = 0;
+            d.ow = compute_out(is_deconv, d.iw, d.kw, d.sw, d.pw, d.dw);
+        } else if (d.pw < 0)
             d.pw = compute_pad(is_deconv, d.ow, d.iw, d.kw, d.sw, d.dw);
     }
 
     if (!no_d && d.id) {
         if (!d.id || !d.kd) return FAIL;
-
-        if (!d.od) d.od = compute_out(is_deconv, d.id, d.kd, d.sd, d.pd, d.dd);
-        else if (!d.pd && d.od != compute_out(is_deconv, d.id, d.kd, d.sd, d.pd, d.dd))
+        if (!d.od) {
+            d.pd = 0;
+            d.od = compute_out(is_deconv, d.id, d.kd, d.sd, d.pd, d.dd);
+        } else if (d.pd < 0)
             d.pd = compute_pad(is_deconv, d.od, d.id, d.kd, d.sd, d.dd);
     }
-
     if (no_w && no_h && d.id) {
         d.iw = d.ih = d.id;
         d.kw = d.kh = d.kd;
@@ -183,38 +187,41 @@ void desc2str(const desc_t *d, char *buffer, bool canonical) {
         buffer += l; rem_len -= l; \
     } while(0)
 
-    if (canonical || d->has_groups) DPRINT("g%d", d->g);
-    if (canonical || d->mb != 2) DPRINT("mb%d", d->mb);
+    if (canonical || d->has_groups) DPRINT("g" IFMT "", d->g);
+    if (canonical || d->mb != 2) DPRINT("mb" IFMT "", d->mb);
 
     const bool half_form = (d->ih == d->iw && d->kh == d->kw && d->oh == d->ow
         && d->sh == d->sw && d->ph == d->pw && d->dh == d->dw) && d->id == 1;
 
     if (!canonical && half_form) {
-        DPRINT("ic%dih%doc%doh%dkh%d", d->ic, d->ih, d->oc, d->oh, d->kh);
-        if (d->sh != 1) DPRINT("sh%d", d->sh);
-        if (d->ph != 0) DPRINT("ph%d", d->ph);
-        if (d->dh != 0) DPRINT("dh%d", d->dh);
+        DPRINT("ic" IFMT "ih" IFMT "oc" IFMT "oh" IFMT "kh" IFMT "",
+                d->ic, d->ih, d->oc, d->oh, d->kh);
+        if (d->sh != 1) DPRINT("sh" IFMT "", d->sh);
+        if (d->ph != 0) DPRINT("ph" IFMT "", d->ph);
+        if (d->dh != 0) DPRINT("dh" IFMT "", d->dh);
     } else {
         if( d->id == 1 )
         {
-            DPRINT("ic%dih%diw%doc%doh%dow%dkh%dkw%d",
-                d->ic, d->ih, d->iw, d->oc, d->oh, d->ow, d->kh, d->kw);
+            DPRINT("ic" IFMT "ih" IFMT "iw" IFMT "oc" IFMT
+                    "oh" IFMT "ow" IFMT "kh" IFMT "kw" IFMT "",
+                    d->ic, d->ih, d->iw, d->oc, d->oh, d->ow, d->kh, d->kw);
             if (canonical || d->sh != 1 || d->sw != 1)
-                DPRINT("sh%dsw%d", d->sh, d->sw);
+                DPRINT("sh" IFMT "sw" IFMT "", d->sh, d->sw);
             if (canonical || d->ph != 0 || d->pw != 0)
-                DPRINT("ph%dpw%d", d->ph, d->pw);
+                DPRINT("ph" IFMT "pw" IFMT "", d->ph, d->pw);
             if (canonical || d->dh != 0 || d->dw != 0)
-                DPRINT("dh%ddw%d", d->dh, d->dw);
+                DPRINT("dh" IFMT "dw" IFMT "", d->dh, d->dw);
         } else {
-            DPRINT("ic%did%dih%diw%doc%dod%doh%dow%dkd%dkh%dkw%d",
-                d->ic, d->id, d->ih, d->iw, d->oc, d->od, d->oh, d->ow,
-                d->kd, d->kh, d->kw);
+            DPRINT("ic" IFMT "id" IFMT "ih" IFMT "iw" IFMT "oc" IFMT "od" IFMT
+                    "oh" IFMT "ow" IFMT "kd" IFMT "kh" IFMT "kw" IFMT "",
+                    d->ic, d->id, d->ih, d->iw, d->oc, d->od, d->oh, d->ow,
+                    d->kd, d->kh, d->kw);
             if (canonical || d->sh != 1 || d->sw != 1 || d->sd != 1)
-                DPRINT("sd%dsh%dsw%d", d->sd, d->sh, d->sw);
+                DPRINT("sd" IFMT "sh" IFMT "sw" IFMT "", d->sd, d->sh, d->sw);
             if (canonical || d->ph != 0 || d->pw != 0 || d->pd != 0)
-                DPRINT("pd%dph%dpw%d", d->pd, d->ph, d->pw);
+                DPRINT("pd" IFMT "ph" IFMT "pw" IFMT "", d->pd, d->ph, d->pw);
             if (canonical || d->dh != 0 || d->dw != 0 || d->dd != 0)
-                DPRINT("dd%ddh%ddw%d", d->dd, d->dh, d->dw);
+                DPRINT("dd" IFMT "dh" IFMT "dw" IFMT "", d->dd, d->dh, d->dw);
         }
     }
 
@@ -226,24 +233,24 @@ void desc2str(const desc_t *d, char *buffer, bool canonical) {
 void prb_t::count_ops() {
     if (ops > 0) return;
 
-    int od_t = is_deconv ? this->id : this->od;
-    int oh_t = is_deconv ? this->ih : this->oh;
-    int ow_t = is_deconv ? this->iw : this->ow;
-    int id_t = is_deconv ? this->od : this->id;
-    int ih_t = is_deconv ? this->oh : this->ih;
-    int iw_t = is_deconv ? this->ow : this->iw;
+    int64_t od_t = is_deconv ? this->id : this->od;
+    int64_t oh_t = is_deconv ? this->ih : this->oh;
+    int64_t ow_t = is_deconv ? this->iw : this->ow;
+    int64_t id_t = is_deconv ? this->od : this->id;
+    int64_t ih_t = is_deconv ? this->oh : this->ih;
+    int64_t iw_t = is_deconv ? this->ow : this->iw;
     double sp_ops = 0;
-    for (int od = 0; od < od_t; ++od) {
-    for (int oh = 0; oh < oh_t; ++oh) {
-    for (int ow = 0; ow < ow_t; ++ow) {
-        for (int kd = 0; kd < this->kd; ++kd) {
-            const int id = od * this->sd - this->pd + kd * (this->dd + 1);
+    for (int64_t od = 0; od < od_t; ++od) {
+    for (int64_t oh = 0; oh < oh_t; ++oh) {
+    for (int64_t ow = 0; ow < ow_t; ++ow) {
+        for (int64_t kd = 0; kd < this->kd; ++kd) {
+            const int64_t id = od * this->sd - this->pd + kd * (this->dd + 1);
             if (id < 0 || id >= id_t) continue;
-            for (int kh = 0; kh < this->kh; ++kh) {
-                const int ih = oh * this->sh - this->ph + kh * (this->dh + 1);
+            for (int64_t kh = 0; kh < this->kh; ++kh) {
+                const int64_t ih = oh * this->sh - this->ph + kh * (this->dh + 1);
                 if (ih < 0 || ih >= ih_t) continue;
-                for (int kw = 0; kw < this->kw; ++kw) {
-                    const int iw = ow * this->sw - this->pw + kw * (this->dw + 1);
+                for (int64_t kw = 0; kw < this->kw; ++kw) {
+                    const int64_t iw = ow * this->sw - this->pw + kw * (this->dw + 1);
                     if (iw < 0 || iw >= iw_t) continue;
                     sp_ops += 1;
                 }
@@ -265,8 +272,8 @@ void prb_t::generate_oscales() {
     const float K = 32;
     /* scale in [1/K .. K], with starting point at oscale.scale */
     float s[2] = {attr.oscale.scale, attr.oscale.scale/2};
-    for (int i = 0; i < oc; ++i) {
-        int si = i % 2; // 0 -> left, 1 -> right
+    for (int64_t i = 0; i < oc; ++i) {
+        int64_t si = i % 2; // 0 -> left, 1 -> right
         scales[i] = s[si];
         if (si == 0) {
             s[si] /= 2.;

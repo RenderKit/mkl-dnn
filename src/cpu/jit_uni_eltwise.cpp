@@ -14,12 +14,10 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <mkldnn_types.h>
-#include "mkldnn_types.h"
+#include "c_types_map.hpp"
 #include "mkldnn_thread.hpp"
 #include "nstl.hpp"
 #include "utils.hpp"
-#include "jit_generator.hpp"
 
 #include "jit_uni_eltwise.hpp"
 
@@ -128,6 +126,7 @@ void jit_uni_eltwise_injector_f32<isa>::assign_regs() {
     vmm_aux1 = Vmm(preserved_vec_idxs[1]);
     vmm_aux2 = Vmm(preserved_vec_idxs[2]);
     vmm_aux3 = Vmm(preserved_vec_idxs[3]);
+    vmm_aux4 = Vmm(preserved_vec_idxs[4]);
 }
 
 template <cpu_isa_t isa>
@@ -211,7 +210,7 @@ void jit_uni_eltwise_injector_f32<isa>::relu_zero_ns_compute_vector(
 
 template <cpu_isa_t isa>
 void jit_uni_eltwise_injector_f32<isa>::elu_compute_vector(const Vmm &vmm_src) {
-    const int alpha_off = 12, zero_off = 13;
+    const int alpha_off = 23, zero_off = 24;
 
     // compute exponent
     h->uni_vmovups(vmm_aux2, vmm_src);
@@ -238,17 +237,132 @@ void jit_uni_eltwise_injector_f32<isa>::elu_compute_vector(const Vmm &vmm_src) {
 template <cpu_isa_t isa>
 void jit_uni_eltwise_injector_f32<isa>::tanh_compute_vector(const Vmm &vmm_src)
 {
-    // compute exp(2x)
-    h->uni_vaddps(vmm_src, vmm_src, vmm_src);
-    exp_compute_vector(vmm_src);
-    // dup exp(2x)
-    h->uni_vmovups(vmm_aux0, vmm_src);
-    // (exp(2x) - 1)
-    h->uni_vsubps(vmm_src, vmm_src, table_val(0));
-    // (exp(2x) + 1)
-    h->uni_vaddps(vmm_aux0, vmm_aux0, table_val(0));
-    // y = (exp(2x) - 1) / (exp(2x) + 1)
-    h->uni_vdivps(vmm_src, vmm_src, vmm_aux0);
+    // # comes from Taylor expansion error bound
+    //  > linear_sat_point = single(sqrt(3) * 1b-12);
+    // # comes from the exp formula cancellation
+    //  > exp_bound_point = (single(log(3)/2));
+    // # comes from rounding accuracy in float
+    //  > one_sat_point = round(atanh(1 - 1b-25), single, RU);
+    //  > P = fpminimax(f, [|1, 3, 5, 7, 9|], [|24... |],
+    //            [linear_sat_point, exp_bound_point], relative, floating);
+    //  > err_bound = D(sup(supnorm(P, tanh(x),
+    //          [linear_sat_point, exp_bound_point], relative, theta)));
+    //    0x1.fffd6f00b9539p-25
+    //  > P;
+    //    x * (0x1.fffffep-1 + x^0x1p1 * (-0x1.55539ep-2 + x^0x1p1 *
+    //        (0x1.10be3ep-3 + x^0x1p1 * (-0x1.ae57b4p-5
+    //        + x^0x1p1 * 0x1.09fa1p-6))))
+
+    // register mapping
+    // vmm_src contains input
+    // vmm_aux0 contains mask of currently valid results.
+    //     1 is need computation, 0 is already computed
+    // vmm_aux1 contains current output
+    // vmm_aux2, vmm_aux3 contains auxiliary values
+    // vmm_aux4 contains the original sign of inputs
+
+    Label end_tanh_label;
+
+    auto test_exit =[&](Xbyak::Address threshold){
+        // is not necessary for >AVX, but should not matter on perf
+        h->uni_vmovups(vmm_aux0, vmm_src);
+        if (isa == avx512_common){
+            h->vcmpps(k_mask, vmm_aux0, threshold, 0x5);
+            h->kortestw(k_mask, k_mask);
+        } else {
+            h->uni_vcmpgeps(vmm_aux0, vmm_aux0, threshold);
+            h->uni_vtestps(vmm_aux0, vmm_aux0);
+        }
+        h->jz(end_tanh_label, Xbyak::CodeGenerator::T_NEAR);
+    };
+
+    auto blend_results=[&](Vmm vmm_partial_res){
+        if (isa == avx512_common)
+            h->vblendmps(vmm_aux1 | k_mask, vmm_aux1, vmm_partial_res);
+        else
+            h->uni_vblendvps(vmm_aux1, vmm_aux1, vmm_partial_res, vmm_aux0);
+    };
+
+    // because tanh(x) = -tanh(-x), we extract sign to make x postive
+    // and reapply sign at the end
+    // mov is not necessary for >AVX, but should not matter for performance
+    h->uni_vmovups(vmm_aux4, vmm_src);
+    h->uni_vandps(vmm_aux4, vmm_aux4, table_val(12));
+    h->uni_vandps(vmm_src, vmm_src, table_val(17));
+
+    // if x < linear_sat_point for all inputs, we just return the input
+    h->uni_vmovups(vmm_aux1, vmm_src);
+    test_exit(table_val(13));
+
+    // if one of the mask is one, we have to compute an better approx
+    h->uni_vmovups(vmm_aux2, vmm_src);
+    h->uni_vmulps(vmm_aux2, vmm_aux2, vmm_aux2);
+    h->uni_vmovups(vmm_aux3, table_val(22));
+    h->uni_vfmadd213ps(vmm_aux3, vmm_aux2, table_val(21));
+    h->uni_vfmadd213ps(vmm_aux3, vmm_aux2, table_val(20));
+    h->uni_vfmadd213ps(vmm_aux3, vmm_aux2, table_val(19));
+    h->uni_vfmadd213ps(vmm_aux3, vmm_aux2, table_val(18));
+    h->uni_vmulps(vmm_aux3, vmm_aux3, vmm_src);
+
+    // we blend only the result that need update
+    blend_results(vmm_aux3);
+
+    // if x < exp_bound_point, we go to return point
+    test_exit(table_val(14));
+
+    // if not we use a better approx 1 - 2 / (1 + exp(2x))
+    // compute 2x
+    h->uni_vmovups(vmm_aux3, vmm_src);
+    h->uni_vaddps(vmm_aux3, vmm_aux3, vmm_aux3);
+
+    // Compute exp(2x)
+    // We need to save kmask, vmm_aux0, vmm_aux1 and vmm_src as exp can use them
+    // vmm_src is not more read afterwards, so we do not have to save it
+    auto stack_size = 3 * vlen + (isa == avx512_common) * 4;
+    h->sub(h->rsp, stack_size);
+    h->uni_vmovups(h->ptr[h->rsp + 0 * vlen], vmm_aux0);
+    h->uni_vmovups(h->ptr[h->rsp + 1 * vlen], vmm_aux1);
+    h->uni_vmovups(h->ptr[h->rsp + 2 * vlen], vmm_src);
+    if (isa == avx512_common)
+        h->kmovw(h->ptr[h->rsp + 3 * vlen], k_mask);
+
+    exp_compute_vector(vmm_aux3);
+
+    h->uni_vmovups(vmm_aux0, h->ptr[h->rsp + 0 * vlen]);
+    h->uni_vmovups(vmm_aux1, h->ptr[h->rsp + 1 * vlen]);
+    h->uni_vmovups(vmm_src, h->ptr[h->rsp + 2 * vlen]);
+    if (isa == avx512_common)
+        h->kmovw(k_mask, h->ptr[h->rsp + 3 * vlen]);
+    h->add(h->rsp, stack_size);
+
+    // 1 + exp(2x)
+    h->uni_vaddps(vmm_aux3, vmm_aux3, table_val(0));
+
+    // 1 - 2 / (1 + exp(2x))
+    h->uni_vmovups(vmm_aux2, table_val(16));
+    h->uni_vdivps(vmm_aux2, vmm_aux2, vmm_aux3);
+    h->uni_vaddps(vmm_aux2, vmm_aux2, table_val(0));
+
+    // we blend only the result that need update
+    blend_results(vmm_aux2);
+
+    // finally, we saturate to 1 if needed
+    // TODO: maybe move that up if most inputs saturate in practice
+    if (isa == avx512_common)
+        h->vcmpps(k_mask, vmm_aux0, table_val(15), 0x5);
+    else {
+        h->uni_vmovups(vmm_aux0, vmm_src);
+        h->uni_vcmpgeps(vmm_aux0, vmm_aux0, table_val(15));
+    }
+    h->uni_vmovups(vmm_aux2, table_val(0));
+    blend_results(vmm_aux2);
+
+    h->L(end_tanh_label);
+    {
+        // we apply the sign of x to the result and we are done
+        h->uni_vmovups(vmm_src, vmm_aux1);
+        h->uni_vpxor(vmm_src, vmm_src, vmm_aux4);
+    }
 }
 
 template <cpu_isa_t isa>
@@ -409,13 +523,32 @@ void jit_uni_eltwise_injector_f32<isa>::soft_relu_compute_vector(
 template <cpu_isa_t isa>
 void jit_uni_eltwise_injector_f32<isa>::logistic_compute_vector(
         const Vmm &vmm_src) {
+    // we store the original sign and make x negative
+    // IMPORTANT: we assume vmm_aux0 to be xmm0, as for sse4.2 path it is required
+    // IMPORTANT: we use vmm_aux2 for the mask as exp_compute does not use it.
+    h->uni_vmovups(vmm_aux2, vmm_src);
+    h->uni_vandps(vmm_aux2, vmm_aux2, table_val(12));
+    h->uni_vorps(vmm_src, vmm_src, table_val(12));
+
     exp_compute_vector(vmm_src);
     // dup exp(x)
-    h->uni_vmovups(vmm_aux0, vmm_src);
+    h->uni_vmovups(vmm_aux1, vmm_src);
     // (exp(x) + 1)
-    h->uni_vaddps(vmm_aux0, vmm_aux0, table_val(0));
+    h->uni_vaddps(vmm_aux1, vmm_aux1, table_val(0));
     // y = exp(x) / (exp(x) + 1)
-    h->uni_vdivps(vmm_src, vmm_src, vmm_aux0);
+    h->uni_vdivps(vmm_src, vmm_src, vmm_aux1);
+
+    // Now we have to apply the "symmetry" based on original sign
+    h->uni_vmovups(vmm_aux3, table_val(0));
+    h->uni_vsubps(vmm_aux3, vmm_aux3, vmm_src);
+    if (isa == avx512_common) {
+        h->vptestmd(k_mask, vmm_aux2, vmm_aux2);
+        h->vblendmps(vmm_aux3 | k_mask, vmm_aux3, vmm_src);
+    } else {
+        h->uni_vmovups(vmm_aux0, vmm_aux2);// The mask should be xmm0 for sse4.2
+        h->uni_vblendvps(vmm_aux3, vmm_aux3, vmm_src, vmm_aux0);
+    }
+    h->uni_vmovups(vmm_src, vmm_aux3);
 }
 
 template <cpu_isa_t isa>
@@ -439,7 +572,20 @@ void jit_uni_eltwise_injector_f32<isa>::elu_prepare_table() {
             0x3d2bb1b1, // [8] p4 = 0.041917507f
             0x3c091ec1, // [9] p5 = 0.008369149f
             0x42b0c0a5, //[10] max logf = 88.3762589f
-            0xc1766666  //[11] min logf = -14.5f
+            0xc1766666, //[11] min logf = -14.5f
+            // tanh(x) constants,
+            0x80000000, //[12] mask to extract sign
+            0x39ddb3d7, //[13] arg below which tanh(x) = x
+            0x3f0c9f54, //[14] arg below which pol approx is valid
+            0x41102cb4, //[15] arg after which tanh(x) = 1
+            0xc0000000, //[16] -2.0f
+            0x7fffffff, //[17] mask to make positive
+            // tanh pol approx
+            0x3f7fffff, //[18] p0
+            0xbeaaa9cf, //[19] p1
+            0x3e085f1f, //[20] p2
+            0xbd572bda, //[21] p3
+            0x3c84fd08, //[22] p4
     };
 
     for (size_t i = 0; i < sizeof(cvals) / sizeof(cvals[0]); ++i) {
@@ -517,7 +663,7 @@ int jit_uni_eltwise_injector_f32<isa>::aux_vecs_count(alg_kind_t alg_) {
     switch (alg_) {
     case alg_kind::eltwise_relu: return (alpha_ == 0.f) ? 0 : 2;
     case alg_kind::eltwise_elu: return 4;
-    case alg_kind::eltwise_tanh: return 4;
+    case alg_kind::eltwise_tanh: return 5;
     case alg_kind::eltwise_square: return 0;
     case alg_kind::eltwise_abs: return 0;
     case alg_kind::eltwise_sqrt: return 2;
@@ -568,13 +714,14 @@ void jit_uni_eltwise_injector_f32<isa>::compute_vector_range(size_t start_idx,
 }
 
 template <cpu_isa_t isa>
-void jit_uni_eltwise_injector_f32<isa>::prepare_table() {
+void jit_uni_eltwise_injector_f32<isa>::prepare_table(bool gen_table) {
     using namespace alg_kind;
 
     h->align(64);
     h->L(l_table);
 
-    switch (alg_) {
+    if (gen_table) {
+        switch (alg_) {
         case eltwise_relu: relu_prepare_table(); break;
         case eltwise_elu:
         case eltwise_tanh:
@@ -587,6 +734,7 @@ void jit_uni_eltwise_injector_f32<isa>::prepare_table() {
         case eltwise_bounded_relu: bounded_relu_prepare_table(); break;
         case eltwise_square: break;
         default: assert(!"unsupported eltwise algorithm");
+    }
     }
 }
 
@@ -854,18 +1002,17 @@ template <cpu_isa_t isa>
 status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init() {
     using namespace alg_kind;
 
-    assert(engine()->kind() == engine_kind::cpu);
-    bool ok = true && mayiuse(isa)
-        && utils::one_of(desc()->prop_kind, prop_kind::forward_training,
-                prop_kind::forward_inference)
+    bool ok = true
+        && mayiuse(isa)
+        && is_fwd()
         && utils::everyone_is(data_type::f32, desc()->data_desc.data_type)
         && !has_zero_dim_memory()
         && utils::one_of(desc()->alg_kind, eltwise_relu, eltwise_tanh,
                 eltwise_elu, eltwise_square, eltwise_abs, eltwise_sqrt,
                 eltwise_linear, eltwise_bounded_relu, eltwise_soft_relu,
                 eltwise_logistic)
-        && memory_desc_wrapper(src_pd()).is_dense(true)
-        && IMPLICATION(!memory_desc_wrapper(src_pd()).is_dense(false),
+        && memory_desc_wrapper(src_md()).is_dense(true)
+        && IMPLICATION(!memory_desc_wrapper(src_md()).is_dense(false),
                 math::eltwise_fwd_preserves_zero(desc()->alg_kind, true))
         && attr()->has_default_values();
 
@@ -873,9 +1020,8 @@ status_t jit_uni_eltwise_fwd_t<isa>::pd_t::init() {
 }
 
 template <cpu_isa_t isa>
-jit_uni_eltwise_fwd_t<isa>::jit_uni_eltwise_fwd_t(const pd_t *apd,
-        const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs), kernel_(nullptr) {
+jit_uni_eltwise_fwd_t<isa>::jit_uni_eltwise_fwd_t(const pd_t *apd)
+    : cpu_primitive_t(apd), kernel_(nullptr) {
     const auto &desc = *pd()->desc();
     switch (desc.alg_kind) {
     case alg_kind::eltwise_relu:
@@ -890,16 +1036,16 @@ jit_uni_eltwise_fwd_t<isa>::~jit_uni_eltwise_fwd_t()
 { delete kernel_; }
 
 template <cpu_isa_t isa>
-void jit_uni_eltwise_fwd_t<isa>::execute_forward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto dst = reinterpret_cast<data_t *>(this->memory(0));
+void jit_uni_eltwise_fwd_t<isa>::execute_forward(const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
+    const memory_desc_wrapper data_d(pd()->src_md());
 
     const size_t nelems = data_d.nelems(true);
 
-    src += data_d.blocking_desc().offset_padding;
-    dst += data_d.blocking_desc().offset_padding;
+    src += data_d.offset0();
+    dst += data_d.offset0();
 
     parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};
@@ -922,25 +1068,22 @@ void jit_uni_eltwise_fwd_t<isa>::execute_forward() const {
 
 template <cpu_isa_t isa>
 status_t jit_uni_eltwise_bwd_t<isa>::pd_t::init() {
-    assert(engine()->kind() == engine_kind::cpu);
-
     bool ok = true
-        && desc()->prop_kind == prop_kind::backward_data
+        && !is_fwd()
         && utils::one_of(desc()->alg_kind, alg_kind::eltwise_relu)
-        && src_pd()->desc()->data_type == data_type::f32
+        && src_md()->data_type == data_type::f32
         && !has_zero_dim_memory()
         && mayiuse(isa)
-        && memory_desc_wrapper(src_pd()).is_dense()
-        && memory_desc_wrapper(diff_dst_pd()) == memory_desc_wrapper(src_pd())
+        && memory_desc_wrapper(src_md()).is_dense()
+        && memory_desc_wrapper(diff_dst_md()) == memory_desc_wrapper(src_md())
         && attr()->has_default_values();
 
     return ok ? status::success : status::unimplemented;
 }
 
 template <cpu_isa_t isa>
-jit_uni_eltwise_bwd_t<isa>::jit_uni_eltwise_bwd_t(const pd_t *apd,
-        const input_vector &inputs, const output_vector &outputs)
-    : cpu_primitive_t(apd, inputs, outputs), kernel_(nullptr) {
+jit_uni_eltwise_bwd_t<isa>::jit_uni_eltwise_bwd_t(const pd_t *apd)
+    : cpu_primitive_t(apd), kernel_(nullptr) {
     const auto &desc = *pd()->desc();
     switch (desc.alg_kind) {
     case alg_kind::eltwise_relu:
@@ -954,19 +1097,19 @@ jit_uni_eltwise_bwd_t<isa>::~jit_uni_eltwise_bwd_t()
 { delete kernel_; }
 
 template <cpu_isa_t isa>
-void jit_uni_eltwise_bwd_t<isa>::execute_backward() const {
-    auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
-    auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
-    auto diff_src = reinterpret_cast<data_t *>(this->memory(0));
+void jit_uni_eltwise_bwd_t<isa>::execute_backward(const exec_ctx_t &ctx) const {
+    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
+    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
+    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
 
-    const memory_desc_wrapper data_d(pd()->src_pd());
-    const memory_desc_wrapper diff_data_d(pd()->diff_src_pd());
+    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper diff_data_d(pd()->diff_src_md());
 
     const size_t nelems = data_d.nelems();
 
-    src += data_d.blocking_desc().offset_padding;
-    diff_dst += diff_data_d.blocking_desc().offset_padding;
-    diff_src += diff_data_d.blocking_desc().offset_padding;
+    src += data_d.offset0();
+    diff_dst += diff_data_d.offset0();
+    diff_src += diff_data_d.offset0();
 
     parallel(0, [&](const int ithr, const int nthr) {
         size_t start{0}, end{0};

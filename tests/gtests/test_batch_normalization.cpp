@@ -24,17 +24,17 @@
 namespace mkldnn {
 
 struct test_bnrm_sizes_t {
-    int mb, c, d, h, w;
+    memory::dim mb, c, d, h, w;
 };
 
-struct test_bnrm_formats_t {
-    mkldnn::memory::format data_format;
-    mkldnn::memory::format diff_format;
+struct test_bnrm_tags_t {
+    memory::format_tag data_tag;
+    memory::format_tag diff_tag;
 };
 
 struct test_bnrm_params_t {
     mkldnn::engine::kind engine_kind;
-    test_bnrm_formats_t formats;
+    test_bnrm_tags_t tags;
     test_bnrm_sizes_t sizes;
     float eps;
     int ndims;
@@ -62,26 +62,27 @@ void check_bnrm_fwd(const test_bnrm_params_t &p,
            (const data_t *)variance.get_data_handle() : nullptr;
     const data_t *dst_data = (data_t *)dst.get_data_handle();
 
-    const memory::desc src_d = src.get_primitive_desc().desc();
-    const memory::desc dst_d = dst.get_primitive_desc().desc();
+    const memory::desc src_d = src.get_desc();
+    const memory::desc dst_d = dst.get_desc();
+    const mkldnn::impl::memory_desc_wrapper src_mdw(src_d.data);
+    const mkldnn::impl::memory_desc_wrapper dst_mdw(dst_d.data);
 
     data_t eps = static_cast<data_t>(1.e-4 * bp.mb * bp.d * bp.h * bp.w);
 
-    size_t padded_c = src.get_primitive_desc().desc().data.layout_desc
-        .blocking.padding_dims[1];
+    auto padded_c = src_d.data.padded_dims[1];
 
-    mkldnn::impl::parallel_nd(bp.c, [&](int c) {
+    mkldnn::impl::parallel_nd(bp.c, [&](memory::dim c) {
         data_t ref_mean = calculate_stats ? data_t(0) : mean_data[c];
         data_t ref_variance = calculate_stats ? data_t(0) : variance_data[c];
         if (calculate_stats) {
-            for (int n = 0; n < bp.mb; n++)
-                for (int d = 0; d < bp.d; d++)
-                for (int h = 0; h < bp.h; h++)
-                for (int w = 0; w < bp.w; w++) {
+            for (memory::dim n = 0; n < bp.mb; n++)
+                for (memory::dim d = 0; d < bp.d; d++)
+                for (memory::dim h = 0; h < bp.h; h++)
+                for (memory::dim w = 0; w < bp.w; w++) {
                     size_t sidx = n * padded_c * bp.d * bp.h * bp.w
                         + c * bp.d * bp.h * bp.w
                         + d * bp.h * bp.w + h * bp.w + w;
-                ref_mean += src_data[map_index(src_d, sidx)];
+                ref_mean += src_data[src_mdw.off_l(sidx, true)];
             }
             ref_mean /= bp.mb * bp.d * bp.h * bp.w;
             if (is_training) {
@@ -90,13 +91,13 @@ void check_bnrm_fwd(const test_bnrm_params_t &p,
                 EXPECT_NEAR((mean_data[c] - ref_mean) / mean_norm_max, 0., eps);
             }
 
-            for (int n = 0; n < bp.mb; n++)
-            for (int d = 0; d < bp.d; d++)
-            for (int h = 0; h < bp.h; h++)
-                for (int w = 0; w < bp.w; w++) {
+            for (memory::dim n = 0; n < bp.mb; n++)
+            for (memory::dim d = 0; d < bp.d; d++)
+            for (memory::dim h = 0; h < bp.h; h++)
+                for (memory::dim w = 0; w < bp.w; w++) {
                     size_t sidx = n * padded_c * bp.d * bp.h * bp.w
                     + c * bp.d * bp.h * bp.w + d * bp.h * bp.w + h * bp.w + w;
-                    data_t tmp = src_data[map_index(src_d, sidx)] - ref_mean;
+                    data_t tmp = src_data[src_mdw.off_l(sidx, true)] - ref_mean;
                     ref_variance += tmp * tmp;
                 }
             ref_variance /= bp.mb * bp.d * bp.h * bp.w;
@@ -110,32 +111,33 @@ void check_bnrm_fwd(const test_bnrm_params_t &p,
         data_t ref_rsqrt_variance = data_t(1) / (ref_sqrt_variance);
 
         if (use_weights) {
-            memory::desc weights_d = weights.get_primitive_desc().desc();
-            for (int n = 0; n < bp.mb; n++)
-            for (int d = 0; d < bp.d; d++)
-            for (int h = 0; h < bp.h; h++)
-                for (int w = 0; w < bp.w; w++) {
+            memory::desc weights_d = weights.get_desc();
+            const mkldnn::impl::memory_desc_wrapper weights_mdw(weights_d.data);
+            for (memory::dim n = 0; n < bp.mb; n++)
+            for (memory::dim d = 0; d < bp.d; d++)
+            for (memory::dim h = 0; h < bp.h; h++)
+                for (memory::dim w = 0; w < bp.w; w++) {
                     size_t sdidx = n * padded_c * bp.d * bp.h * bp.w
                     + c * bp.d * bp.h * bp.w + d * bp.h * bp.w + h * bp.w + w;
-                    data_t ref_dst = weights_data[map_index(weights_d, c)]
-                            * (src_data[map_index(src_d, sdidx)]
+                    data_t ref_dst = weights_data[weights_mdw.off_l(c, true)]
+                            * (src_data[src_mdw.off_l(sdidx, true)]
                             - ref_mean) * ref_rsqrt_variance
-                            + weights_data[map_index(weights_d, bp.c + c)];
-                    data_t out = dst_data[map_index(dst_d, sdidx)];
+                            + weights_data[weights_mdw.off_l(bp.c + c, true)];
+                    data_t out = dst_data[dst_mdw.off_l(sdidx, true)];
                     data_t norm_max = std::max(fabs(out), fabs(ref_dst));
                     if (norm_max < 10e-3) norm_max = data_t(1);
                     EXPECT_NEAR((out - ref_dst) / norm_max, 0., eps);
                 }
         } else {
-            for (int n = 0; n < bp.mb; n++)
-            for (int d = 0; d < bp.d; d++)
-            for (int h = 0; h < bp.h; h++)
-                for (int w = 0; w < bp.w; w++) {
+            for (memory::dim n = 0; n < bp.mb; n++)
+            for (memory::dim d = 0; d < bp.d; d++)
+            for (memory::dim h = 0; h < bp.h; h++)
+                for (memory::dim w = 0; w < bp.w; w++) {
                     size_t sdidx = n * padded_c * bp.d * bp.h * bp.w
                     + c * bp.d * bp.h * bp.w + d * bp.h * bp.w + h * bp.w + w;
-                    data_t ref_dst = (src_data[map_index(src_d, sdidx)]
+                    data_t ref_dst = (src_data[src_mdw.off_l(sdidx, true)]
                             - ref_mean) * ref_rsqrt_variance;
-                    data_t out = dst_data[map_index(dst_d, sdidx)];
+                    data_t out = dst_data[dst_mdw.off_l(sdidx, true)];
                     data_t norm_max = std::max(fabs(out), fabs(ref_dst));
                     if (norm_max < 10e-3) norm_max = data_t(1);
                     EXPECT_NEAR((out - ref_dst) / norm_max, 0., eps);
@@ -163,17 +165,22 @@ void check_bnrm_bwd(const test_bnrm_params_t &p,
     const data_t *diff_weights_data = (pk == prop_kind::backward) ?
             (data_t *)diff_weights.get_data_handle() : nullptr;
 
-    const memory::desc src_d = src.get_primitive_desc().desc();
-    const memory::desc diff_dst_d = diff_dst.get_primitive_desc().desc();
-    const memory::desc weights_d = weights.get_primitive_desc().desc();
-    const memory::desc diff_src_d = diff_src.get_primitive_desc().desc();
-    const memory::desc diff_weights_d = diff_weights.get_primitive_desc().desc();
+    const memory::desc src_d = src.get_desc();
+    const memory::desc diff_dst_d = diff_dst.get_desc();
+    const memory::desc weights_d = weights.get_desc();
+    const memory::desc diff_src_d = diff_src.get_desc();
+    const memory::desc diff_weights_d = diff_weights.get_desc();
+    const mkldnn::impl::memory_desc_wrapper src_mdw(src_d.data);
+    const mkldnn::impl::memory_desc_wrapper diff_dst_mdw(diff_dst_d.data);
+    const mkldnn::impl::memory_desc_wrapper weights_mdw(weights_d.data);
+    const mkldnn::impl::memory_desc_wrapper diff_src_mdw(diff_src_d.data);
+    const mkldnn::impl::memory_desc_wrapper diff_weights_mdw(diff_weights_d.data);
 
     if (bp.mb * bp.c * bp.d * bp.h * bp.w == 0) {
         if (pk == backward) {
-            for (int c = 0; c < bp.c; ++c) {
-               auto dg = diff_weights_data[map_index(diff_weights_d, c)];
-               auto db = diff_weights_data[map_index(diff_weights_d, bp.c + c)];
+            for (memory::dim c = 0; c < bp.c; ++c) {
+               auto dg = diff_weights_data[diff_weights_mdw.off_l(c, true)];
+               auto db = diff_weights_data[diff_weights_mdw.off_l(bp.c + c, true)];
                EXPECT_NEAR(dg, 0., 1e-7);
                EXPECT_NEAR(db, 0., 1e-7);
             }
@@ -183,8 +190,9 @@ void check_bnrm_bwd(const test_bnrm_params_t &p,
 
     const data_t eps = static_cast<data_t>(1.e-4 * bp.mb * bp.d * bp.h * bp.w);
 
-    size_t padded_c = src.get_primitive_desc().desc().data.layout_desc.blocking.padding_dims[1];
-    mkldnn::impl::parallel_nd(bp.c, [&](int c) {
+    auto padded_c = src_d.data.padded_dims[1];
+
+    mkldnn::impl::parallel_nd(bp.c, [&](memory::dim c) {
         data_t ref_diff_gamma = data_t(0);
         data_t ref_diff_beta = data_t(0);
 
@@ -192,46 +200,46 @@ void check_bnrm_bwd(const test_bnrm_params_t &p,
         auto v_variance = variance_data[c];
         const data_t sqrt_variance = data_t(1.0 / sqrt(v_variance + p.eps));
 
-        auto gamma = use_weights ? weights_data[map_index(weights_d, c)] : 1;
+        auto gamma = use_weights ? weights_data[weights_mdw.off_l(c, true)] : 1;
 
-        for (int n = 0; n < bp.mb; n++)
-        for (int d = 0; d < bp.d; d++)
-        for (int h = 0; h < bp.h; h++)
-        for (int w = 0; w < bp.w; w++) {
+        for (memory::dim n = 0; n < bp.mb; n++)
+        for (memory::dim d = 0; d < bp.d; d++)
+        for (memory::dim h = 0; h < bp.h; h++)
+        for (memory::dim w = 0; w < bp.w; w++) {
             size_t sidx = n * padded_c * bp.d * bp.h * bp.w + c * bp.d * bp.h * bp.w
                     + d * bp.h * bp.w + h * bp.w + w;
-            ref_diff_gamma += (src_data[map_index(src_d, sidx)] - v_mean)
-                * diff_dst_data[map_index(diff_dst_d, sidx)];
-            ref_diff_beta += diff_dst_data[map_index(diff_dst_d, sidx)];
+            ref_diff_gamma += (src_data[src_mdw.off_l(sidx, true)] - v_mean)
+                * diff_dst_data[diff_dst_mdw.off_l(sidx, true)];
+            ref_diff_beta += diff_dst_data[diff_dst_mdw.off_l(sidx, true)];
         }
         ref_diff_gamma *= sqrt_variance;
 
         if (pk == backward) {
-            auto diff_gamma = diff_weights_data[map_index(diff_weights_d, c)];
+            auto diff_gamma = diff_weights_data[diff_weights_mdw.off_l(c, true)];
             data_t norm_max = std::max(fabs(diff_gamma), fabs(ref_diff_gamma));
             if (norm_max < 10e-3) norm_max = data_t(1);
             EXPECT_NEAR((diff_gamma - ref_diff_gamma) / norm_max, 0., eps);
 
-            auto diff_beta = diff_weights_data[map_index(diff_weights_d, bp.c + c)];
+            auto diff_beta = diff_weights_data[diff_weights_mdw.off_l(bp.c + c, true)];
             norm_max = std::max(fabs(diff_beta), fabs(ref_diff_beta));
             if (norm_max < 10e-3) norm_max = data_t(1);
             EXPECT_NEAR((diff_beta - ref_diff_beta) / norm_max, 0., eps);
         }
 
-        for (int n = 0; n < bp.mb; n++)
-        for (int d = 0; d < bp.d; d++)
-        for (int h = 0; h < bp.h; h++)
-            for (int w = 0; w < bp.w; w++) {
+        for (memory::dim n = 0; n < bp.mb; n++)
+        for (memory::dim d = 0; d < bp.d; d++)
+        for (memory::dim h = 0; h < bp.h; h++)
+            for (memory::dim w = 0; w < bp.w; w++) {
                 size_t sidx = n * padded_c * bp.d * bp.h * bp.w
                     + c * bp.d * bp.h * bp.w + d * bp.h * bp.w + h * bp.w + w;
-                data_t ref_diff_src = diff_dst_data[map_index(diff_dst_d, sidx)];
+                data_t ref_diff_src = diff_dst_data[diff_dst_mdw.off_l(sidx, true)];
                 if (calculate_diff_stats) {
                         ref_diff_src -= ref_diff_beta/(bp.mb*bp.d*bp.h*bp.w)
-                        + (src_data[map_index(src_d, sidx)] - v_mean)
+                        + (src_data[src_mdw.off_l(sidx, true)] - v_mean)
                         *ref_diff_gamma*sqrt_variance/(bp.mb*bp.d*bp.h*bp.w);
                 }
                 ref_diff_src *= gamma*sqrt_variance;
-                data_t out_diff_src = diff_src_data[map_index(diff_src_d, sidx)];
+                data_t out_diff_src = diff_src_data[diff_src_mdw.off_l(sidx, true)];
                 data_t norm_max = std::max(fabs(out_diff_src), fabs(ref_diff_src));
                 if (norm_max < eps) norm_max = data_t(1);
                 EXPECT_NEAR((out_diff_src - ref_diff_src) / norm_max, 0., eps);
@@ -257,6 +265,7 @@ private:
         bnrm_bwd_prim_desc;
     test_bnrm_params_t p;
     std::shared_ptr<engine> eng;
+    std::shared_ptr<stream> strm;
     memory::data_type data_type;
 
 protected:
@@ -271,31 +280,33 @@ protected:
 
         ASSERT_TRUE(p.engine_kind == engine::kind::cpu);
         eng.reset(new engine(p.engine_kind, 0));
+        strm.reset(new stream(*eng));
+
         memory::data_type data_type = data_traits<data_t>::data_type;
         ASSERT_EQ(data_type, mkldnn::memory::data_type::f32);
 
         test_bnrm_sizes_t bs = p.sizes;
-        bool has_spatial = (p.formats.data_format != mkldnn_nc);
+        bool has_spatial = (p.tags.data_tag != mkldnn_nc);
         if (has_spatial)
         {
             if (p.ndims == 5)
             {
                 data_desc.reset(new memory::desc({ bs.mb, bs.c, bs.d, bs.h, bs.w },
-                    data_type, p.formats.data_format));
+                    data_type, p.tags.data_tag));
                 diff_desc.reset(new memory::desc({ bs.mb, bs.c, bs.d, bs.h, bs.w },
-                    data_type, p.formats.diff_format));
+                    data_type, p.tags.diff_tag));
             } else {
                 data_desc.reset(new memory::desc({ bs.mb, bs.c, bs.h, bs.w },
-                    data_type, p.formats.data_format));
+                    data_type, p.tags.data_tag));
                 diff_desc.reset(new memory::desc({ bs.mb, bs.c, bs.h, bs.w },
-                    data_type, p.formats.diff_format));
+                    data_type, p.tags.diff_tag));
             }
         }
         else {
             data_desc.reset(new memory::desc({ bs.mb, bs.c },
-                data_type, p.formats.data_format));
+                data_type, p.tags.data_tag));
             diff_desc.reset(new memory::desc({ bs.mb, bs.c },
-                data_type, p.formats.diff_format));
+                data_type, p.tags.diff_tag));
         }
 
         src.reset(new test_memory(*data_desc, *eng));
@@ -321,7 +332,6 @@ protected:
         Backward(use_scale_shift, backward_data);
         Backward(use_scale_shift | use_global_stats, backward);
         Backward(use_scale_shift | use_global_stats, backward_data);
-
     }
 
     void Forward(unsigned flags, prop_kind pk) {
@@ -335,11 +345,10 @@ protected:
         bnrm_prim_desc.reset(new batch_normalization_forward::primitive_desc(
                     bnrm_desc, *eng));
 
-        weights.reset(new memory(bnrm_prim_desc->weights_primitive_desc()));
+        weights.reset(new memory(bnrm_prim_desc->weights_desc(), *eng));
         if (isTraining || useGlobalStats) {
-            mean.reset(new memory(bnrm_prim_desc->mean_primitive_desc()));
-            variance.reset(
-                    new memory(bnrm_prim_desc->variance_primitive_desc()));
+            mean.reset(new memory(bnrm_prim_desc->mean_desc(), *eng));
+            variance.reset(new memory(bnrm_prim_desc->variance_desc(), *eng));
         }
 
         fill(src->get());
@@ -352,11 +361,7 @@ protected:
         check_zero_tail<data_t>(1, src->get());
         check_zero_tail<data_t>(1, dst->get());
 
-        auto bn = createBnrmFwd(isTraining, useGlobalStats, useScaleShift);
-
-        std::vector<primitive> pipeline;
-        pipeline.push_back(bn);
-        stream(stream::kind::lazy).submit(pipeline).wait();
+        execBnrmFwd(isTraining, useGlobalStats, useScaleShift);
 
         check_zero_tail<data_t>(0, dst->get());
 
@@ -376,11 +381,11 @@ protected:
                 bnrm_bwd_desc, *eng, *bnrm_prim_desc));
 
         if (useScaleShift) weights.reset(new memory(
-                    bnrm_bwd_prim_desc->weights_primitive_desc()));
-        diff_weights.reset(new memory(bnrm_bwd_prim_desc->diff_weights_primitive_desc()));
-        mean.reset(new memory(bnrm_bwd_prim_desc->mean_primitive_desc()));
+                    bnrm_bwd_prim_desc->weights_desc(), *eng));
+        diff_weights.reset(new memory(bnrm_bwd_prim_desc->diff_weights_desc(), *eng));
+        mean.reset(new memory(bnrm_bwd_prim_desc->mean_desc(), *eng));
         variance.reset(new memory(
-                    bnrm_bwd_prim_desc->variance_primitive_desc()));
+                    bnrm_bwd_prim_desc->variance_desc(), *eng));
 
         if (useScaleShift) fill(*weights);
         fill(diff_src->get());
@@ -390,11 +395,7 @@ protected:
         check_zero_tail<data_t>(1, diff_src->get());
         check_zero_tail<data_t>(1, diff_dst->get());
 
-        auto bnrm_bwd = createBnrmBwd(useScaleShift, pk);
-
-        std::vector<primitive> pipeline;
-        pipeline.push_back(bnrm_bwd);
-        stream(stream::kind::lazy).submit(pipeline).wait();
+        execBnrmBwd(useScaleShift, pk);
 
         check_bnrm_bwd<data_t>(p,
                 src->get(), diff_dst->get(), *mean, *variance, *weights,
@@ -403,52 +404,43 @@ protected:
     }
 
     void fill(memory &m, data_t mean = 1.) {
-        fill_data<data_t>(m.get_primitive_desc().get_size() / sizeof(data_t),
+        fill_data<data_t>(m.get_desc().get_size() / sizeof(data_t),
                 reinterpret_cast<data_t *>(m.get_data_handle()));
     }
 
-    primitive createBnrmFwd(bool isTraining, bool useGlobalStats,
-            bool useScaleShift)
-    {
-        if (!isTraining && !useGlobalStats) {
-            return useScaleShift
-                ? batch_normalization_forward(*bnrm_prim_desc,
-                    src->get(), *weights, dst->get())
-                : batch_normalization_forward(*bnrm_prim_desc, src->get(),
-                        dst->get());
-        } else {
-            if (useGlobalStats) {
-                return useScaleShift
-                    ? batch_normalization_forward(*bnrm_prim_desc,
-                        src->get(), (const primitive::at)*mean,
-                        (const primitive::at)*variance, *weights, dst->get())
-                    : batch_normalization_forward(*bnrm_prim_desc,
-                        src->get(), (const primitive::at)*mean,
-                        (const primitive::at)*variance, dst->get());
-            } else {
-                return useScaleShift
-                    ? batch_normalization_forward(*bnrm_prim_desc,
-                        src->get(), *weights, dst->get(), *mean, *variance)
-                    : batch_normalization_forward(*bnrm_prim_desc,
-                        src->get(), dst->get(), *mean, *variance);
-            }
+    void execBnrmFwd(bool isTraining, bool useGlobalStats, bool useScaleShift) {
+        std::unordered_map<int, memory> args = {
+            {MKLDNN_ARG_SRC, src->get()},
+            {MKLDNN_ARG_DST, dst->get()},
+        };
+
+        if (useScaleShift)
+            args.insert({MKLDNN_ARG_SCALE_SHIFT, *weights});
+
+        if (isTraining || useGlobalStats) {
+            args.insert({MKLDNN_ARG_MEAN, *mean});
+            args.insert({MKLDNN_ARG_VARIANCE, *variance});
         }
+
+        batch_normalization_forward(*bnrm_prim_desc).execute(*strm, args);
     }
 
-    primitive createBnrmBwd(bool useScaleShift, prop_kind pk)
-    {
+    void execBnrmBwd(bool useScaleShift, prop_kind pk) {
+        std::unordered_map<int, memory> args = {
+            {MKLDNN_ARG_SRC, src->get()},
+            {MKLDNN_ARG_DIFF_DST, diff_dst->get()},
+            {MKLDNN_ARG_MEAN, *mean},
+            {MKLDNN_ARG_VARIANCE, *variance},
+            {MKLDNN_ARG_DIFF_SRC, diff_src->get()},
+        };
+
         if (useScaleShift) {
-            return pk == prop_kind::backward_data
-                ? batch_normalization_backward(*bnrm_bwd_prim_desc,
-                    src->get(), *mean, *variance, diff_dst->get(), *weights,
-                    diff_src->get())
-                : batch_normalization_backward(*bnrm_bwd_prim_desc,
-                    src->get(), *mean, *variance, diff_dst->get(), *weights,
-                    diff_src->get(), *diff_weights);
-        } else {
-            return batch_normalization_backward(*bnrm_bwd_prim_desc, src->get(),
-                    *mean, *variance, diff_dst->get(), diff_src->get());
+            args.insert({MKLDNN_ARG_SCALE_SHIFT, *weights});
+            if (pk == prop_kind::backward)
+                args.insert({MKLDNN_ARG_DIFF_SCALE_SHIFT, *diff_weights});
         }
+
+        batch_normalization_backward(*bnrm_bwd_prim_desc).execute(*strm, args);
     }
 };
 
@@ -462,7 +454,7 @@ TEST_P(bnrm_test_float, TestsBnrm)
 #define EXPAND_SIZES_3D(...) { __VA_ARGS__ }
 #define EXPAND_SIZES_2D(mb, c, h, w) { mb, c, 1, h, w }
 #define EXPAND_FORMATS(data, diff) \
-    { memory::format::data, memory::format::diff }
+    { memory::format_tag::data, memory::format_tag::diff }
 
 #define ENGINE engine::kind::cpu
 #define EPS 1e-5f
@@ -485,7 +477,7 @@ TEST_P(bnrm_test_float, TestsBnrm)
 #define PARAMS_B16(...) EXPAND_ARGS(PARAMS(nChw16c, nChw16c, __VA_ARGS__, false, mkldnn_success))
 #define PARAMS_EF(...) EXPAND_ARGS(PARAMS(nchw, nchw, __VA_ARGS__))
 
-#define INST_TEST_CASE(str, ...) INSTANTIATE_TEST_CASE_P( \
+#define INST_TEST_CASE(str, ...) INSTANTIATE_TEST_SUITE_P( \
         str, bnrm_test_float, ::testing::Values(__VA_ARGS__))
 
 INST_TEST_CASE(SimpleZeroDim,

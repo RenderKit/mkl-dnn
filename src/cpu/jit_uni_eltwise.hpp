@@ -20,10 +20,12 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "cpu_eltwise_pd.hpp"
-#include "cpu_engine.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
+
+#include "cpu_eltwise_pd.hpp"
+#include "cpu_primitive.hpp"
+
 #include "jit_generator.hpp"
 
 namespace mkldnn {
@@ -32,6 +34,9 @@ namespace cpu {
 
 template <cpu_isa_t isa>
 struct jit_uni_eltwise_injector_f32 {
+    using Vmm = typename utils::conditional3<isa == sse42, Xbyak::Xmm,
+            isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
+
     jit_uni_eltwise_injector_f32(jit_generator *host, alg_kind_t alg,
             float alpha, float beta, bool save_state = true,
             Xbyak::Reg64 p_table = Xbyak::util::rax,
@@ -56,7 +61,7 @@ struct jit_uni_eltwise_injector_f32 {
 
     void compute_vector_range(size_t start_idx, size_t end_idx);
     void compute_vector(size_t idx) { compute_vector_range(idx, idx + 1); }
-    void prepare_table();
+    void prepare_table(bool gen_table=true);
     void load_table_addr() { h->mov(p_table, l_table); }
 
     const alg_kind_t alg_;
@@ -78,9 +83,6 @@ private:
         _op_floor = jit_generator::_op_floor,
     };
 
-    using Vmm = typename utils::conditional3<isa == sse42, Xbyak::Xmm,
-            isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
-
     size_t vlen = cpu_isa_traits<isa>::vlen;
 
     const static size_t preserved_vecs_max = 5;
@@ -91,7 +93,7 @@ private:
     size_t preserved_vec_idxs[preserved_vecs_max] = {0};
     size_t start_idx_tail = 0;
 
-    Vmm vmm_mask, vmm_aux0, vmm_aux1, vmm_aux2, vmm_aux3;
+    Vmm vmm_mask, vmm_aux0, vmm_aux1, vmm_aux2, vmm_aux3, vmm_aux4;
 
     Xbyak::Address table_val(int index)
     { return h->ptr[p_table + index * vlen]; }
@@ -131,32 +133,27 @@ struct jit_uni_eltwise_kernel_f32;
 template <cpu_isa_t isa>
 struct jit_uni_eltwise_fwd_t : public cpu_primitive_t {
     struct pd_t : public cpu_eltwise_fwd_pd_t {
-        pd_t(engine_t *engine, const eltwise_desc_t *adesc,
-                const primitive_attr_t *attr,
-                const eltwise_fwd_pd_t *hint_fwd_pd)
-            : cpu_eltwise_fwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_eltwise_fwd_pd_t::cpu_eltwise_fwd_pd_t;
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_uni_eltwise_fwd_t<isa>);
 
-        virtual status_t init() override;
+        status_t init();
     };
 
-    jit_uni_eltwise_fwd_t(const pd_t *apd, const input_vector &inputs,
-                       const output_vector &outputs);
+    jit_uni_eltwise_fwd_t(const pd_t *apd);
     ~jit_uni_eltwise_fwd_t();
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const
-    {
-        execute_forward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_forward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_forward() const;
+    void execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
     jit_uni_eltwise_kernel_f32 *kernel_;
 };
@@ -164,32 +161,27 @@ private:
 template <cpu_isa_t isa>
 struct jit_uni_eltwise_bwd_t : public cpu_primitive_t {
     struct pd_t : public cpu_eltwise_bwd_pd_t {
-        pd_t(engine_t *engine, const eltwise_desc_t *adesc,
-                const primitive_attr_t *attr,
-                const eltwise_fwd_pd_t *hint_fwd_pd)
-            : cpu_eltwise_bwd_pd_t(engine, adesc, attr, hint_fwd_pd) {}
+        using cpu_eltwise_bwd_pd_t::cpu_eltwise_bwd_pd_t;
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", isa, ""),
                 jit_uni_eltwise_bwd_t<isa>);
 
-        virtual status_t init() override;
+        status_t init();
     };
 
-    jit_uni_eltwise_bwd_t(const pd_t *apd, const input_vector &inputs,
-                       const output_vector &outputs);
+    jit_uni_eltwise_bwd_t(const pd_t *apd);
     ~jit_uni_eltwise_bwd_t();
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    virtual void execute(event_t *e) const
-    {
-        execute_backward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_backward(ctx);
+        return status::success;
     }
 
 private:
-    void execute_backward() const;
+    void execute_backward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
     jit_uni_eltwise_kernel_f32 *kernel_;
 };

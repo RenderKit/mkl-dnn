@@ -21,7 +21,8 @@
 #include "memory_tracking.hpp"
 
 #include "cpu_convolution_pd.hpp"
-#include "cpu_engine.hpp"
+#include "cpu_primitive.hpp"
+
 #include "jit_primitive_conf.hpp"
 #include "jit_generator.hpp"
 #include "gemm_convolution_utils.hpp"
@@ -44,68 +45,65 @@ struct _gemm_x8s8s32x_convolution_fwd_t: public cpu_primitive_t {
         DECLARE_COMMON_PD_T(IGEMM_S8U8S32_IMPL_STR,
                 _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>);
 
-        virtual status_t init() override {
+        status_t init() {
             using namespace data_type;
-            using namespace memory_format;
-
-            assert(this->engine()->kind() == engine_kind::cpu);
 
             bool ok = true
-                && this->set_default_params() == status::success
-                && utils::one_of(this->desc()->prop_kind,
-                        prop_kind::forward_training,
-                        prop_kind::forward_inference)
-                && utils::one_of(this->desc()->alg_kind,
-                        alg_kind::convolution_auto,
-                        alg_kind::convolution_direct)
-                && !this->has_zero_dim_memory()
-                && this->desc()->src_desc.data_type == src_type
-                && this->desc()->dst_desc.data_type == dst_type
-                && this->desc()->weights_desc.data_type == s8
-                && IMPLICATION(this->with_bias(), utils::one_of(
-                            this->desc()->bias_desc.data_type, f32, s32, s8,
-                            u8))
-                && this->desc()->accum_data_type == data_type::s32
-                && utils::everyone_is(nhwc, this->src_pd_.desc()->format,
-                        this->dst_pd_.desc()->format)
-                && this->weights_pd_.desc()->format == (this->with_groups()
-                        ? ((src_type == data_type::s8) ? hwigo_s8s8 : hwigo)
-                        : ((src_type == data_type::s8) ? hwio_s8s8 : hwio))
-                && this->is_gemm_conv_format();
+                && is_fwd()
+                && set_default_alg_kind(alg_kind::convolution_direct)
+                && expect_data_types(src_type, s8, data_type::undef, dst_type,
+                        s32)
+                && IMPLICATION(with_bias(), utils::one_of(
+                            desc()->bias_desc.data_type, f32, s32, s8, u8))
+                && !has_zero_dim_memory()
+                && set_default_formats_common(
+                        dat_tag(), format_tag::any, dat_tag())
+                && post_ops_ok()
+                && memory_desc_matches_tag(*src_md(), dat_tag())
+                && memory_desc_matches_tag(*dst_md(), dat_tag())
+                && set_or_check_wei_format();
             if (!ok) return status::unimplemented;
 
             auto scratchpad = scratchpad_registry().registrar();
             return jit_gemm_convolution_utils::init_conf(jcp_, scratchpad,
-                    *this->desc(), this->src_pd(), this->weights_pd(0),
-                    this->dst_pd(), mkldnn_get_max_threads());
+                    *desc(), src_md(), weights_md(0), dst_md(),
+                    mkldnn_get_max_threads());
         }
 
         jit_gemm_conv_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override {
-            using namespace memory_format;
-            const bool is_sign_input =
-                this->desc()->src_desc.data_type == data_type::s8;
+        format_tag_t dat_tag() const { return format_tag::nhwc; }
 
-            if (this->src_pd_.desc()->format == any)
-                CHECK(this->src_pd_.set_format(nhwc));
-            if (this->dst_pd_.desc()->format == any)
-                CHECK(this->dst_pd_.set_format(nhwc));
-            if (this->weights_pd_.desc()->format == any)
-                CHECK(this->weights_pd_.set_format(this->with_groups()
-                            ? (is_sign_input ? hwigo_s8s8 : hwigo)
-                            : (is_sign_input ? hwio_s8s8 : hwio)));
-            if (this->bias_pd_.desc()->format == any)
-                CHECK(this->bias_pd_.set_format(x));
-            if (this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_direct));
-            return status::success;
+        bool set_or_check_wei_format() {
+            using namespace format_tag;
+
+            const bool is_src_s8 = src_md_.data_type == data_type::s8;
+
+            memory_desc_t want_wei_md = weights_md_;
+            memory_desc_init_by_tag(want_wei_md, with_groups() ? hwigo : hwio);
+
+            if (is_src_s8) {
+                want_wei_md.extra.flags = 0
+                    | memory_extra_flags::compensation_conv_s8s8
+                    | memory_extra_flags::scale_adjust;
+                want_wei_md.extra.compensation_mask = (1 << 0)
+                    + (with_groups() ? (1 << 1) : 0);
+                want_wei_md.extra.scale_adjust =
+                    mayiuse(avx512_core_vnni) ? 1.f : 0.5f;
+            }
+
+            if (weights_md_.format_kind == format_kind::any) {
+                weights_md_ = want_wei_md;
+                return true;
+            }
+
+            return weights_md_ == want_wei_md;
         }
 
-        virtual bool is_gemm_conv_format() const {
+        bool post_ops_ok() const {
             using namespace mkldnn::impl::primitive_kind;
-            auto const &po = this->attr()->post_ops_;
+            auto const &po = attr()->post_ops_;
             auto is_relu = [&](int idx) {
                 return po.entry_[idx].is_relu(true, false); };
 
@@ -119,28 +117,22 @@ struct _gemm_x8s8s32x_convolution_fwd_t: public cpu_primitive_t {
         }
     };
 
-    _gemm_x8s8s32x_convolution_fwd_t(const pd_t *apd, const input_vector &inputs,
-           const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs, true) {
-        pp_ker_ = new pp_ker_t(this->pd());
-    }
-    ~_gemm_x8s8s32x_convolution_fwd_t() {
-        delete pp_ker_;
-    }
+    _gemm_x8s8s32x_convolution_fwd_t(const pd_t *apd)
+        : cpu_primitive_t(apd, true), pp_ker_(nullptr)
+    { pp_ker_ = new pp_ker_t(pd()); }
+    ~_gemm_x8s8s32x_convolution_fwd_t() { delete pp_ker_; }
 
     typedef typename prec_traits<src_type>::type src_data_t;
     typedef typename prec_traits<data_type::s8>::type wei_data_t;
     typedef typename prec_traits<dst_type>::type dst_data_t;
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_forward();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_forward(ctx);
+        return status::success;
     }
 
 private:
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
-    void execute_forward() const;
     // XXX: this is throwaway code that will become unnecessary when we have a
     // sufficiently advanced igemm jit generator that supports quantization,
     // relu, and whatnot
@@ -154,6 +146,9 @@ private:
             const char *bias, const float *scales,
             float nslope, float sum_scale, float signed_scale,
             int g, size_t start, size_t end);
+
+        size_t dst_os_stride_;
+
     private:
         void generate();
 
@@ -176,16 +171,15 @@ private:
         data_type_t bias_data_type_;
         size_t bias_data_type_size_;
         size_t scale_idx_mult_;
-        round_mode_t rmode_;
         bool do_bias_;
         bool do_relu_;
         bool do_sum_;
         bool do_signed_scaling_;
-        size_t dst_os_stride_;
         size_t vlen_;
     };
 
-
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    void execute_forward(const exec_ctx_t &ctx) const;
     void execute_forward_thr(const int ithr, const int nthr,
             const src_data_t *src_base, const wei_data_t *wei_base,
             const char *bia_base, dst_data_t *dst_base,
@@ -208,36 +202,27 @@ struct _gemm_u8s8s32x_convolution_bwd_data_t: public cpu_primitive_t {
         DECLARE_COMMON_PD_T(IGEMM_S8U8S32_IMPL_STR,
                 _gemm_u8s8s32x_convolution_bwd_data_t<dst_type>);
 
-        virtual status_t init() override {
+        status_t init() {
             using namespace data_type;
-            using namespace memory_format;
-
-            assert(this->engine()->kind() == engine_kind::cpu);
 
             bool ok = true
-                && this->set_default_params() == status::success
-                && this->desc()->prop_kind == prop_kind::backward_data
-                && utils::one_of(this->desc()->alg_kind, alg_kind::convolution_auto,
-                           alg_kind::convolution_direct)
-                && !this->has_zero_dim_memory()
-                && this->desc()->diff_src_desc.data_type == dst_type
-                && this->desc()->diff_dst_desc.data_type == u8
-                && this->desc()->weights_desc.data_type == s8
-                && IMPLICATION(this->with_bias(), utils::one_of(
-                            this->desc()->bias_desc.data_type, f32, s32, s8,
-                            u8))
-                && this->desc()->accum_data_type == data_type::s32
-                && utils::everyone_is(nhwc, this->diff_src_pd_.desc()->format,
-                        this->diff_dst_pd_.desc()->format)
-                && this->weights_pd_.desc()->format == (this->with_groups()
-                        ? hwigo : hwio)
-                && attr()->post_ops_.has_default_values();
+                && desc()->prop_kind == prop_kind::backward_data
+                && set_default_alg_kind(alg_kind::convolution_direct)
+                && expect_data_types(dst_type, s8, data_type::undef, u8, s32)
+                && IMPLICATION(with_bias(), utils::one_of(
+                            desc()->bias_desc.data_type, f32, s32, s8, u8))
+                && !has_zero_dim_memory()
+                && set_default_formats_common(dat_tag(), wei_tag(), dat_tag())
+                && attr()->post_ops_.has_default_values()
+                && memory_desc_matches_tag(*diff_src_md(), dat_tag())
+                && memory_desc_matches_tag(*diff_dst_md(), dat_tag())
+                && memory_desc_matches_tag(*weights_md(), wei_tag());
             if (!ok) return status::unimplemented;
 
             auto scratchpad = scratchpad_registry().registrar();
             return jit_gemm_convolution_utils::init_conf(jcp_, scratchpad,
-                    *this->desc(), this->diff_src_pd(), this->weights_pd(0),
-                    this->diff_dst_pd(), mkldnn_get_max_threads());
+                    *desc(), diff_src_md(), weights_md(), diff_dst_md(),
+                    mkldnn_get_max_threads());
         }
 
         virtual bool support_bias() const override { return true; }
@@ -245,41 +230,28 @@ struct _gemm_u8s8s32x_convolution_bwd_data_t: public cpu_primitive_t {
         jit_gemm_conv_conf_t jcp_;
 
     protected:
-        virtual status_t set_default_params() override {
-            using namespace memory_format;
+        format_tag_t dat_tag() const { return format_tag::nhwc; }
 
-            if (this->diff_src_pd_.desc()->format == any)
-                CHECK(this->diff_src_pd_.set_format(nhwc));
-            if (this->diff_dst_pd_.desc()->format == any)
-                CHECK(this->diff_dst_pd_.set_format(nhwc));
-            if (this->weights_pd_.desc()->format == any)
-                CHECK(this->weights_pd_.set_format(
-                            this->with_groups() ? hwigo : hwio));
-            if (bias_pd_.desc()->format == any)
-                CHECK(bias_pd_.set_format(x));
-            if (this->desc()->alg_kind == alg_kind::convolution_auto)
-                CHECK(this->set_alg_kind(alg_kind::convolution_direct));
-             return status::success;
+        format_tag_t wei_tag() const {
+            return with_groups() ? format_tag::hwigo : format_tag::hwio;
         }
     };
 
-    _gemm_u8s8s32x_convolution_bwd_data_t(const pd_t *apd, const input_vector &inputs,
-           const output_vector &outputs)
-        : cpu_primitive_t(apd, inputs, outputs, true) {}
-    ~_gemm_u8s8s32x_convolution_bwd_data_t() {}
+    _gemm_u8s8s32x_convolution_bwd_data_t(const pd_t *apd)
+        : cpu_primitive_t(apd, true) {}
 
     typedef typename prec_traits<data_type::u8>::type diff_dst_data_t;
     typedef typename prec_traits<data_type::s8>::type wei_data_t;
     typedef typename prec_traits<dst_type>::type diff_src_data_t;
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
 
-    virtual void execute(event_t *e) const {
-        execute_backward_data();
-        e->set_state(event_t::ready);
+    virtual status_t execute(const exec_ctx_t &ctx) const override {
+        execute_backward_data(ctx);
+        return status::success;
     }
 
 private:
-    void execute_backward_data() const;
+    void execute_backward_data(const exec_ctx_t &ctx) const;
     void execute_backward_data_thr(const int ithr, const int nthr,
             const diff_dst_data_t *diff_dst_base, const wei_data_t *wei_base,
             const char *bia_base, diff_src_data_t *diff_src_base,

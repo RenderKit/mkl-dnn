@@ -14,6 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <assert.h>
+
 #include <cstring>
 #include <iostream>
 #include <math.h>
@@ -29,15 +31,17 @@
 
 using namespace mkldnn;
 
-const int batch = 128;
-const int src_seq_length_max = 28;
-const int tgt_seq_length_max = 28;
+using dim_t = mkldnn::memory::dim;
 
-const int feature_size = 1024;
+const dim_t batch = 128;
+const dim_t src_seq_length_max = 28;
+const dim_t tgt_seq_length_max = 28;
 
-const int enc_bidir_n_layers = 1;
-const int enc_unidir_n_layers = 7;
-const int dec_n_layers = 8;
+const dim_t feature_size = 1024;
+
+const dim_t enc_bidir_n_layers = 1;
+const dim_t enc_unidir_n_layers = 7;
+const dim_t dec_n_layers = 8;
 
 const int lstm_n_gates = 4;
 const int lstm_n_states = 2;
@@ -48,24 +52,23 @@ std::vector<float> alignments(src_seq_length_max *batch, 1.0f);
 std::vector<float> exp_sums(batch, 1.0f);
 
 const float onef = 1.0, zerof = 0.0;
-const int onei = 1;
+const dim_t onei = 1;
 
 void compute_weighted_annotations(float *weighted_annotations,
-        int src_seq_length_max, int batch, int feature_size,
+        dim_t src_seq_length_max, dim_t batch, dim_t feature_size,
         float *weights_annot, float *annotations) {
     // annotations(aka enc_dst_layer) is (t, n, 2c)
     // weights_annot is (2c, c)
 
     // annotation[i] = GEMM(weights_annot, enc_dst_layer[i]);
-    int num_weighted_annotations = src_seq_length_max * batch;
-    mkldnn_sgemm("N", "N",
-            &feature_size, &num_weighted_annotations, &feature_size,
-            &onef, weights_annot, &feature_size, annotations, &feature_size,
-            &zerof, weighted_annotations, &feature_size);
+    dim_t num_weighted_annotations = src_seq_length_max * batch;
+    mkldnn_sgemm("N", "N", &feature_size, &num_weighted_annotations,
+            &feature_size, &onef, weights_annot, &feature_size, annotations,
+            &feature_size, &zerof, weighted_annotations, &feature_size);
 }
 
-void compute_attention(float *context_vectors, int src_seq_length_max,
-        int batch, int feature_size, float *weights_src_layer,
+void compute_attention(float *context_vectors, dim_t src_seq_length_max,
+        dim_t batch, dim_t feature_size, float *weights_src_layer,
         float *dec_src_layer, float *annotations, float *weighted_annotations,
         float *weights_alignments) {
     // dst_iter : (n, c) matrix
@@ -79,8 +82,7 @@ void compute_attention(float *context_vectors, int src_seq_length_max,
     // p is (n, 1)
 
     // first we precompute the weighted_dec_src_layer
-    mkldnn_sgemm("N", "N",
-            &feature_size, &batch, &feature_size, &onef,
+    mkldnn_sgemm("N", "N", &feature_size, &batch, &feature_size, &onef,
             weights_src_layer, &feature_size, dec_src_layer, &feature_size,
             &zerof, weighted_src_layer.data(), &feature_size);
 
@@ -89,31 +91,30 @@ void compute_attention(float *context_vectors, int src_seq_length_max,
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2)
 #endif
-    for (int i = 0; i < src_seq_length_max; i++) {
-        for (int j = 0; j < batch * feature_size; j++)
+    for (dim_t i = 0; i < src_seq_length_max; i++) {
+        for (dim_t j = 0; j < batch * feature_size; j++)
             alignment_model_ptr[i * batch * feature_size + j] = tanhf(
                     weighted_src_layer.data()[j]
                     + weighted_annotations[i * batch * feature_size + j]);
     }
 
     // gemv with alignments weights. the resulting alignments are in alignments
-    int num_weighted_annotations = src_seq_length_max * batch;
-    mkldnn_sgemm("N", "N",
-            &onei, &num_weighted_annotations, &feature_size, &onef,
-            weights_alignments, &onei, alignment_model_ptr, &feature_size,
-            &zerof, alignments.data(), &onei);
+    dim_t num_weighted_annotations = src_seq_length_max * batch;
+    mkldnn_sgemm("N", "N", &onei, &num_weighted_annotations, &feature_size,
+            &onef, weights_alignments, &onei, alignment_model_ptr,
+            &feature_size, &zerof, alignments.data(), &onei);
 
     // softmax on alignments. the resulting context weights are in alignments
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
-    for (int i = 0; i < batch; i++)
+    for (dim_t i = 0; i < batch; i++)
         exp_sums[i] = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2)
 #endif
-    for (int i = 0; i < src_seq_length_max; i++) {
-        for (int j = 0; j < batch; j++) {
+    for (dim_t i = 0; i < src_seq_length_max; i++) {
+        for (dim_t j = 0; j < batch; j++) {
             alignments[i * batch + j] = expf(alignments[i * batch + j]);
             exp_sums[j] += alignments[i * batch + j];
         }
@@ -122,16 +123,16 @@ void compute_attention(float *context_vectors, int src_seq_length_max,
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2)
 #endif
-    for (int i = 0; i < src_seq_length_max; i++)
-        for (int j = 0; j < batch; j++)
+    for (dim_t i = 0; i < src_seq_length_max; i++)
+        for (dim_t j = 0; j < batch; j++)
             alignments[i * batch + j] /= exp_sums[j];
 
-    // then we compute the context vectors
+            // then we compute the context vectors
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2)
 #endif
-    for (int i = 0; i < batch; i++)
-        for (int j = 0; j < feature_size; j++)
+    for (dim_t i = 0; i < batch; i++)
+        for (dim_t j = 0; j < feature_size; j++)
             context_vectors[i * (feature_size + feature_size) + feature_size
                     + j]
                     = 0.0f;
@@ -139,24 +140,24 @@ void compute_attention(float *context_vectors, int src_seq_length_max,
 #ifdef _OPENMP
 #pragma omp parallel for collapse(3)
 #endif
-    for (int i = 0; i < batch; i++)
-        for (int k = 0; k < src_seq_length_max; k++)
-            for (int j = 0; j < feature_size; j++)
+    for (dim_t i = 0; i < batch; i++)
+        for (dim_t k = 0; k < src_seq_length_max; k++)
+            for (dim_t j = 0; j < feature_size; j++)
                 context_vectors[i * (feature_size + feature_size) + feature_size
                         + j]
                         += alignments[k * batch + i]
                         * annotations[j + feature_size * (i + batch * k)];
 }
 
-void copy_context(float *src_iter, int n_layers, int n_states, int batch,
-        int feature_size) {
-    // we copy the context from the first layer to all other layers
+void copy_context(float *src_iter, dim_t n_layers, dim_t n_states, dim_t batch,
+        dim_t feature_size) {
+// we copy the context from the first layer to all other layers
 #ifdef _OPENMP
 #pragma omp parallel for collapse(3)
 #endif
-    for (int k = 1; k < n_layers; k++)
-        for (int j = 0; j < batch; j++)
-            for (int i = 0; i < feature_size; i++)
+    for (dim_t k = 1; k < n_layers; k++)
+        for (dim_t j = 0; j < batch; j++)
+            for (dim_t i = 0; i < feature_size; i++)
                 src_iter[(k * n_states * batch + j)
                                 * (feature_size + feature_size)
                         + i]
@@ -165,7 +166,7 @@ void copy_context(float *src_iter, int n_layers, int n_states, int batch,
 
 void simple_net() {
     auto cpu_engine = engine(engine::cpu, 0);
-    auto null_memory_ = null_memory(cpu_engine);
+    stream s(cpu_engine);
 
     /*
       GNMT Example.
@@ -181,9 +182,9 @@ void simple_net() {
         for the context vectors in MKL-DNN yet
      */
 
-    std::vector<primitive> weights_reorders;
-    std::vector<primitive> encoder_net;
-    std::vector<primitive> decoder_net;
+    std::vector<primitive> encoder_net, decoder_net;
+    std::vector<std::unordered_map<int, memory>> encoder_net_args,
+            decoder_net_args;
 
     std::vector<float> net_src(batch * src_seq_length_max * feature_size, 1.0f);
     std::vector<float> net_dst(batch * tgt_seq_length_max * feature_size, 1.0f);
@@ -215,77 +216,78 @@ void simple_net() {
     /* Create the memory for user data */
     auto user_enc_bidir_src_layer_md = mkldnn::memory::desc(
             { enc_bidir_src_layer_tz }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::tnc);
+            mkldnn::memory::format_tag::tnc);
 
     auto user_enc_bidir_wei_layer_md = mkldnn::memory::desc(
             { enc_bidir_weights_layer_tz }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldigo);
+            mkldnn::memory::format_tag::ldigo);
 
     auto user_enc_bidir_wei_iter_md = mkldnn::memory::desc(
             { enc_bidir_weights_iter_tz }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldigo);
+            mkldnn::memory::format_tag::ldigo);
 
     auto user_enc_bidir_bias_md = mkldnn::memory::desc({ enc_bidir_bias_tz },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldgo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldgo);
 
     auto user_enc_bidir_src_layer_memory = mkldnn::memory(
-            { user_enc_bidir_src_layer_md, cpu_engine }, net_src.data());
+            user_enc_bidir_src_layer_md, cpu_engine, net_src.data());
     auto user_enc_bidir_wei_layer_memory
-            = mkldnn::memory({ user_enc_bidir_wei_layer_md, cpu_engine },
+            = mkldnn::memory(user_enc_bidir_wei_layer_md, cpu_engine,
                     user_enc_bidir_wei_layer.data());
     auto user_enc_bidir_wei_iter_memory
-            = mkldnn::memory({ user_enc_bidir_wei_iter_md, cpu_engine },
+            = mkldnn::memory(user_enc_bidir_wei_iter_md, cpu_engine,
                     user_enc_bidir_wei_iter.data());
     auto user_enc_bidir_bias_memory = mkldnn::memory(
-            { user_enc_bidir_bias_md, cpu_engine }, user_enc_bidir_bias.data());
+            user_enc_bidir_bias_md, cpu_engine, user_enc_bidir_bias.data());
 
     /* Create memory descriptors for RNN data w/o specified layout */
     auto enc_bidir_wei_layer_md = memory::desc({ enc_bidir_weights_layer_tz },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
 
     auto enc_bidir_wei_iter_md = memory::desc({ enc_bidir_weights_iter_tz },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
 
     auto enc_bidir_dst_layer_md = memory::desc({ enc_bidir_dst_layer_tz },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
 
     /* Create bidirectional RNN */
     rnn_cell::desc bi_cell(algorithm::vanilla_lstm);
     rnn_forward::desc bi_layer_desc(prop_kind::forward_inference, bi_cell,
             rnn_direction::bidirectional_concat, user_enc_bidir_src_layer_md,
-            zero_md(), enc_bidir_wei_layer_md, enc_bidir_wei_iter_md,
-            user_enc_bidir_bias_md, enc_bidir_dst_layer_md, zero_md());
+            memory::desc(), enc_bidir_wei_layer_md, enc_bidir_wei_iter_md,
+            user_enc_bidir_bias_md, enc_bidir_dst_layer_md, memory::desc());
 
     auto enc_bidir_prim_desc
             = mkldnn::rnn_forward::primitive_desc(bi_layer_desc, cpu_engine);
 
-    /* Create memory primitives for input data and use reorders to reorder
-     * user data to internal representation
-     */
+    /* Create memory for input data and use reorders to reorder user data
+     * to internal representation */
     auto enc_bidir_wei_layer_memory
-            = memory(enc_bidir_prim_desc.weights_layer_primitive_desc());
+            = memory(enc_bidir_prim_desc.weights_layer_desc(), cpu_engine);
     auto enc_bidir_wei_layer_reorder_pd = reorder::primitive_desc(
-            user_enc_bidir_wei_layer_memory.get_primitive_desc(),
-            enc_bidir_wei_layer_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_bidir_wei_layer_reorder_pd,
-            user_enc_bidir_wei_layer_memory, enc_bidir_wei_layer_memory));
+            user_enc_bidir_wei_layer_memory, enc_bidir_wei_layer_memory);
+    reorder(enc_bidir_wei_layer_reorder_pd)
+            .execute(s, user_enc_bidir_wei_layer_memory,
+                    enc_bidir_wei_layer_memory);
 
     auto enc_bidir_wei_iter_memory
-            = memory(enc_bidir_prim_desc.weights_iter_primitive_desc());
+            = memory(enc_bidir_prim_desc.weights_iter_desc(), cpu_engine);
     auto enc_bidir_wei_iter_reorder_pd = reorder::primitive_desc(
-            user_enc_bidir_wei_iter_memory.get_primitive_desc(),
-            enc_bidir_wei_iter_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_bidir_wei_iter_reorder_pd,
-            user_enc_bidir_wei_iter_memory, enc_bidir_wei_iter_memory));
+            user_enc_bidir_wei_iter_memory, enc_bidir_wei_iter_memory);
+    reorder(enc_bidir_wei_iter_reorder_pd)
+            .execute(s, user_enc_bidir_wei_iter_memory,
+                    enc_bidir_wei_iter_memory);
 
     auto enc_bidir_dst_layer_memory
-            = mkldnn::memory(enc_bidir_prim_desc.dst_layer_primitive_desc());
+            = mkldnn::memory(enc_bidir_prim_desc.dst_layer_desc(), cpu_engine);
 
-    encoder_net.push_back(
-            rnn_forward(enc_bidir_prim_desc, user_enc_bidir_src_layer_memory,
-                    null_memory_, enc_bidir_wei_layer_memory,
-                    enc_bidir_wei_iter_memory, user_enc_bidir_bias_memory,
-                    enc_bidir_dst_layer_memory, null_memory_, null_memory_));
+    encoder_net.push_back(rnn_forward(enc_bidir_prim_desc));
+    encoder_net_args.push_back(
+            { { MKLDNN_ARG_SRC_LAYER, user_enc_bidir_src_layer_memory },
+                    { MKLDNN_ARG_WEIGHTS_LAYER, enc_bidir_wei_layer_memory },
+                    { MKLDNN_ARG_WEIGHTS_ITER, enc_bidir_wei_iter_memory },
+                    { MKLDNN_ARG_BIAS, user_enc_bidir_bias_memory },
+                    { MKLDNN_ARG_DST_LAYER, enc_bidir_dst_layer_memory } });
 
     /* GNMT encoder: unidirectional layers */
     // First unidirectinal layer scales 2 * feature_size output of bidirectional
@@ -306,32 +308,32 @@ void simple_net() {
             = { src_seq_length_max, batch, feature_size };
     auto user_enc_uni_first_wei_layer_md = mkldnn::memory::desc(
             { user_enc_uni_first_wei_layer_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldigo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldigo);
     auto user_enc_uni_first_wei_iter_md = mkldnn::memory::desc(
             { user_enc_uni_first_wei_iter_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldigo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldigo);
     auto user_enc_uni_first_bias_md = mkldnn::memory::desc(
             { user_enc_uni_first_bias_dims }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldgo);
+            mkldnn::memory::format_tag::ldgo);
     auto user_enc_uni_first_wei_layer_memory
-            = mkldnn::memory({ user_enc_uni_first_wei_layer_md, cpu_engine },
+            = mkldnn::memory(user_enc_uni_first_wei_layer_md, cpu_engine,
                     user_enc_uni_first_wei_layer.data());
     auto user_enc_uni_first_wei_iter_memory
-            = mkldnn::memory({ user_enc_uni_first_wei_iter_md, cpu_engine },
+            = mkldnn::memory(user_enc_uni_first_wei_iter_md, cpu_engine,
                     user_enc_uni_first_wei_iter.data());
     auto user_enc_uni_first_bias_memory
-            = mkldnn::memory({ user_enc_uni_first_bias_md, cpu_engine },
+            = mkldnn::memory(user_enc_uni_first_bias_md, cpu_engine,
                     user_enc_uni_first_bias.data());
 
     auto enc_uni_first_wei_layer_md
             = memory::desc({ user_enc_uni_first_wei_layer_dims },
-                    memory::data_type::f32, memory::format::any);
+                    memory::data_type::f32, memory::format_tag::any);
     auto enc_uni_first_wei_iter_md
             = memory::desc({ user_enc_uni_first_wei_iter_dims },
-                    memory::data_type::f32, memory::format::any);
+                    memory::data_type::f32, memory::format_tag::any);
     auto enc_uni_first_dst_layer_md
             = memory::desc({ enc_uni_first_dst_layer_dims },
-                    memory::data_type::f32, memory::format::any);
+                    memory::data_type::f32, memory::format_tag::any);
 
     /// @todo add suport for residual connections
     /// should it be a set residual in op_desc or a field to set manually?
@@ -339,43 +341,49 @@ void simple_net() {
     rnn_cell::desc enc_uni_first_cell(algorithm::vanilla_lstm);
     rnn_forward::desc enc_uni_first_layer_desc(prop_kind::forward_inference,
             enc_uni_first_cell, rnn_direction::unidirectional_left2right,
-            enc_bidir_dst_layer_md, zero_md(), enc_uni_first_wei_layer_md,
+            enc_bidir_dst_layer_md, memory::desc(), enc_uni_first_wei_layer_md,
             enc_uni_first_wei_iter_md, user_enc_uni_first_bias_md,
-            enc_uni_first_dst_layer_md, zero_md());
+            enc_uni_first_dst_layer_md, memory::desc());
+
     auto enc_uni_first_prim_desc = mkldnn::rnn_forward::primitive_desc(
             enc_uni_first_layer_desc, cpu_engine);
 
     auto enc_uni_first_wei_layer_memory
-            = memory(enc_uni_first_prim_desc.weights_layer_primitive_desc());
-    auto enc_uni_first_wei_layer_reorder_pd = reorder::primitive_desc(
-            user_enc_uni_first_wei_layer_memory.get_primitive_desc(),
-            enc_uni_first_wei_layer_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_uni_first_wei_layer_reorder_pd,
-            user_enc_uni_first_wei_layer_memory,
-            enc_uni_first_wei_layer_memory));
+            = memory(enc_uni_first_prim_desc.weights_layer_desc(), cpu_engine);
+    auto enc_uni_first_wei_layer_reorder_pd
+            = reorder::primitive_desc(user_enc_uni_first_wei_layer_memory,
+                    enc_uni_first_wei_layer_memory);
+    reorder(enc_uni_first_wei_layer_reorder_pd)
+            .execute(s, user_enc_uni_first_wei_layer_memory,
+                    enc_uni_first_wei_layer_memory);
 
     auto enc_uni_first_wei_iter_memory
-            = memory(enc_uni_first_prim_desc.weights_iter_primitive_desc());
+            = memory(enc_uni_first_prim_desc.weights_iter_desc(), cpu_engine);
     auto enc_uni_first_wei_iter_reorder_pd = reorder::primitive_desc(
-            user_enc_uni_first_wei_iter_memory.get_primitive_desc(),
-            enc_uni_first_wei_iter_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_uni_first_wei_iter_reorder_pd,
-            user_enc_uni_first_wei_iter_memory, enc_uni_first_wei_iter_memory));
+            user_enc_uni_first_wei_iter_memory, enc_uni_first_wei_iter_memory);
+    reorder(enc_uni_first_wei_iter_reorder_pd)
+            .execute(s, user_enc_uni_first_wei_iter_memory,
+                    enc_uni_first_wei_iter_memory);
 
     auto enc_uni_first_dst_layer_memory = mkldnn::memory(
-            enc_uni_first_prim_desc.dst_layer_primitive_desc());
+            enc_uni_first_prim_desc.dst_layer_desc(), cpu_engine);
 
-    encoder_net.push_back(rnn_forward(enc_uni_first_prim_desc,
-            enc_bidir_dst_layer_memory, null_memory_,
-            enc_uni_first_wei_layer_memory,
-            enc_uni_first_wei_iter_memory, user_enc_uni_first_bias_memory,
-            enc_uni_first_dst_layer_memory, null_memory_, null_memory_));
+    /// @todo add a reorder when they will be available
+    encoder_net.push_back(rnn_forward(enc_uni_first_prim_desc));
+    encoder_net_args.push_back({ { MKLDNN_ARG_SRC_LAYER,
+                                         enc_bidir_dst_layer_memory },
+            { MKLDNN_ARG_WEIGHTS_LAYER, enc_uni_first_wei_layer_memory },
+            { MKLDNN_ARG_WEIGHTS_ITER, enc_uni_first_wei_iter_memory },
+            { MKLDNN_ARG_BIAS, user_enc_uni_first_bias_memory },
+            { MKLDNN_ARG_DST_LAYER, enc_uni_first_dst_layer_memory } });
 
     /* Remainging unidirectional layers */
     std::vector<float> user_enc_uni_wei_layer((enc_unidir_n_layers - 1) * 1
-                    * feature_size * lstm_n_gates * feature_size, 1.0f);
+                    * feature_size * lstm_n_gates * feature_size,
+            1.0f);
     std::vector<float> user_enc_uni_wei_iter((enc_unidir_n_layers - 1) * 1
-                    * feature_size * lstm_n_gates * feature_size, 1.0f);
+                    * feature_size * lstm_n_gates * feature_size,
+            1.0f);
     std::vector<float> user_enc_uni_bias(
             (enc_unidir_n_layers - 1) * 1 * lstm_n_gates * feature_size, 1.0f);
     memory::dims user_enc_uni_wei_layer_dims = { (enc_unidir_n_layers - 1), 1,
@@ -388,27 +396,26 @@ void simple_net() {
             = { src_seq_length_max, batch, feature_size };
     auto user_enc_uni_wei_layer_md = mkldnn::memory::desc(
             { user_enc_uni_wei_layer_dims }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldigo);
+            mkldnn::memory::format_tag::ldigo);
     auto user_enc_uni_wei_iter_md = mkldnn::memory::desc(
             { user_enc_uni_wei_iter_dims }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldigo);
+            mkldnn::memory::format_tag::ldigo);
     auto user_enc_uni_bias_md = mkldnn::memory::desc({ user_enc_uni_bias_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldgo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldgo);
     auto user_enc_uni_wei_layer_memory
-            = mkldnn::memory({ user_enc_uni_wei_layer_md, cpu_engine },
+            = mkldnn::memory(user_enc_uni_wei_layer_md, cpu_engine,
                     user_enc_uni_wei_layer.data());
-    auto user_enc_uni_wei_iter_memory
-            = mkldnn::memory({ user_enc_uni_wei_iter_md, cpu_engine },
-                    user_enc_uni_wei_iter.data());
+    auto user_enc_uni_wei_iter_memory = mkldnn::memory(
+            user_enc_uni_wei_iter_md, cpu_engine, user_enc_uni_wei_iter.data());
     auto user_enc_uni_bias_memory = mkldnn::memory(
-            { user_enc_uni_bias_md, cpu_engine }, user_enc_uni_bias.data());
+            user_enc_uni_bias_md, cpu_engine, user_enc_uni_bias.data());
 
     auto enc_uni_wei_layer_md = memory::desc({ user_enc_uni_wei_layer_dims },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
     auto enc_uni_wei_iter_md = memory::desc({ user_enc_uni_wei_iter_dims },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
     auto enc_dst_layer_md = memory::desc({ enc_dst_layer_dims },
-            memory::data_type::f32, memory::format::any);
+            memory::data_type::f32, memory::format_tag::any);
 
     /// @todo add suport for residual connections
     /// should it be a set residual in op_desc or a field to set manually?
@@ -416,36 +423,38 @@ void simple_net() {
     rnn_cell::desc enc_uni_cell(algorithm::vanilla_lstm);
     rnn_forward::desc enc_uni_layer_desc(prop_kind::forward_inference,
             enc_uni_cell, rnn_direction::unidirectional_left2right,
-            enc_uni_first_dst_layer_md, zero_md(), enc_uni_wei_layer_md,
+            enc_uni_first_dst_layer_md, memory::desc(), enc_uni_wei_layer_md,
             enc_uni_wei_iter_md, user_enc_uni_bias_md, enc_dst_layer_md,
-            zero_md());
+            memory::desc());
     auto enc_uni_prim_desc = mkldnn::rnn_forward::primitive_desc(
             enc_uni_layer_desc, cpu_engine);
 
     auto enc_uni_wei_layer_memory
-            = memory(enc_uni_prim_desc.weights_layer_primitive_desc());
+            = memory(enc_uni_prim_desc.weights_layer_desc(), cpu_engine);
     auto enc_uni_wei_layer_reorder_pd = reorder::primitive_desc(
-            user_enc_uni_wei_layer_memory.get_primitive_desc(),
-            enc_uni_wei_layer_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_uni_wei_layer_reorder_pd,
-            user_enc_uni_wei_layer_memory, enc_uni_wei_layer_memory));
+            user_enc_uni_wei_layer_memory, enc_uni_wei_layer_memory);
+    reorder(enc_uni_wei_layer_reorder_pd)
+            .execute(
+                    s, user_enc_uni_wei_layer_memory, enc_uni_wei_layer_memory);
 
     auto enc_uni_wei_iter_memory
-            = memory(enc_uni_prim_desc.weights_iter_primitive_desc());
+            = memory(enc_uni_prim_desc.weights_iter_desc(), cpu_engine);
     auto enc_uni_wei_iter_reorder_pd = reorder::primitive_desc(
-            user_enc_uni_wei_iter_memory.get_primitive_desc(),
-            enc_uni_wei_iter_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(enc_uni_wei_iter_reorder_pd,
-            user_enc_uni_wei_iter_memory, enc_uni_wei_iter_memory));
+            user_enc_uni_wei_iter_memory, enc_uni_wei_iter_memory);
+    reorder(enc_uni_wei_iter_reorder_pd)
+            .execute(s, user_enc_uni_wei_iter_memory, enc_uni_wei_iter_memory);
 
     auto enc_dst_layer_memory
-            = mkldnn::memory(enc_uni_prim_desc.dst_layer_primitive_desc());
+            = mkldnn::memory(enc_uni_prim_desc.dst_layer_desc(), cpu_engine);
 
-    encoder_net.push_back(
-            rnn_forward(enc_uni_prim_desc, enc_uni_first_dst_layer_memory,
-                    null_memory_, enc_uni_wei_layer_memory,
-                    enc_uni_wei_iter_memory, user_enc_uni_bias_memory,
-                    enc_dst_layer_memory, null_memory_, null_memory_));
+    /// @todo add a reorder when they will be available
+    encoder_net.push_back(rnn_forward(enc_uni_prim_desc));
+    encoder_net_args.push_back(
+            { { MKLDNN_ARG_SRC_LAYER, enc_uni_first_dst_layer_memory },
+                    { MKLDNN_ARG_WEIGHTS_LAYER, enc_uni_wei_layer_memory },
+                    { MKLDNN_ARG_WEIGHTS_ITER, enc_uni_wei_iter_memory },
+                    { MKLDNN_ARG_BIAS, user_enc_uni_bias_memory },
+                    { MKLDNN_ARG_DST_LAYER, enc_dst_layer_memory } });
 
     /* GNMT: decoder with attention mechanism */
     std::vector<float> user_dec_wei_layer(
@@ -453,7 +462,8 @@ void simple_net() {
             1.0f);
     std::vector<float> user_dec_wei_iter(dec_n_layers * 1
                     * (feature_size + feature_size) * lstm_n_gates
-                    * feature_size, 1.0f);
+                    * feature_size,
+            1.0f);
     std::vector<float> user_dec_bias(
             dec_n_layers * 1 * lstm_n_gates * feature_size, 1.0f);
     std::vector<float> user_dec_dst(
@@ -479,7 +489,7 @@ void simple_net() {
     // dec_dst_iter.
     // To resolve this we will create one memory that holds the
     // context vector as well as the both the hidden and cell states.
-    // For the dst_iter, we will use a view on this memory.
+    // The dst_iter will be a sub-memory of this memory.
     // Note that the cell state will be padded by
     // feature_size values. However, we do not compute or
     // access those.
@@ -490,40 +500,37 @@ void simple_net() {
 
     auto user_dec_wei_layer_md = mkldnn::memory::desc(
             { user_dec_wei_layer_dims }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::ldigo);
+            mkldnn::memory::format_tag::ldigo);
     auto user_dec_wei_iter_md = mkldnn::memory::desc({ user_dec_wei_iter_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldigo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldigo);
     auto user_dec_bias_md = mkldnn::memory::desc({ user_dec_bias_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldgo);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldgo);
     auto dec_dst_layer_md = mkldnn::memory::desc({ dec_dst_layer_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::tnc);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::tnc);
     auto dec_src_layer_md = mkldnn::memory::desc({ dec_src_layer_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::tnc);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::tnc);
     auto dec_dst_iter_md = mkldnn::memory::desc({ dec_dst_iter_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::ldsnc);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::ldsnc);
     auto user_dec_wei_layer_memory = mkldnn::memory(
-            { user_dec_wei_layer_md, cpu_engine }, user_dec_wei_layer.data());
+            user_dec_wei_layer_md, cpu_engine, user_dec_wei_layer.data());
     auto user_dec_wei_iter_memory = mkldnn::memory(
-            { user_dec_wei_iter_md, cpu_engine }, user_dec_wei_iter.data());
+            user_dec_wei_iter_md, cpu_engine, user_dec_wei_iter.data());
     auto user_dec_bias_memory = mkldnn::memory(
-            { user_dec_bias_md, cpu_engine }, user_dec_bias.data());
-    auto user_dec_dst_layer_memory = mkldnn::memory(
-            { dec_dst_layer_md, cpu_engine }, user_dec_dst.data());
-    auto dec_src_layer_memory
-            = mkldnn::memory({ dec_src_layer_md, cpu_engine });
+            user_dec_bias_md, cpu_engine, user_dec_bias.data());
+    auto user_dec_dst_layer_memory
+            = mkldnn::memory(dec_dst_layer_md, cpu_engine, user_dec_dst.data());
+    auto dec_src_layer_memory = mkldnn::memory(dec_src_layer_md, cpu_engine);
 
-    auto dec_wei_layer_md = mkldnn::memory::desc(
-            { user_dec_wei_layer_dims }, mkldnn::memory::data_type::f32,
-            mkldnn::memory::format::any);
+    auto dec_wei_layer_md = mkldnn::memory::desc({ user_dec_wei_layer_dims },
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::any);
     auto dec_wei_iter_md = mkldnn::memory::desc({ user_dec_wei_iter_dims },
-            mkldnn::memory::data_type::f32, mkldnn::memory::format::any);
+            mkldnn::memory::data_type::f32, mkldnn::memory::format_tag::any);
 
     // As mentioned above, we create a view without context out of the
     // memory with context.
-    auto dec_dst_iter_memory = mkldnn::memory({ dec_dst_iter_md, cpu_engine });
-    auto dec_dst_iter_noctx_md = mkldnn::view::primitive_desc(
-            dec_dst_iter_memory.get_primitive_desc(), dec_dst_iter_noctx_dims,
-            { 0, 0, 0, 0, 0 }).dst_primitive_desc().desc();
+    auto dec_dst_iter_memory = mkldnn::memory(dec_dst_iter_md, cpu_engine);
+    auto dec_dst_iter_noctx_md = dec_dst_iter_md.submemory_desc(
+            dec_dst_iter_noctx_dims, { 0, 0, 0, 0, 0 });
 
     /// @todo add suport for residual connections
     /// should it be a set residual in op_desc or a field to set manually?
@@ -537,25 +544,28 @@ void simple_net() {
             = mkldnn::rnn_forward::primitive_desc(dec_ctx_desc, cpu_engine);
 
     auto dec_wei_layer_memory
-            = memory(dec_ctx_prim_desc.weights_layer_primitive_desc());
+            = memory(dec_ctx_prim_desc.weights_layer_desc(), cpu_engine);
     auto dec_wei_layer_reorder_pd = reorder::primitive_desc(
-            user_dec_wei_layer_memory.get_primitive_desc(),
-            dec_wei_layer_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(dec_wei_layer_reorder_pd,
-            user_dec_wei_layer_memory, dec_wei_layer_memory));
+            user_dec_wei_layer_memory, dec_wei_layer_memory);
+    reorder(dec_wei_layer_reorder_pd)
+            .execute(s, user_dec_wei_layer_memory, dec_wei_layer_memory);
 
     auto dec_wei_iter_memory
-            = memory(dec_ctx_prim_desc.weights_iter_primitive_desc());
+            = memory(dec_ctx_prim_desc.weights_iter_desc(), cpu_engine);
     auto dec_wei_iter_reorder_pd = reorder::primitive_desc(
-            user_dec_wei_iter_memory.get_primitive_desc(),
-            dec_wei_iter_memory.get_primitive_desc());
-    weights_reorders.push_back(reorder(dec_wei_iter_reorder_pd,
-            user_dec_wei_iter_memory, dec_wei_iter_memory));
+            user_dec_wei_iter_memory, dec_wei_iter_memory);
+    reorder(dec_wei_iter_reorder_pd)
+            .execute(s, user_dec_wei_iter_memory, dec_wei_iter_memory);
 
-    decoder_net.push_back(rnn_forward(dec_ctx_prim_desc, dec_src_layer_memory,
-            dec_dst_iter_memory, dec_wei_layer_memory,
-            dec_wei_iter_memory, user_dec_bias_memory,
-            user_dec_dst_layer_memory, dec_dst_iter_memory, null_memory_));
+    /// @todo add a reorder when they will be available
+    decoder_net.push_back(rnn_forward(dec_ctx_prim_desc));
+    decoder_net_args.push_back({ { MKLDNN_ARG_SRC_LAYER, dec_src_layer_memory },
+            { MKLDNN_ARG_SRC_ITER, dec_dst_iter_memory },
+            { MKLDNN_ARG_WEIGHTS_LAYER, dec_wei_layer_memory },
+            { MKLDNN_ARG_WEIGHTS_ITER, dec_wei_iter_memory },
+            { MKLDNN_ARG_BIAS, user_dec_bias_memory },
+            { MKLDNN_ARG_DST_LAYER, user_dec_dst_layer_memory },
+            { MKLDNN_ARG_DST_ITER, dec_dst_iter_memory } });
 
     // allocating temporary buffer for attention mechanism
     std::vector<float> weighted_annotations(
@@ -565,11 +575,11 @@ void simple_net() {
        Execution
      */
     auto execute = [&]() {
-        // reorder weights to MKLDNN internal representation
-        stream(stream::kind::eager).submit(weights_reorders).wait();
-
         // run encoder (1 stream)
-        stream(stream::kind::eager).submit(encoder_net).wait();
+        assert(encoder_net.size() == encoder_net_args.size()
+                && "something is missing");
+        for (size_t p = 0; p < encoder_net.size(); ++p)
+            encoder_net.at(p).execute(s, encoder_net_args.at(p));
 
         // we compute the weighted annotations once before the decoder
         compute_weighted_annotations(weighted_annotations.data(),
@@ -580,14 +590,14 @@ void simple_net() {
         // We initialise src_layer to the embedding of </s>, which
         // are assumed to be 0 here
         memset(dec_src_layer_memory.get_data_handle(), 0,
-               dec_src_layer_memory.get_primitive_desc().get_size());
+                dec_src_layer_memory.get_desc().get_size());
         // From now on, src points to the output of the last iteration
 
-        for (int i = 0; i < tgt_seq_length_max; i++) {
+        for (dim_t i = 0; i < tgt_seq_length_max; i++) {
             float *src_att_layer_handle
-                    = (float *) dec_src_layer_memory.get_data_handle();
+                    = (float *)dec_src_layer_memory.get_data_handle();
             float *src_att_iter_handle
-                    = (float *) dec_dst_iter_memory.get_data_handle();
+                    = (float *)dec_dst_iter_memory.get_data_handle();
 
             // Compute attention context vector into the first layer src_iter
             compute_attention(src_att_iter_handle, src_seq_length_max, batch,
@@ -598,14 +608,18 @@ void simple_net() {
                     user_weights_alignments.data());
 
             // copy the context vectors to all layers of src_iter
-            copy_context(src_att_iter_handle, dec_n_layers, lstm_n_states, batch,
-                    feature_size);
+            copy_context(src_att_iter_handle, dec_n_layers, lstm_n_states,
+                    batch, feature_size);
 
             // run the decoder iteration
-            stream(stream::kind::eager).submit(decoder_net).wait();
+            assert(decoder_net.size() == decoder_net_args.size()
+                    && "something is missing");
+            for (size_t p = 0; p < decoder_net.size(); ++p)
+                decoder_net.at(p).execute(s, decoder_net_args.at(p));
 
             // Move the handle on the src/dst layer to the next iteration
-            auto dst_layer_handle = (float *) user_dec_dst_layer_memory.get_data_handle();
+            auto dst_layer_handle
+                    = (float *)user_dec_dst_layer_memory.get_data_handle();
             dec_src_layer_memory.set_data_handle(dst_layer_handle);
             user_dec_dst_layer_memory.set_data_handle(
                     dst_layer_handle + batch * feature_size);

@@ -26,9 +26,10 @@ void check_softmax_fwd(prop_kind aprop_kind, memory &src, memory &dst, int axis)
 {
     data_t *dst_ptr = (data_t *)dst.get_data_handle();
 
-    const memory::desc dst_pd = dst.get_primitive_desc().desc();
+    const memory::desc dst_pd = dst.get_desc();
+    const mkldnn::impl::memory_desc_wrapper dst_mdw(dst_pd.data);
 
-    ASSERT_EQ(dst_pd.data.data_type,
+    ASSERT_EQ(dst_mdw.data_type(),
             memory::data_type::f32); // TODO: type assert
 
     float result = 0.0f;
@@ -40,92 +41,88 @@ void check_softmax_fwd(prop_kind aprop_kind, memory &src, memory &dst, int axis)
     // on the number of elements in reduction.
     const float eps = std::numeric_limits<float>::epsilon();
 
-    int MB = dst_pd.data.dims[0];
-    int C = dst_pd.data.dims[1];
+    memory::dim MB = dst_pd.data.dims[0];
+    memory::dim C = dst_pd.data.dims[1];
     if (MB*C == 0) return;
 
     if (dst_pd.data.ndims == 2) {
         if (axis == 1) {
-            for (int n = 0; n < MB; ++n) {
+            for (memory::dim n = 0; n < MB; ++n) {
                 result = 0.0f;
 
-                for (int c = 0; c < C; ++c) {
-                    result += dst_ptr[map_index(dst_pd, n * C + c)];
+                for (memory::dim c = 0; c < C; ++c) {
+                    result += dst_ptr[dst_mdw.off_l(n * C + c, true)];
                 }
                 EXPECT_NEAR(result, 1.0, eps*C);
             }
         }
         else if (axis == 0) {
-            for (int c = 0; c < C; ++c) {
+            for (memory::dim c = 0; c < C; ++c) {
                 result = 0.0f;
 
-                for (int n = 0; n < MB; ++n) {
-                    result += dst_ptr[map_index(dst_pd, n * C + c)];
+                for (memory::dim n = 0; n < MB; ++n) {
+                    result += dst_ptr[dst_mdw.off_l(n * C + c, true)];
                 }
                 EXPECT_NEAR(result, 1.0, eps*MB);
             }
         }
     } else {
-        int H = dst_pd.data.dims[2];
-        int W = dst_pd.data.dims[3];
+        memory::dim H = dst_pd.data.dims[2];
+        memory::dim W = dst_pd.data.dims[3];
         if (H*W == 0) return;
 
-        auto off = [=](int n, int c, int h, int w)
+        auto off = [=](memory::dim n, memory::dim c, memory::dim h, memory::dim w)
         {
             return ((size_t)n * W * H * C + (size_t)c * W * H + (size_t)h * W + w);
         };
 
         if (axis == 0) {
-            for (int c = 0; c < C; ++c) {
-                for (int h = 0; h < H; ++h) {
-                    for (int w = 0; w < W; ++w) {
-                        result = 0.0f;
+            for (memory::dim c = 0; c < C; ++c)
+            for (memory::dim h = 0; h < H; ++h)
+            for (memory::dim w = 0; w < W; ++w)
+            {
+                result = 0.0f;
 
-                        for (int n = 0; n < MB; ++n) {
-                            result += dst_ptr[map_index(dst_pd, off(n, c, h, w))];
-                        }
-                        EXPECT_NEAR(result, 1.0, eps*MB);
-                    }
+                for (memory::dim n = 0; n < MB; ++n) {
+                    result += dst_ptr[dst_mdw.off_l(off(n, c, h, w), true)];
                 }
+                EXPECT_NEAR(result, 1.0, eps*MB);
             }
         } else if (axis == 1) {
-            for (int n = 0; n < MB; ++n) {
-                for (int h = 0; h < H; ++h) {
-                    for (int w = 0; w < W; ++w) {
-                        result = 0.0f;
+            for (memory::dim n = 0; n < MB; ++n)
+            for (memory::dim h = 0; h < H; ++h)
+            for (memory::dim w = 0; w < W; ++w)
+            {
+                result = 0.0f;
 
-                        for (int c = 0; c < C; ++c) {
-                            result += dst_ptr[map_index(dst_pd, off(n, c, h, w))];
-                        }
-                        EXPECT_NEAR(result, 1.0, eps*C);
-                    }
+                for (memory::dim c = 0; c < C; ++c) {
+                    result += dst_ptr[dst_mdw.off_l(off(n, c, h, w), true)];
                 }
+                EXPECT_NEAR(result, 1.0, eps*C);
             }
         } else if (axis == 2) {
-            for (int n = 0; n < MB; ++n) {
-                for (int c = 0; c < C; ++c) {
-                    for (int w = 0; w < W; ++w) {
-                        result = 0.0f;
+            for (memory::dim n = 0; n < MB; ++n)
+            for (memory::dim c = 0; c < C; ++c)
+            for (memory::dim w = 0; w < W; ++w)
+            {
+                result = 0.0f;
 
-                        for (int h = 0; h < H; ++h) {
-                            result += dst_ptr[map_index(dst_pd, off(n, c, h, w))];
-                        }
-                        EXPECT_NEAR(result, 1.0, eps*H);
-                    }
+                for (memory::dim h = 0; h < H; ++h) {
+                    result += dst_ptr[dst_mdw.off_l(off(n, c, h, w), true)];
                 }
+                EXPECT_NEAR(result, 1.0, eps*H);
             }
         } else if (axis == 3) {
-            for (int n = 0; n < MB; ++n) {
-                for (int c = 0; c < C; ++c) {
-                    for (int h = 0; h < H; ++h) {
-                        result = 0.0f;
+            for (memory::dim n = 0; n < MB; ++n)
+            for (memory::dim c = 0; c < C; ++c)
+            for (memory::dim h = 0; h < H; ++h)
+            {
+                result = 0.0f;
 
-                        for (int w = 0; w < W; ++w) {
-                            result += dst_ptr[map_index(dst_pd, off(n, c, h, w))];
-                        }
-                        EXPECT_NEAR(result, 1.0, eps*W);
-                    }
+                for (memory::dim w = 0; w < W; ++w) {
+                    result += dst_ptr[dst_mdw.off_l(off(n, c, h, w), true)];
                 }
+                EXPECT_NEAR(result, 1.0, eps*W);
             }
         }
     }
@@ -135,7 +132,7 @@ template <typename data_t>
 struct softmax_test_params {
     prop_kind aprop_kind;
     engine::kind engine_kind;
-    memory::format memory_format;
+    memory::format_tag memory_format;
     memory::dims dims;
     int axis;
     bool expect_to_fail;
@@ -158,26 +155,26 @@ protected:
                     || p.aprop_kind == prop_kind::forward_scoring
                     || p.aprop_kind == prop_kind::forward_inference);
         auto eng = engine(p.engine_kind, 0);
+        auto strm = stream(eng);
 
         memory::data_type prec = data_traits<data_t>::data_type;
 
         auto mem_desc = memory::desc(p.dims, prec, p.memory_format);
-        auto mem_prim_desc = memory::primitive_desc(mem_desc, eng);
 
-        auto src = memory(mem_prim_desc);
-        auto dst = memory(mem_prim_desc);
+        auto src = memory(mem_desc, eng);
+        auto dst = memory(mem_desc, eng);
 
         auto softmax_desc = softmax_forward::desc(p.aprop_kind, mem_desc,
                     p.axis);
         auto softmax_prim_desc
             = softmax_forward::primitive_desc(softmax_desc, eng);
-        auto softmax = softmax_forward(softmax_prim_desc, src, dst);
+        auto softmax = softmax_forward(softmax_prim_desc);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
-            fill_data<data_t>(mem_prim_desc.get_size() / sizeof(data_t),
+            fill_data<data_t>(mem_desc.get_size() / sizeof(data_t),
                     (data_t *)src.get_data_handle(), mean, var);
 
-            stream(stream::kind::lazy).submit({softmax}).wait();
+            softmax.execute(strm, {{MKLDNN_ARG_SRC, src}, {MKLDNN_ARG_DST, dst}});
             check_softmax_fwd<data_t>(p.aprop_kind, src, dst, p.axis);
         };
 
@@ -192,34 +189,34 @@ using softmax_forward_test_float = softmax_test<float>;
 using softmax_fwd_test_params_float = softmax_test_params<float>;
 
 TEST_P(softmax_forward_test_float, TestsSoftmax) { }
-INSTANTIATE_TEST_CASE_P(TestSoftmaxForward, softmax_forward_test_float,
+INSTANTIATE_TEST_SUITE_P(TestSoftmaxForward, softmax_forward_test_float,
         ::testing::Values(
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, -2, 128, 256}, 0,
+            engine::kind::cpu, memory::format_tag::nchw, {2, -2, 128, 256}, 0,
             true, mkldnn_invalid_arguments},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 2, 128, 256}, 5,
+            engine::kind::cpu, memory::format_tag::nchw, {2, 2, 128, 256}, 5,
             true, mkldnn_invalid_arguments},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 0, 5, 5}, 0},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 0, 5, 5}, 0},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 0, 5, 5}, 1},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 0, 5, 5}, 1},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 19, 128, 256}, 0},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 19, 128, 256}, 0},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 19, 128, 256}, 1},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 19, 128, 256}, 1},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 19, 128, 256}, 2},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 19, 128, 256}, 2},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {1, 8, 1024, 16}, 2},
+            engine::kind::cpu, memory::format_tag::nchw, {1, 8, 1024, 16}, 2},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nchw, {2, 19, 128, 256}, 3},
+            engine::kind::cpu, memory::format_tag::nchw, {2, 19, 128, 256}, 3},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nc, {2, 1000}, 0},
+            engine::kind::cpu, memory::format_tag::nc, {2, 1000}, 0},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nc, {2, 1000}, 1},
+            engine::kind::cpu, memory::format_tag::nc, {2, 1000}, 1},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nc, {1, 256}, 1},
+            engine::kind::cpu, memory::format_tag::nc, {1, 256}, 1},
             softmax_fwd_test_params_float{prop_kind::forward_scoring,
-            engine::kind::cpu, memory::format::nc, {1, 13}, 1}));
+            engine::kind::cpu, memory::format_tag::nc, {1, 13}, 1}));
 }
