@@ -220,12 +220,6 @@ if(MKLDNN_ENABLE_CONCURRENT_EXEC)
     add_definitions(-DMKLDNN_ENABLE_CONCURRENT_EXEC)
 endif()
 
-if(MKLDNN_THREADING MATCHES "TBB")
-    add_definitions(${TBB_DEFINITIONS})
-    include_directories(${TBB_INCLUDE_DIR})
-    list(APPEND EXTRA_SHARED_LIBS ${TBB_LIBRARIES})
-endif()
-
 if(VTUNE_ROOT)
     include_directories(${VTUNE_ROOT}/include)
     add_definitions(-DJIT_PROFILING_VTUNE)

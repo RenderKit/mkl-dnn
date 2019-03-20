@@ -155,15 +155,23 @@ include(FindPackageHandleStandardArgs)
 FIND_PACKAGE_HANDLE_STANDARD_ARGS(TBB DEFAULT_MSG TBB_INCLUDE_DIR TBB_LIBRARY TBB_LIBRARY_MALLOC)
 
 if(TBB_FOUND)
-    set(TBB_INCLUDE_DIRS ${TBB_INCLUDE_DIR})
-    set(TBB_LIBRARIES ${TBB_LIBRARY} ${TBB_LIBRARY_MALLOC})
+    add_library(TBB::tbb SHARED IMPORTED)
+    set_target_properties(TBB::tbb PROPERTIES
+        IMPORTED_LOCATION ${TBB_LIBRARY}
+        INTERFACE_INCLUDE_DIRECTORIES ${TBB_INCLUDE_DIR}
+        INTERFACE_COMPILE_DEFINITIONS "__TBB_NO_IMPLICIT_LINKAGE=1"
+    )
 
-    # We need to define these to avoid implicit linkage against
-    # tbb_debug.lib under Windows. When removing these lines debug build
-    # under Windows fails.
-    set(TBB_DEFINITIONS -D__TBB_NO_IMPLICIT_LINKAGE=1 -D__TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
+    add_library(TBB::tbbmalloc SHARED IMPORTED)
+    set_target_properties(TBB::tbbmalloc PROPERTIES
+        IMPORTED_LOCATION ${TBB_LIBRARY_MALLOC}
+        INTERFACE_COMPILE_DEFINITIONS "__TBBMALLOC_NO_IMPLICIT_LINKAGE=1"
+    )
+
+    set(TBB_LIBRARIES TBB::tbb TBB::tbbmalloc)
 
     set_threading("TBB")
+    list(APPEND EXTRA_SHARED_LIBS ${TBB_LIBRARIES})
 endif()
 
 mark_as_advanced(TBB_INCLUDE_DIR)
