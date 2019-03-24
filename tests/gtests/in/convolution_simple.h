@@ -14,14 +14,14 @@
 * limitations under the License.
 *******************************************************************************/
 
-INST_TEST_CASE(SimpleSmall_ZeroDim,
+INST_TEST_CASE(Simple_ZeroDim,
     PARAMS(nchw, oihw, FMT_BIAS, nchw, 0, 1, 4, 4, 4, 6, 4, 4, 3, 3, 1, 1, 1, 1),
     PARAMS(nchw, oihw, FMT_BIAS, nchw, 0, 1, 4, 0, 4, 6, 0, 4, 3, 3, 1, 1, 1, 1),
     PARAMS(nchw, oihw, FMT_BIAS, nchw, 0, 1, 4, 0, 4, 6, 2, 4, 1, 3, 1, 1, 1, 1),
     PARAMS(nchw, oihw, FMT_BIAS, nchw, 0, 1, 4, 2, 4, 6, 2, 4, 3, 3, 0, 1, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_NCHW_expected_failures,
+INST_TEST_CASE(Simple_NCHW_expected_failures,
     PARAMS_EXPECT_FAIL(nchw, oihw, FMT_BIAS, nchw, mkldnn_invalid_arguments, 1, 1, 0, 4, 4, 6, 4, 4, 3, 3, 1, 1, 1, 1),
     PARAMS_EXPECT_FAIL(nchw, oihw, FMT_BIAS, nchw, mkldnn_invalid_arguments, 1, 1, 4, 4, 4, 0, 4, 4, 3, 3, 1, 1, 1, 1),
     PARAMS_EXPECT_FAIL(nchw, oihw, FMT_BIAS, nchw, mkldnn_invalid_arguments, 1, 1, 4, 4, 4, 6, 4, 4, 0, 3, 1, 1, 1, 1),
@@ -30,7 +30,7 @@ INST_TEST_CASE(SimpleSmall_NCHW_expected_failures,
     PARAMS_EXPECT_FAIL(nchw, oihw, FMT_BIAS, nchw, mkldnn_invalid_arguments, 1, 1, 4, 4, 4, 6, 4, 4, 3, 3, 1, 1, 0, 0)
 );
 
-INST_TEST_CASE(SimpleSmall_Blocked16_padded,
+INST_TEST_CASE(Simple_Blocked16_padded,
     // non-1x1 (all)
     PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16, 2, 1, 17, 13, 13, 23, 12, 12, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16, 2, 1, 21, 13, 13, 16, 12, 12, 3, 3, 0, 0, 1, 1),
@@ -45,7 +45,7 @@ INST_TEST_CASE(SimpleSmall_Blocked16_padded,
     PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16_IOhw16o16i, FMT_BIAS, FMT_DATA_BLOCKED16, 2, 1, 23, 13, 13, 19, 13, 13, 1, 1, 0, 0, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_Blocked8_padded,
+INST_TEST_CASE(Simple_Blocked8_padded,
     // non-1x1 (all)
     PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED, 2, 1, 17, 13, 13, 23, 12, 12, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED, 2, 1, 21, 13, 13, 16, 12, 12, 3, 3, 0, 0, 1, 1),
@@ -56,7 +56,7 @@ INST_TEST_CASE(SimpleSmall_Blocked8_padded,
     PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED, 2, 1, 23, 13, 13, 19, 13, 13, 1, 1, 0, 0, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_NCHW,
+INST_TEST_CASE(Simple_NCHW,
     PARAMS(nchw, oihw, FMT_BIAS, nchw,
         2, 1, 4, 4, 4, 6, 4, 4, 3, 3, 1, 1, 1, 1),
     PARAMS(nchw, oihw, FMT_BIAS, nchw,
@@ -75,7 +75,38 @@ INST_TEST_CASE(SimpleSmall_NCHW,
         2, 2, 4, 4, 4, 6, 4, 4, 3, 3, 1, 1, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_Blocked,
+INST_TEST_CASE(Simple_Dilated_NCHW,
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 8, 8, 3, 3, 2, 2, 1, 1, 1, 1),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 6, 6, 3, 3, 1, 1, 1, 1, 1, 1),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 8, 8, 3, 3, 3, 3, 1, 1, 2, 2),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 4, 4, 3, 3, 2, 2, 1, 1, 3, 3),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 10, 10, 6, 5, 5, 3, 3, 3, 3, 2, 2, 2, 2),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 10, 10, 6, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 2, 2, 5, 5, 1, 1, 1, 1, 1, 1),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 2, 2, 5, 5, 3, 3, 1, 1, 2, 2),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 14, 14, 6, 4, 4, 7, 7, 1, 1, 1, 1, 1, 1),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 14, 14, 6, 2, 2, 7, 7, 3, 3, 1, 1, 2, 2),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 8, 8, 3, 3, 2, 1, 1, 1, 1, 0),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 4, 8, 8, 6, 8, 8, 3, 3, 1, 3, 1, 1, 0, 2),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 8, 8, 8, 8, 3, 8, 3, 3, 1, 1, 2, 1, 1, 0),
+    PARAMS(nchw, oihw, FMT_BIAS, nchw,
+        2, 1, 8, 8, 8, 8, 8, 2, 3, 3, 1, 1, 1, 3, 0, 2)
+);
+
+INST_TEST_CASE(Simple_Blocked,
     PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
         2, 1, 32, 13, 13, 32, 12, 12, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
@@ -92,7 +123,34 @@ INST_TEST_CASE(SimpleSmall_Blocked,
         2, 1, 32, 13, 13, 48, 11, 11, 3, 3, 0, 0, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_Blocked16,
+INST_TEST_CASE(Simple_Dilated_Blocked,
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 11, 11, 3, 3, 0, 0, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 9, 9, 3, 3, 0, 0, 1, 1, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 7, 7, 3, 3, 0, 0, 1, 1, 3, 3),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 7, 7, 3, 3, 1, 1, 2, 2, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 6, 6, 3, 3, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 5, 5, 3, 3, 1, 1, 2, 2, 3, 3),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 9, 9, 5, 5, 1, 1, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 15, 15, 32, 3, 3, 5, 5, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 22, 22, 32, 12, 12, 7, 7, 1, 1, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 22, 22, 32, 3, 3, 7, 7, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 8, 8, 32, 3, 8, 3, 3, 1, 1, 2, 1, 1, 0),
+    PARAMS(FMT_DATA_BLOCKED, FMT_WEIGHTS_BLOCKED, FMT_BIAS, FMT_DATA_BLOCKED,
+        2, 1, 32, 8, 8, 32, 8, 2, 3, 3, 1, 1, 1, 3, 0, 2)
+);
+
+INST_TEST_CASE(Simple_Blocked16,
     PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
         2, 1, 32, 13, 13, 32, 12, 12, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
@@ -133,7 +191,44 @@ INST_TEST_CASE(SimpleSmall_Blocked16,
         2, 1, 32, 9, 9, 48, 2, 2, 5, 5, 0, 0, 3, 3)
 );
 
-INST_TEST_CASE(SimpleSmall_Regression,
+INST_TEST_CASE(Simple_Dilated_Blocked16,
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 17, 17, 32, 17, 17, 3, 3, 2, 2, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 11, 11, 3, 3, 0, 0, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 9, 9, 3, 3, 0, 0, 1, 1, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 7, 7, 3, 3, 0, 0, 1, 1, 3, 3),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 7, 7, 3, 3, 1, 1, 2, 2, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 6, 6, 3, 3, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 5, 5, 3, 3, 1, 1, 2, 2, 3, 3),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 9, 9, 5, 5, 1, 1, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 15, 15, 32, 3, 3, 5, 5, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 22, 22, 32, 12, 12, 7, 7, 1, 1, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 22, 22, 32, 3, 3, 7, 7, 1, 1, 2, 2, 2, 2),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 22, 22, 32, 8, 8, 9, 9, 1, 1, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 7, 29, 32, 7, 29, 3, 3, 2, 2, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 7, 29, 32, 7, 29, 3, 5, 2, 4, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 7, 29, 32, 7, 29, 3, 9, 2, 8, 1, 1, 1, 1),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 8, 8, 32, 3, 8, 3, 3, 1, 1, 2, 1, 1, 0),
+    PARAMS(FMT_DATA_BLOCKED16, FMT_WEIGHTS_BLOCKED16, FMT_BIAS, FMT_DATA_BLOCKED16,
+        2, 1, 32, 8, 8, 32, 8, 2, 3, 3, 1, 1, 1, 3, 0, 2)
+);
+
+INST_TEST_CASE(Simple_Regression,
     /* grouped small input-channel avx512 */
     PARAMS(nchw, gOhwi16o, FMT_BIAS, FMT_DATA_BLOCKED16,
         2, 2, 16, 8, 8, 32, 8, 8, 3, 3, 1, 1, 1, 1),
@@ -152,7 +247,7 @@ INST_TEST_CASE(SimpleSmall_Regression,
         2, 1, 32, 34, 34, 32, 34, 34, 5, 5, 2, 2, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_Depthwise_Blocked,
+INST_TEST_CASE(Simple_Depthwise_Blocked,
     PARAMS(FMT_DATA_BLOCKED, Goihw8g, FMT_BIAS, FMT_DATA_BLOCKED,
         2, 8, 8, 16, 16, 8, 16, 16, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED, Goihw8g, FMT_BIAS, FMT_DATA_BLOCKED,
@@ -173,7 +268,7 @@ INST_TEST_CASE(SimpleSmall_Depthwise_Blocked,
         1, 8, 8, 500, 500, 8, 698, 698, 3, 3, 100, 100, 1, 1)
 );
 
-INST_TEST_CASE(SimpleSmall_Depthwise_Blocked16,
+INST_TEST_CASE(Simple_Depthwise_Blocked16,
     PARAMS(FMT_DATA_BLOCKED16, Goihw16g, FMT_BIAS, FMT_DATA_BLOCKED16,
         2, 16, 16, 16, 16, 16, 16, 16, 3, 3, 0, 0, 1, 1),
     PARAMS(FMT_DATA_BLOCKED16, Goihw16g, FMT_BIAS, FMT_DATA_BLOCKED16,

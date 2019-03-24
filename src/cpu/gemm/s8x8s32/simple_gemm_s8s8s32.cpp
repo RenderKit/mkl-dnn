@@ -61,7 +61,7 @@ void compensation_compute(bool transa, int m, int k, float alpha,
             } else {
                 val *= -128;
             }
-            mkldnn_fetch_and_add(&compensation[i], val);
+            fetch_and_add(&compensation[i], val);
         });
 
         if (has_tile) {
@@ -76,7 +76,7 @@ void compensation_compute(bool transa, int m, int k, float alpha,
                 } else {
                     val *= -128;
                 }
-                mkldnn_fetch_and_add(&compensation[i], val);
+                fetch_and_add(&compensation[i], val);
             });
         }
     } else {
@@ -114,7 +114,30 @@ void copy_and_shift_b(bool transb, int k, int n, uint8_t *b_u8, int ldb_u8,
     });
 }
 
-mkldnn_status_t jit_avx512_core_gemm_s8s8s32(
+/**
+ * gemm_s8s8s32 operation is defined as follows:
+ * C = alpha * op(A) * (op(B) + B_shift) + beta * C + C_offset + compensation
+ *
+ * where
+ *  - compensation is a vector of length m that contains computed compensation
+ *   that may contain C_offset if applicable. The compensation is applied inside
+ *   gemm_s8u8s32 as a C_offset
+ *  - B_shift is a k-by-n matrix, every element of B_shift is equal to 128
+ *
+ *  What is the compensation:
+ *  In order to prepare the matrix B for gemm_s8u8s32 call the B_shift is applied:
+ *  C = alpha * op(A) * (op(B) + B_shift) + beta * C + C_offset =
+ *  alpha * op(A) * op(B) + alpha * op(A) * B_shift + beta * C + C_offset
+ *  compensation = -alpha * op(A) * B_shift
+ *  Since B_shift is a matrix, every element of which is equal to 128 then
+ *  - if op(A) = A: compensation contains sum of the elements in each row
+ *   scaled by -128 * alpha
+ *  - if op(A) = A**T: compensation contains sum of the elements in each column
+ *   scaled by -128 * alpha
+ *
+ * The rest of parameters is described in mkldnn.h
+ */
+mkldnn_status_t simple_gemm_s8s8s32(
         const char *transA, const char *transB, const char *offsetC,
         const int *m, const int *n, const int *k,
         const float *alpha, const int8_t *a, const int *lda, const int8_t *oa,

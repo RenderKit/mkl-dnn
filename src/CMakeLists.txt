@@ -22,6 +22,7 @@ file(GLOB_RECURSE HEADERS
 #file(GLOB_RECURSE SOURCES
 #    ${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp
 #    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.cpp
+#    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.c
 #    )
 include_directories(
     ${PROJECT_BINARY_DIR}/include
@@ -158,6 +159,8 @@ file(GLOB_RECURSE SOURCES
     cpu/jit_uni_reorder.cpp
     cpu/jit_uni_reorder.hpp
     cpu/jit_uni_reorder_utils.cpp
+    cpu/jit_utils/jitprofiling/jitprofiling.c
+    cpu/jit_utils/jit_utils.cpp
     #cpu/nchw_pooling.cpp
     #cpu/nchw_pooling.hpp
     #cpu/ncsp_batch_normalization.cpp
@@ -218,9 +221,14 @@ if(MKLDNN_ENABLE_CONCURRENT_EXEC)
     add_definitions(-DMKLDNN_ENABLE_CONCURRENT_EXEC)
 endif()
 
-if(VTUNE_ROOT)
-    include_directories(${VTUNE_ROOT}/include)
-    add_definitions(-DJIT_PROFILING_VTUNE)
+if(NOT MKLDNN_ENABLE_JIT_PROFILING)
+    # XXX: the profiling interface will still be built and present in the
+    # library
+    message(STATUS "VTune JIT profiling disabled")
+    add_definitions(-DMKLDNN_ENABLE_JIT_PROFILING=0)
+elseif(UNIX AND NOT APPLE)
+    # Not every compiler adds -ldl automatically
+    list(APPEND EXTRA_SHARED_LIBS "${CMAKE_DL_LIBS}")
 endif()
 
 if(WIN32)
@@ -271,11 +279,11 @@ target_include_directories(${LIB_NAME} PUBLIC
     $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>
     )
 
-target_link_libraries_private(${LIB_NAME}
+target_link_libraries_build(${LIB_NAME}
     "${EXTRA_SHARED_LIBS};${EXTRA_STATIC_LIBS}")
-target_link_libraries_public(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
+target_link_libraries_install(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
 if(MKLDNN_LIBRARY_TYPE STREQUAL "STATIC")
-    target_link_libraries_public(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
+    target_link_libraries_install(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
 endif()
 
 set(LIB_EXPORT_NAME "${LIB_NAME}-targets")

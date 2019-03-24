@@ -324,12 +324,36 @@ private:
 
 }
 
-int32_t mkldnn_fetch_and_add(int32_t *dst, int32_t val);
+int32_t fetch_and_add(int32_t *dst, int32_t val);
 inline void yield_thread() {}
 
-int mkldnn_getenv(char *value, const char *name, int len);
-bool mkldnn_jit_dump();
-FILE *mkldnn_fopen(const char *filename, const char *mode);
+// Reads an environment variable 'name' and stores its string value in the
+// 'buffer' of 'buffer_size' bytes on success.
+//
+// - Returns the length of the environment variable string value (excluding
+// the terminating 0) if it is set and its contents (including the terminating
+// 0) can be stored in the 'buffer' without truncation.
+//
+// - Returns negated length of environment variable string value and writes
+// "\0" to the buffer (if it is not NULL) if the 'buffer_size' is to small to
+// store the value (including the terminating 0) without truncation.
+//
+// - Returns 0 and writes "\0" to the buffer (if not NULL) if the environment
+// variable is not set.
+//
+// - Returns INT_MIN if the 'name' is NULL.
+//
+// - Returns INT_MIN if the 'buffer_size' is negative.
+//
+// - Returns INT_MIN if the 'buffer' is NULL and 'buffer_size' is greater than
+// zero. Passing NULL 'buffer' with 'buffer_size' set to 0 can be used to
+// retrieve the length of the environment variable value string.
+//
+int getenv(const char *name, char *buffer, int buffer_size);
+// Reads an integer from the environment
+int getenv_int(const char *name, int default_value = 0);
+bool jit_dump_enabled();
+FILE *fopen(const char *filename, const char *mode);
 
 constexpr int msan_enabled = MSAN_ENABLED;
 inline void msan_unpoison(void *ptr, size_t size) {

@@ -97,10 +97,5 @@
 #ifdef TEST_PARAM_ATTR
 #include "convolution_attr.h"
 #else
-#include "convolution_simple_small.h"
+#include "convolution_simple.h"
 #endif
-//#include "convolution_alexnet.h"
-//#include "convolution_googlenet_v1.h"
-//#include "convolution_googlenet_v2.h"
-//#include "convolution_resnet.h"
-//#include "convolution_cifar10.h"

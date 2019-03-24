@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2018 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,12 +14,24 @@
 * limitations under the License.
 *******************************************************************************/
 
-INST_TEST_CASE(Cifar10_Blocked,
-    PARAMS(nchw, Ohwi8o, FMT_BIAS, FMT_DATA_BLOCKED,
-        2, 1, 3, 32, 32, 32, 32, 32, 5, 5, 2, 2, 1, 1)
-);
+#ifndef SIMPLE_GEMM_S8S8S32_HPP
+#define SIMPLE_GEMM_S8S8S32_HPP
 
-INST_TEST_CASE(Cifar10_Blocked16,
-    PARAMS(nchw, Ohwi8o, FMT_BIAS, FMT_DATA_BLOCKED16,
-        2, 1, 3, 32, 32, 32, 32, 32, 5, 5, 2, 2, 1, 1)
-);
+#include <stdint.h>
+#include "mkldnn_types.h"
+
+namespace mkldnn {
+namespace impl {
+namespace cpu {
+
+mkldnn_status_t simple_gemm_s8s8s32(
+        const char *transA, const char *transB, const char *offsetC,
+        const int *m, const int *n, const int *k,
+        const float *alpha, const int8_t *a, const int *lda, const int8_t *oa,
+        const int8_t *b, const int *ldb, const int8_t *ob,
+        const float *beta, int32_t *c, const int *ldc, const int32_t *oc);
+}
+}
+}
+
+#endif // SIMPLE_GEMM_S8S8S32_HPP

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,23 +14,21 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <cmath>
+
 #include "mkldnn_test_common.hpp"
 #include "gtest/gtest.h"
 
 #include "mkldnn.hpp"
-#include "test_convolution_backward_weights_common.hpp"
+#include "test_batch_normalization_common.hpp"
 
 namespace mkldnn {
 
-using convolution_test = convolution_backward_weights_test<float, float,
-                                                        float, float>;
+using bnorm_test = bnorm_test_common<float>;
 
-TEST_P(convolution_test, TestConvolution)
+TEST_P(bnorm_test, TestsBnormF32)
 {
 }
 
-#define FP32
-#define DIRECTION_BACKWARD_WEIGHTS
-#include "convolution_common.h"
-
+#include "batch_normalization.h"
 }

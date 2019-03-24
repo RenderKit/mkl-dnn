@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,24 +14,19 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef JIT_AVX512_CORE_GEMM_S8S8S32_HPP
-#define JIT_AVX512_CORE_GEMM_S8S8S32_HPP
-
-#include <stdint.h>
-#include "mkldnn_types.h"
+#ifndef JIT_SUPPORT_HPP
+#define JIT_SUPPORT_HPP
 
 namespace mkldnn {
 namespace impl {
 namespace cpu {
+namespace jit_utils {
 
-mkldnn_status_t jit_avx512_core_gemm_s8s8s32(
-        const char *transA, const char *transB, const char *offsetC,
-        const int *m, const int *n, const int *k,
-        const float *alpha, const int8_t *a, const int *lda, const int8_t *oa,
-        const int8_t *b, const int *ldb, const int8_t *ob,
-        const float *beta, int32_t *c, const int *ldc, const int32_t *oc);
-}
-}
-}
+void register_jit_code(const void *code, size_t code_size,
+        const char *code_name, const char *source_file_name);
 
-#endif // JIT_AVX512_CORE_GEMM_S8S8S32_HPP
+}
+}
+}
+}
+#endif
