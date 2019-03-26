@@ -33,20 +33,25 @@ struct cpu_memory_t: public memory_t {
     cpu_memory_t(cpu_engine_t *engine, const memory_desc_t *md, void *handle)
         : memory_t(engine, md)
         , own_data_(handle == MKLDNN_NATIVE_HANDLE_ALLOCATE)
-        , data_((char *)handle)
-    {
-        if (own_data_) {
-            data_ = nullptr;
-            const size_t size = memory_desc_wrapper(this->md()).size();
-            if (size) data_ = (char *)malloc(size, 64);
-        }
-        zero_pad();
-    }
+        , data_((char *)handle) {}
 
     cpu_memory_t(cpu_engine_t *engine, const memory_desc_t *md)
         : cpu_memory_t(engine, md, nullptr) {}
 
     ~cpu_memory_t() { if (own_data_) free(data_); }
+
+    virtual status_t init() override {
+        if (own_data_) {
+            data_ = nullptr;
+            const size_t size = memory_desc_wrapper(this->md()).size();
+            if (size) {
+                data_ = (char *)malloc(size, 64);
+                if (data_ == nullptr)
+                    return status::out_of_memory;
+            }
+        }
+        return zero_pad();
+    }
 
     cpu_engine_t *engine() const { return (cpu_engine_t *)memory_t::engine(); }
 

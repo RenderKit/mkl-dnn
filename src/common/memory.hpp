@@ -30,6 +30,9 @@ struct mkldnn_memory: public mkldnn::impl::c_compatible {
         : engine_(engine), md_(*md) {}
     virtual ~mkldnn_memory() {}
 
+    /** allocates/initializes memory */
+    virtual mkldnn::impl::status_t init() = 0;
+
     /** returns memory's engine */
     mkldnn::impl::engine_t *engine() const { return engine_; }
     /** returns memory's description */
