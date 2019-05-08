@@ -732,7 +732,7 @@ public:
 			close();
 		} catch (std::exception& e) {
 			printf("ERR:StackFrame %s\n", e.what());
-			exit(1);
+                        //exit(1);
 		}
 	}
 private:
