@@ -157,16 +157,23 @@ FIND_PACKAGE_HANDLE_STANDARD_ARGS(TBB DEFAULT_MSG TBB_INCLUDE_DIR TBB_LIBRARY TB
 if(TBB_FOUND)
     add_library(TBB::tbb SHARED IMPORTED)
     set_target_properties(TBB::tbb PROPERTIES
-        IMPORTED_LOCATION ${TBB_LIBRARY}
         INTERFACE_INCLUDE_DIRECTORIES ${TBB_INCLUDE_DIR}
         INTERFACE_COMPILE_DEFINITIONS "__TBB_NO_IMPLICIT_LINKAGE=1"
     )
 
     add_library(TBB::tbbmalloc SHARED IMPORTED)
     set_target_properties(TBB::tbbmalloc PROPERTIES
-        IMPORTED_LOCATION ${TBB_LIBRARY_MALLOC}
         INTERFACE_COMPILE_DEFINITIONS "__TBBMALLOC_NO_IMPLICIT_LINKAGE=1"
     )
+
+    if(WIN32)
+        set_target_properties(TBB::tbb PROPERTIES IMPORTED_IMPLIB ${TBB_LIBRARY})
+        set_target_properties(TBB::tbbmalloc PROPERTIES IMPORTED_IMPLIB ${TBB_LIBRARY_MALLOC})
+    else()
+        set_target_properties(TBB::tbb PROPERTIES IMPORTED_LOCATION ${TBB_LIBRARY})
+        set_target_properties(TBB::tbbmalloc PROPERTIES IMPORTED_LOCATION ${TBB_LIBRARY_MALLOC})
+    endif()
+
 
     set(TBB_LIBRARIES TBB::tbb TBB::tbbmalloc)
 
