@@ -167,11 +167,23 @@ if(TBB_FOUND)
     )
 
     if(WIN32)
-        set_target_properties(TBB::tbb PROPERTIES IMPORTED_IMPLIB ${TBB_LIBRARY})
-        set_target_properties(TBB::tbbmalloc PROPERTIES IMPORTED_IMPLIB ${TBB_LIBRARY_MALLOC})
+        set_target_properties(TBB::tbb PROPERTIES
+            IMPORTED_IMPLIB ${TBB_LIBRARY}
+        )
+
+        set_target_properties(TBB::tbbmalloc PROPERTIES
+            IMPORTED_IMPLIB ${TBB_LIBRARY_MALLOC}
+        )
     else()
-        set_target_properties(TBB::tbb PROPERTIES IMPORTED_LOCATION ${TBB_LIBRARY})
-        set_target_properties(TBB::tbbmalloc PROPERTIES IMPORTED_LOCATION ${TBB_LIBRARY_MALLOC})
+        set_target_properties(TBB::tbb PROPERTIES
+            IMPORTED_LOCATION ${TBB_LIBRARY}
+            IMPORTED_NO_SONAME TRUE
+        )
+
+        set_target_properties(TBB::tbbmalloc PROPERTIES
+            IMPORTED_LOCATION ${TBB_LIBRARY_MALLOC}
+            IMPORTED_NO_SONAME TRUE
+        )
     endif()
 
 
