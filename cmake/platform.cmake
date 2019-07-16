@@ -146,6 +146,8 @@ elseif(UNIX OR MINGW)
         # disable optimizations in debug mode
         append(CMAKE_CXX_FLAGS_DEBUG "-O0")
     endif()
+    # disable assertions
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DNDEBUG")
 endif()
 
 if(WIN32)
