@@ -37,8 +37,8 @@ set(CMAKE_CCXX_NOWARN_FLAGS)
 set(DEF_ARCH_OPT_FLAGS)
 
 # Compatibility with MKL-DNN
-if($ENV{DNNL_WERROR})
-    set(DNNL_WERROR $ENV{DNNL_WERROR})
+if($ENV{MKLDNN_WERROR})
+    set(DNNL_WERROR $ENV{MKLDNN_WERROR})
 endif()
 
 if($ENV{DNNL_WERROR})
@@ -142,14 +142,12 @@ elseif(UNIX OR MINGW)
             append(CMAKE_CCXX_SANITIZER_FLAGS "-g -fno-omit-frame-pointer")
         endif()
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-        if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
-            set(DEF_ARCH_OPT_FLAGS "-msse4.1")
-        endif()
+        set(DEF_ARCH_OPT_FLAGS "-msse4.1")
         # suppress warning on assumptions made regarding overflow (#146)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Wno-strict-overflow")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
         set(DEF_ARCH_OPT_FLAGS "-xSSE4.1")
-        # workaround for Intel Compiler 16.0 that produces error caused
+        # workaround for Intel Compiler that produces error caused
         # by pragma omp simd collapse(..)
         append(CMAKE_CCXX_NOWARN_FLAGS "-diag-disable:13379")
         append(CMAKE_CCXX_NOWARN_FLAGS "-diag-disable:15552")
