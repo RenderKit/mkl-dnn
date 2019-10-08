@@ -14,7 +14,7 @@
 # limitations under the License.
 #===============================================================================
 
-if (NOT MKLDNN_BUILD_TESTS)
+if (NOT DNNL_BUILD_TESTS)
     return()
 endif()
 
@@ -36,7 +36,7 @@ append(CMAKE_C_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
 
 # allow tests to include internal header files with, e.g.
-# include "src/common/mkldnn_thread.hpp"
+# include "src/common/dnnl_thread.hpp"
 include_directories(${PROJECT_SOURCE_DIR})
 
 if(UNIX OR MINGW)
@@ -55,7 +55,7 @@ elseif(WIN32 AND NOT MINGW)
         append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/Qdiag-disable:1786")
         # 2415: unused variable
         append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/Qdiag-disable:2415")
-    else()
+    elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
         # c4244: conversion with possible loss of data
         # c4996: unsafe / deprecated functions
         append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/wd4996 /wd4244")
@@ -68,11 +68,12 @@ append(CMAKE_CXX_FLAGS "${CMAKE_TEST_CCXX_NOWARN_FLAGS}")
 register_exe(api-c api.c "test")
 
 if(UNIX OR MINGW)
+    get_directory_property(include_dirs INCLUDE_DIRECTORIES)
     set(test_c_symbols "${CMAKE_CURRENT_BINARY_DIR}/test_c_symbols.c")
     add_custom_command(
         OUTPUT ${test_c_symbols}
         COMMAND /bin/bash ${CMAKE_CURRENT_SOURCE_DIR}/generate_c_symbols_refs.sh
-        ${CMAKE_CURRENT_SOURCE_DIR}/.. ${PROJECT_BINARY_DIR}/include ${test_c_symbols}
+        ${CMAKE_CURRENT_SOURCE_DIR}/.. ${test_c_symbols} ${include_dirs}
     )
     register_exe(test_c_symbols-c ${test_c_symbols} "test")
 # elseif(WIN32)
@@ -81,3 +82,4 @@ endif()
 
 add_subdirectory(gtests)
 add_subdirectory(benchdnn)
+add_subdirectory(mkldnn_compat)

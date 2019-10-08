@@ -23,23 +23,23 @@
 
 #include "cpu_isa_traits.hpp"
 #include "cpu_lrn_pd.hpp"
-#include "cpu_primitive.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-template <cpu_isa_t isa> struct jit_uni_lrn_fwd_kernel_f32;
-template <cpu_isa_t isa> struct jit_uni_lrn_bwd_kernel_f32;
+template <cpu_isa_t isa>
+struct jit_uni_lrn_fwd_kernel_f32;
+template <cpu_isa_t isa>
+struct jit_uni_lrn_bwd_kernel_f32;
 
 template <cpu_isa_t isa>
-struct jit_uni_lrn_fwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_lrn_fwd_pd_t {
+struct jit_uni_lrn_fwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_lrn_fwd_pd_t {
         using cpu_lrn_fwd_pd_t::cpu_lrn_fwd_pd_t;
 
         DECLARE_COMMON_PD_T(
-                JIT_IMPL_NAME_HELPER("jit:", isa, ""),
-                jit_uni_lrn_fwd_t<isa>);
+                JIT_IMPL_NAME_HELPER("jit:", isa, ""), jit_uni_lrn_fwd_t);
 
         status_t init();
 
@@ -58,19 +58,18 @@ struct jit_uni_lrn_fwd_t: public cpu_primitive_t {
 
 private:
     void execute_forward(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
     jit_uni_lrn_fwd_kernel_f32<isa> *ker_, *ker_first_, *ker_last_;
 };
 
 template <cpu_isa_t isa>
-struct jit_uni_lrn_bwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_lrn_bwd_pd_t {
+struct jit_uni_lrn_bwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_lrn_bwd_pd_t {
         using cpu_lrn_bwd_pd_t::cpu_lrn_bwd_pd_t;
 
         DECLARE_COMMON_PD_T(
-                JIT_IMPL_NAME_HELPER("jit:", isa, ""),
-                jit_uni_lrn_bwd_t<isa>);
+                JIT_IMPL_NAME_HELPER("jit:", isa, ""), jit_uni_lrn_bwd_t);
 
         status_t init();
 
@@ -89,15 +88,15 @@ struct jit_uni_lrn_bwd_t: public cpu_primitive_t {
 
 private:
     void execute_backward(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
     jit_uni_lrn_bwd_kernel_f32<isa> *ker_, *ker_first_, *ker_last_;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

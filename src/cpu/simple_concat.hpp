@@ -20,22 +20,24 @@
 #include "memory_tracking.hpp"
 
 #include "cpu_concat_pd.hpp"
-#include "cpu_primitive.hpp"
+#include "cpu_isa_traits.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <data_type_t data_type>
-struct simple_concat_t: public cpu_primitive_t {
-    struct pd_t: public cpu_concat_pd_t {
+struct simple_concat_t : public primitive_impl_t {
+    struct pd_t : public cpu_concat_pd_t {
         using cpu_concat_pd_t::cpu_concat_pd_t;
 
-        pd_t(const pd_t &rhs): cpu_concat_pd_t(rhs) {
-            int ndims = rhs.dst_md_.ndims;
-            utils::array_copy(perm_, rhs.perm_, ndims);
-            utils::array_copy(iperm_, rhs.iperm_, ndims);
-            utils::array_copy(blocks_, rhs.blocks_, ndims);
+        pd_t(const pd_t &rhs) : cpu_concat_pd_t(rhs) { copy_from(rhs); }
+
+        pd_t &operator=(const pd_t &rhs) {
+            DNNL_SHORT_CIRCUIT_SELF_ASSIGN(rhs);
+            cpu_concat_pd_t::operator=(rhs);
+            copy_from(rhs);
+            return *this;
         }
 
         DECLARE_CONCAT_PD_T("simple:any", simple_concat_t);
@@ -43,8 +45,10 @@ struct simple_concat_t: public cpu_primitive_t {
         status_t init() {
             const memory_desc_wrapper dst_d(dst_md());
             bool ok = true
-                && cpu_concat_pd_t::init() == status::success
-                && dst_d.ndims() <= 6;
+                    && IMPLICATION(
+                            data_type == data_type::bf16, mayiuse(avx512_core))
+                    && cpu_concat_pd_t::init() == status::success
+                    && dst_d.ndims() <= 6;
             if (!ok) return status::unimplemented;
 
             for (size_t i = 0; i < src_mds_.size(); ++i) {
@@ -54,15 +58,15 @@ struct simple_concat_t: public cpu_primitive_t {
                 const int ignore_strides = 0;
 
                 ok = ok
-                    && utils::everyone_is(data_type, i_d.data_type(),
-                            o_d.data_type())
-                    && utils::everyone_is(format_kind::blocked,
-                            i_d.format_kind(), o_d.format_kind())
-                    && types::blocking_desc_is_equal(i_d.blocking_desc(),
-                            o_d.blocking_desc(), ignore_strides)
-                    && types::blocking_desc_is_equal(i_d.blocking_desc(),
-                            dst_d.blocking_desc(), ignore_strides)
-                    && !i_d.is_additional_buffer();
+                        && utils::everyone_is(
+                                data_type, i_d.data_type(), o_d.data_type())
+                        && utils::everyone_is(format_kind::blocked,
+                                i_d.format_kind(), o_d.format_kind())
+                        && types::blocking_desc_is_equal(i_d.blocking_desc(),
+                                o_d.blocking_desc(), ignore_strides)
+                        && types::blocking_desc_is_equal(i_d.blocking_desc(),
+                                dst_d.blocking_desc(), ignore_strides)
+                        && !i_d.is_additional_buffer();
                 if (!ok) return status::unimplemented;
             }
 
@@ -74,9 +78,9 @@ struct simple_concat_t: public cpu_primitive_t {
             const int start_dim = perm_[concat_dim()];
 
             // check that contiguous part is indeed contiguous (i.e. dense)
-            if (nelems_to_concat(dst_d) !=
-                    dst_d.padded_dims()[concat_dim()] / blocks_[concat_dim()]
-                    * dst_d.blocking_desc().strides[concat_dim()])
+            if (nelems_to_concat(dst_d)
+                    != dst_d.padded_dims()[concat_dim()] / blocks_[concat_dim()]
+                            * dst_d.blocking_desc().strides[concat_dim()])
                 return status::unimplemented;
 
             // check that all inputs have the same strides for the
@@ -96,9 +100,9 @@ struct simple_concat_t: public cpu_primitive_t {
             return status::success;
         }
 
-        int perm_[MKLDNN_MAX_NDIMS];
-        int iperm_[MKLDNN_MAX_NDIMS];
-        dims_t blocks_;
+        int perm_[DNNL_MAX_NDIMS] {};
+        int iperm_[DNNL_MAX_NDIMS] {};
+        dims_t blocks_ {};
 
         dim_t nelems_to_concat(const memory_desc_wrapper &data_d) const {
             const int ndims = data_d.ndims();
@@ -119,12 +123,14 @@ struct simple_concat_t: public cpu_primitive_t {
 
             strides_t strides;
             utils::array_copy(strides, dst_d.blocking_desc().strides, ndims);
-            for (int i = 0; i < ndims; i++) iperm_[i] = i;
+            for (int i = 0; i < ndims; i++)
+                iperm_[i] = i;
 
             utils::simultaneous_sort(strides, iperm_, ndims,
                     [](stride_t a, stride_t b) { return b - a; });
 
-            for (int i = 0; i < ndims; i++) perm_[iperm_[i]] = i;
+            for (int i = 0; i < ndims; i++)
+                perm_[iperm_[i]] = i;
         }
 
         void init_scratchpad() {
@@ -133,23 +139,30 @@ struct simple_concat_t: public cpu_primitive_t {
             scratchpad.book(key_concat_iptrs, sizeof(data_t *) * n_inputs());
             scratchpad.book(key_concat_optrs, sizeof(data_t *) * n_inputs());
             scratchpad.book(key_concat_nelems, sizeof(dim_t) * n_inputs());
-            scratchpad.book(key_concat_istrides,
-                    sizeof(strides_t) * n_inputs());
+            scratchpad.book(
+                    key_concat_istrides, sizeof(strides_t) * n_inputs());
+        }
+
+        void copy_from(const pd_t &rhs) {
+            int ndims = rhs.dst_md_.ndims;
+            utils::array_copy(perm_, rhs.perm_, ndims);
+            utils::array_copy(iperm_, rhs.iperm_, ndims);
+            utils::array_copy(blocks_, rhs.blocks_, ndims);
         }
     };
 
-    simple_concat_t(const pd_t *apd): cpu_primitive_t(apd) {}
+    simple_concat_t(const pd_t *apd) : primitive_impl_t(apd) {}
 
     virtual status_t execute(const exec_ctx_t &ctx) const override;
 
     typedef typename prec_traits<data_type>::type data_t;
 
 private:
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif

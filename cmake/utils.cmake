@@ -21,15 +21,17 @@ if(utils_cmake_included)
     return()
 endif()
 set(utils_cmake_included true)
-include("cmake/options.cmake")
+include(options)
 
 # Common configuration for tests / test cases on Windows
 function(maybe_configure_windows_test name kind)
-    if(WIN32 OR MINGW)
+    if(WIN32 AND (NOT DNNL_BUILD_FOR_CI))
         string(REPLACE  ";" "\;" PATH "${CTESTCONFIG_PATH};$ENV{PATH}")
         set_property(${kind} ${name} PROPERTY ENVIRONMENT "PATH=${PATH}")
-        configure_file(${PROJECT_SOURCE_DIR}/cmake/template.vcxproj.user
-            ${name}.vcxproj.user @ONLY)
+        if(CMAKE_GENERATOR MATCHES "Visual Studio")
+            configure_file(${PROJECT_SOURCE_DIR}/cmake/template.vcxproj.user
+                ${name}.vcxproj.user @ONLY)
+        endif()
     endif()
 endfunction()
 
@@ -41,7 +43,7 @@ endfunction()
 function(register_exe name srcs test)
     add_executable(${name} ${srcs})
     target_link_libraries(${name} ${LIB_NAME} ${EXTRA_SHARED_LIBS} ${ARGV3})
-    if("${test}" STREQUAL "test")
+    if("x${test}" STREQUAL "xtest")
         add_test(${name} ${name})
         maybe_configure_windows_test(${name} TEST)
     endif()
@@ -52,20 +54,6 @@ endfunction()
 macro(append var value)
     set(${var} "${${var}} ${value}")
 endmacro()
-
-# Append to a variable if building a product build (as opposed to a developer
-# build that is detected via the MKLDNN_PRODUCT_BUILD_MODE option)
-macro(append_if_product var value)
-    if(MKLDNN_PRODUCT_BUILD_MODE)
-        append(${var} "${value}")
-    endif()
-endmacro()
-
-if(MKLDNN_PRODUCT_BUILD_MODE)
-    message(STATUS "This is a product build")
-else()
-    message(WARNING "This is a developer build")
-endif()
 
 # Set variable depending on condition:
 #   var = cond ? val_if_true : val_if_false

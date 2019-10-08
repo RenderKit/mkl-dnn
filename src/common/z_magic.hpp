@@ -17,21 +17,23 @@
 #ifndef Z_MAGIC_HPP
 #define Z_MAGIC_HPP
 
-#define CHAIn2(a,b) a b
-#define CHAIN2(a,b) CHAIn2(a,b)
+#define for_ for
 
-#define CONCAt2(a,b) a ## b
-#define CONCAT2(a,b) CONCAt2(a,b)
+#define CHAIn2(a, b) a b
+#define CHAIN2(a, b) CHAIn2(a, b)
+
+#define CONCAt2(a, b) a##b
+#define CONCAT2(a, b) CONCAt2(a, b)
 
 #define STRINGIFy(s) #s
 #define STRINGIFY(s) STRINGIFy(s)
 
 #ifdef _MSC_VER
-#   define PRAGMA_MACRo(x) __pragma(x)
-#   define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
+#define PRAGMA_MACRo(x) __pragma(x)
+#define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
 #else
-#   define PRAGMA_MACRo(x) _Pragma(#x)
-#   define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
+#define PRAGMA_MACRo(x) _Pragma(#x)
+#define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
 #endif
 
 #define UNUSED(x) ((void)x)
@@ -43,4 +45,4 @@
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

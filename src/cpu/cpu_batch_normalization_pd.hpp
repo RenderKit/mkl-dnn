@@ -18,23 +18,24 @@
 #define CPU_BATCH_NORMALIZATION_PD_HPP
 
 #include "batch_normalization_pd.hpp"
+#include "cpu_engine.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-struct cpu_batch_normalization_fwd_pd_t: public batch_normalization_fwd_pd_t {
+struct cpu_batch_normalization_fwd_pd_t : public batch_normalization_fwd_pd_t {
     using batch_normalization_fwd_pd_t::batch_normalization_fwd_pd_t;
 };
 
-struct cpu_batch_normalization_bwd_pd_t: public batch_normalization_bwd_pd_t {
+struct cpu_batch_normalization_bwd_pd_t : public batch_normalization_bwd_pd_t {
     using batch_normalization_bwd_pd_t::batch_normalization_bwd_pd_t;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

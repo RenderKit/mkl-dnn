@@ -15,32 +15,38 @@
 *******************************************************************************/
 
 #include <assert.h>
-#include "mkldnn.h"
+#include "dnnl.h"
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
 #include "stream.hpp"
 #include "utils.hpp"
 
-using namespace mkldnn::impl;
-using namespace mkldnn::impl::status;
+using namespace dnnl::impl;
+using namespace dnnl::impl::status;
+using namespace dnnl::impl::utils;
 
 /* API */
 
-status_t mkldnn_stream_create(stream_t **stream, engine_t *engine,
-        unsigned flags) {
-    bool args_ok = true
-        && !utils::any_null(stream, engine)
-        && flags == stream_flags::default_flags;
-    if (!args_ok)
-        return invalid_arguments;
+status_t dnnl_stream_create(
+        stream_t **stream, engine_t *engine, unsigned flags) {
+    bool args_ok = true && !utils::any_null(stream, engine)
+            && flags == stream_flags::default_flags;
+    if (!args_ok) return invalid_arguments;
 
-    return safe_ptr_assign<stream_t>(*stream, new stream_t(engine, flags));
+    return engine->create_stream(stream, flags);
 }
 
-status_t mkldnn_stream_destroy(stream_t *stream) {
+status_t dnnl_stream_wait(stream_t *stream) {
+    bool args_ok = !any_null(stream);
+    if (!args_ok) return invalid_arguments;
+
+    return stream->wait();
+}
+
+status_t dnnl_stream_destroy(stream_t *stream) {
     delete stream;
     return success;
 }
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

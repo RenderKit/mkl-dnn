@@ -15,19 +15,19 @@
 *******************************************************************************/
 
 #include "c_types_map.hpp"
-#include "type_helpers.hpp"
-#include "mkldnn_thread.hpp"
-#include "mkldnn_traits.hpp"
+#include "dnnl_thread.hpp"
+#include "dnnl_traits.hpp"
 #include "math_utils.hpp"
+#include "type_helpers.hpp"
 
 #include "ref_deconvolution.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-void ref_deconvolution_fwd_t::compute_fwd_bias(const data_t *bias,
-        data_t *dst) const {
+void ref_deconvolution_fwd_t::compute_fwd_bias(
+        float *dst, const float *bias) const {
     const memory_desc_wrapper dst_d(pd()->dst_md());
 
     const int G = pd()->G();
@@ -39,24 +39,28 @@ void ref_deconvolution_fwd_t::compute_fwd_bias(const data_t *bias,
     const int ndims = pd()->desc()->src_desc.ndims;
 
     parallel_nd(MB, G, OC, OD, OH, OW,
-        [&](int mb, int g, int oc, int od, int oh, int ow) {
-            auto b = bias[g * OC + oc];
-            switch (ndims) {
-            case 5: dst[dst_d.off(mb, g * OC + oc, od, oh, ow)] += b; break;
-            case 4: dst[dst_d.off(mb, g * OC + oc, oh, ow)] += b; break;
-            case 3: dst[dst_d.off(mb, g * OC + oc, ow)] += b; break;
-            default: assert(!"invalid dimension size");
-            }
-    });
+            [&](int mb, int g, int oc, int od, int oh, int ow) {
+                auto b = bias[g * OC + oc];
+                switch (ndims) {
+                    case 5:
+                        dst[dst_d.off(mb, g * OC + oc, od, oh, ow)] += b;
+                        break;
+                    case 4: dst[dst_d.off(mb, g * OC + oc, oh, ow)] += b; break;
+                    case 3: dst[dst_d.off(mb, g * OC + oc, ow)] += b; break;
+                    default: assert(!"invalid dimension size");
+                }
+            });
 }
 
-void ref_deconvolution_fwd_t::compute_fwd_bias_ncdhw(const data_t *bias,
-        data_t *dst) const {
+template <data_type_t dst_type, data_type_t bia_type>
+void ref_deconvolution_fwd_t::compute_fwd_bias_ncdhw(
+        typename prec_traits<dst_type>::type *dst,
+        const typename prec_traits<bia_type>::type *bias) const {
     const memory_desc_wrapper dst_d(pd()->dst_md());
 
     const int MB = pd()->MB();
     const int OC = pd()->OC();
-    const int SP = pd()->OW()*pd()->OH()*pd()->OD();
+    const int SP = pd()->OW() * pd()->OH() * pd()->OD();
 
     parallel_nd(MB, OC, [&](int mb, int oc) {
         PRAGMA_OMP_SIMD()
@@ -67,9 +71,10 @@ void ref_deconvolution_fwd_t::compute_fwd_bias_ncdhw(const data_t *bias,
     });
 }
 
-template <int blksize>
-void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc(const data_t *bias,
-        data_t *dst) const {
+template <data_type_t dst_type, data_type_t bia_type, int blksize>
+void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc(
+        typename prec_traits<dst_type>::type *dst,
+        const typename prec_traits<bia_type>::type *bias) const {
     const memory_desc_wrapper dst_d(pd()->dst_md());
 
     const int MB = pd()->MB();
@@ -79,19 +84,50 @@ void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc(const data_t *bias,
     const ptrdiff_t stride_mb = dst_d.blocking_desc().strides[0];
 
     parallel_nd(MB, utils::div_up(OC, blksize), SP,
-        [&](int mb, int oc_blk, int sp) {
-        int oc = oc_blk * blksize;
-        auto offset = mb * stride_mb + oc * SP + sp * blksize;
-        const int blk = nstl::min(blksize, OC - oc);
+            [&](int mb, int oc_blk, int sp) {
+                int oc = oc_blk * blksize;
+                auto offset = mb * stride_mb + oc * SP + sp * blksize;
+                const int blk = nstl::min(blksize, OC - oc);
 
-        PRAGMA_OMP_SIMD()
-        for (int i = 0; i < blk; ++i)
-            dst[offset + i] += bias[oc + i];
-    });
+                PRAGMA_OMP_SIMD()
+                for (int i = 0; i < blk; ++i)
+                    dst[offset + i] += bias[oc + i];
+            });
 }
 
-void ref_deconvolution_bwd_weights_t::compute_bwd_bias(const data_t *diff_dst,
-        data_t *diff_bias) const {
+template <data_type_t dst_type, data_type_t bia_type>
+void ref_deconvolution_fwd_t::compute_bias(const exec_ctx_t &ctx) const {
+    typedef typename prec_traits<dst_type>::type dst_data_t;
+    typedef typename prec_traits<bia_type>::type bia_data_t;
+
+    auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
+    auto bias = CTX_IN_MEM(const bia_data_t *, DNNL_ARG_BIAS);
+
+    using namespace format_tag;
+    switch (pd()->dst_tag_) {
+        case ncdhw:
+        case nchw:
+        case ncw: compute_fwd_bias_ncdhw<dst_type, bia_type>(dst, bias); break;
+        case nCdhw8c:
+        case nChw8c:
+        case nCw8c:
+            assert(!utils::one_of(data_type::bf16, dst_type, bia_type));
+            compute_fwd_bias_nCdhwXc<dst_type, bia_type, 8>(dst, bias);
+            break;
+        case nCdhw16c:
+        case nChw16c:
+        case nCw16c:
+            compute_fwd_bias_nCdhwXc<dst_type, bia_type, 16>(dst, bias);
+            break;
+        default:
+            assert(!utils::one_of(data_type::bf16, dst_type, bia_type));
+            compute_fwd_bias((float *)(dst), (const float *)(bias));
+            break;
+    }
+}
+
+void ref_deconvolution_bwd_weights_t::compute_bwd_bias(
+        float *diff_bias, const float *diff_dst) const {
     const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
 
     const int G = pd()->G();
@@ -103,24 +139,25 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias(const data_t *diff_dst,
     const int ndims = pd()->desc()->src_desc.ndims;
 
     parallel_nd(G, OC, [&](int g, int oc) {
-        data_t db = 0;
+        float db = 0;
         for (int mb = 0; mb < MB; ++mb) {
             for (int od = 0; od < OD; ++od) {
                 for (int oh = 0; oh < OH; ++oh) {
                     for (int ow = 0; ow < OW; ++ow) {
                         switch (ndims) {
-                        case 5:
-                            db += diff_dst[diff_dst_d.off(
-                                    mb, g * OC + oc, od, oh, ow)];
-                            break;
-                        case 4:
-                            db += diff_dst[diff_dst_d.off(
-                                    mb, g * OC + oc, oh, ow)];
-                            break;
-                        case 3:
-                            db += diff_dst[diff_dst_d.off(mb, g * OC + oc, ow)];
-                            break;
-                        default: assert(!"invalid dimension size");
+                            case 5:
+                                db += diff_dst[diff_dst_d.off(
+                                        mb, g * OC + oc, od, oh, ow)];
+                                break;
+                            case 4:
+                                db += diff_dst[diff_dst_d.off(
+                                        mb, g * OC + oc, oh, ow)];
+                                break;
+                            case 3:
+                                db += diff_dst[diff_dst_d.off(
+                                        mb, g * OC + oc, ow)];
+                                break;
+                            default: assert(!"invalid dimension size");
                         }
                     }
                 }
@@ -130,18 +167,20 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias(const data_t *diff_dst,
     });
 }
 
+template <data_type_t dbia_type, data_type_t ddst_type>
 void ref_deconvolution_bwd_weights_t::compute_bwd_bias_ncdhw(
-        const data_t *diff_dst, data_t *diff_bias) const {
+        typename prec_traits<dbia_type>::type *diff_bias,
+        const typename prec_traits<ddst_type>::type *diff_dst) const {
     const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
 
     const int OC = pd()->OC();
     const int MB = pd()->MB();
-    const int SP = pd()->OH()*pd()->OW()*pd()->OD();
+    const int SP = pd()->OH() * pd()->OW() * pd()->OD();
 
     parallel_nd(OC, [&](int oc) {
-        data_t db = 0;
+        float db = 0;
         for (int mb = 0; mb < MB; ++mb) {
-            PRAGMA_OMP_SIMD()
+            PRAGMA_OMP_SIMD(reduction(+ : db))
             for (int sp = 0; sp < SP; ++sp) {
                 auto offset = (size_t)(mb * OC + oc) * SP + sp;
                 db += diff_dst[offset];
@@ -151,9 +190,10 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_ncdhw(
     });
 }
 
-template <int blksize>
+template <data_type_t dbia_type, data_type_t ddst_type, int blksize>
 void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc(
-        const data_t *diff_dst, data_t *diff_bias) const {
+        typename prec_traits<dbia_type>::type *diff_bias,
+        const typename prec_traits<ddst_type>::type *diff_dst) const {
     const memory_desc_wrapper diff_dst_d(pd()->diff_dst_md());
 
     const int OC = pd()->OC();
@@ -163,7 +203,7 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc(
     const ptrdiff_t stride_mb = diff_dst_d.blocking_desc().strides[0];
 
     parallel_nd(utils::div_up(OC, blksize), [&](int ocb) {
-        data_t db[blksize] = {0};
+        float db[blksize] = {0};
 
         for (int mb = 0; mb < MB; ++mb) {
             for (int sp = 0; sp < SP; ++sp) {
@@ -171,7 +211,7 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc(
 
                 PRAGMA_OMP_SIMD()
                 for (int i = 0; i < blksize; ++i)
-                    db[i] += diff_dst[offset+i];
+                    db[i] += diff_dst[offset + i];
             }
         }
 
@@ -183,17 +223,61 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc(
     });
 }
 
-template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<8>(
-        const data_t *diff_dst, data_t *diff_bias) const;
-template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<16>(
-        const data_t *diff_dst, data_t *diff_bias) const;
-template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<8>(
-        const data_t *diff_dst, data_t *diff_bias) const;
-template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<16>(
-        const data_t *diff_dst, data_t *diff_bias) const;
+template <data_type_t dbia_type, data_type_t ddst_type>
+void ref_deconvolution_bwd_weights_t::compute_bias(
+        const exec_ctx_t &ctx) const {
+    typedef typename prec_traits<dbia_type>::type dbia_data_t;
+    typedef typename prec_traits<ddst_type>::type ddst_data_t;
 
-}
-}
-}
+    auto diff_bias = CTX_OUT_MEM(dbia_data_t *, DNNL_ARG_DIFF_BIAS);
+    auto diff_dst = CTX_IN_MEM(const ddst_data_t *, DNNL_ARG_DIFF_DST);
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+    using namespace format_tag;
+    switch (pd()->dst_tag_) {
+        case ncdhw:
+        case nchw:
+        case ncw:
+            compute_bwd_bias_ncdhw<dbia_type, ddst_type>(diff_bias, diff_dst);
+            break;
+        case nCdhw8c:
+        case nChw8c:
+        case nCw8c:
+            assert(!utils::one_of(data_type::bf16, dbia_type, ddst_type));
+            compute_bwd_bias_nCdhwXc<dbia_type, ddst_type, 8>(
+                    diff_bias, diff_dst);
+            break;
+        case nCdhw16c:
+        case nChw16c:
+        case nCw16c:
+            compute_bwd_bias_nCdhwXc<dbia_type, ddst_type, 16>(
+                    diff_bias, diff_dst);
+            break;
+        default:
+            assert(!utils::one_of(data_type::bf16, dbia_type, ddst_type));
+            compute_bwd_bias((float *)diff_bias, (const float *)diff_dst);
+            break;
+    }
+};
+
+using namespace data_type;
+
+template void ref_deconvolution_fwd_t::compute_bias<f32, f32>(
+        const exec_ctx_t &ctx) const;
+template void ref_deconvolution_fwd_t::compute_bias<f32, bf16>(
+        const exec_ctx_t &ctx) const;
+template void ref_deconvolution_fwd_t::compute_bias<bf16, f32>(
+        const exec_ctx_t &ctx) const;
+template void ref_deconvolution_fwd_t::compute_bias<bf16, bf16>(
+        const exec_ctx_t &ctx) const;
+
+template void ref_deconvolution_bwd_weights_t::compute_bias<f32, f32>(
+        const exec_ctx_t &ctx) const;
+template void ref_deconvolution_bwd_weights_t::compute_bias<f32, bf16>(
+        const exec_ctx_t &ctx) const;
+template void ref_deconvolution_bwd_weights_t::compute_bias<bf16, bf16>(
+        const exec_ctx_t &ctx) const;
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
+
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

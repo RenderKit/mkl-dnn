@@ -19,95 +19,9 @@ file(GLOB_RECURSE HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.hpp
     )
-#file(GLOB_RECURSE SOURCES
-#    ${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp
-#    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.cpp
-#    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*.c
-#    )
 include_directories(
-    ${PROJECT_BINARY_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/common
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/xbyak
-    )
-
-# Add only files that are actually used
-file(GLOB_RECURSE SOURCES
-    common/*.cpp
-    cpu/cpu_barrier.cpp
-    #cpu/cpu_batch_normalization_utils.cpp
-    cpu/cpu_concat.cpp
-    cpu/cpu_engine.cpp
-    cpu/cpu_memory.cpp
-    cpu/cpu_primitive.cpp
-    cpu/cpu_reducer.cpp
-    cpu/cpu_reorder.cpp
-    cpu/cpu_sum.cpp
-    #cpu/gemm_convolution.cpp
-    #cpu/gemm_convolution_utils.cpp
-    #cpu/gemm/gemm.cpp
-    #cpu/gemm/gemm_utils.cpp
-    #cpu/gemm_inner_product.cpp
-    #cpu/gemm/jit_avx512_common_gemm_f32.cpp
-    #cpu/gemm/jit_avx_gemm_f32.cpp
-    #cpu/gemm/ref_gemm.cpp
-    #cpu/gemm_u8s8s32x_inner_product.cpp
-    #cpu/gemm_x8s8s32x_convolution.cpp
-    #cpu/jit_avx2_1x1_conv_kernel_f32.cpp
-    #cpu/jit_avx2_1x1_convolution.cpp
-    cpu/jit_avx2_conv_kernel_f32.cpp
-    cpu/jit_avx2_convolution.cpp
-    #cpu/jit_avx512_common_1x1_conv_kernel.cpp
-    #cpu/jit_avx512_common_1x1_convolution.cpp
-    cpu/jit_avx512_common_conv_kernel.cpp
-    cpu/jit_avx512_common_convolution.cpp
-    cpu/jit_avx512_common_convolution_winograd.cpp
-    cpu/jit_avx512_common_conv_winograd_kernel_f32.cpp
-    #cpu/jit_avx512_common_lrn.cpp
-    cpu/jit_avx512_core_fp32_wino_conv_2x3.cpp
-    cpu/jit_avx512_core_fp32_wino_conv_4x3.cpp
-    cpu/jit_avx512_core_fp32_wino_conv_4x3_kernel.cpp
-    #cpu/jit_avx512_core_i8i8_pooling.cpp
-    #cpu/jit_avx512_core_u8s8s32x_deconvolution.cpp
-    #cpu/jit_avx512_core_u8s8s32x_wino_convolution.cpp
-    #cpu/jit_avx512_core_x8s8s32x_1x1_conv_kernel.cpp
-    #cpu/jit_avx512_core_x8s8s32x_1x1_convolution.cpp
-    #cpu/jit_avx512_core_x8s8s32x_conv_kernel.cpp
-    #cpu/jit_avx512_core_x8s8s32x_convolution.cpp
-    #cpu/jit_sse42_1x1_conv_kernel_f32.cpp
-    #cpu/jit_sse42_1x1_convolution.cpp
-    cpu/jit_sse42_conv_kernel_f32.cpp
-    cpu/jit_sse42_convolution.cpp
-    cpu/jit_transpose_src_utils.cpp
-    #cpu/jit_uni_batch_normalization.cpp
-    #cpu/jit_uni_dw_conv_kernel_f32.cpp
-    #cpu/jit_uni_dw_convolution.cpp
-    cpu/jit_uni_eltwise.cpp
-    #cpu/jit_uni_lrn.cpp
-    #cpu/jit_uni_lrn_kernel_f32.cpp
-    cpu/jit_uni_pooling.cpp
-    cpu/jit_uni_pool_kernel_f32.cpp
-    cpu/jit_uni_reorder.cpp
-    cpu/jit_uni_reorder_utils.cpp
-    cpu/jit_utils/jitprofiling/jitprofiling.c
-    cpu/jit_utils/jit_utils.cpp
-    #cpu/nchw_pooling.cpp
-    #cpu/ncsp_batch_normalization.cpp
-    #cpu/nhwc_pooling.cpp
-    #cpu/nspc_batch_normalization.cpp
-    #cpu/ref_batch_normalization.cpp
-    #cpu/ref_convolution.cpp
-    #cpu/ref_deconvolution.cpp
-    #cpu/ref_eltwise.cpp
-    #cpu/ref_inner_product.cpp
-    #cpu/ref_lrn.cpp
-    #cpu/ref_pooling.cpp
-    #cpu/ref_rnn.cpp
-    #cpu/ref_shuffle.cpp
-    #cpu/ref_softmax.cpp
-    #cpu/simple_concat.cpp
-    #cpu/simple_sum.cpp
     )
 
 # propagate SRC specific flags
@@ -122,19 +36,24 @@ append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_NOWARN_FLAGS}")
 append(CMAKE_C_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
 
-if(NOT MKLDNN_VERBOSE)
+if(NOT DNNL_VERBOSE)
     add_definitions(-DDISABLE_VERBOSE)
 endif()
 
-if(MKLDNN_ENABLE_CONCURRENT_EXEC)
-    add_definitions(-DMKLDNN_ENABLE_CONCURRENT_EXEC)
+if(DNNL_ENABLE_CONCURRENT_EXEC)
+    add_definitions(-DDNNL_ENABLE_CONCURRENT_EXEC)
 endif()
 
-if(NOT MKLDNN_ENABLE_JIT_PROFILING)
+if(DNNL_ENABLE_PRIMITIVE_CACHE)
+    message(STATUS "Primitive cache is enabled")
+    add_definitions(-DDNNL_ENABLE_PRIMITIVE_CACHE)
+endif()
+
+if(NOT DNNL_ENABLE_JIT_PROFILING)
     # XXX: the profiling interface will still be built and present in the
     # library
-    message(STATUS "VTune JIT profiling disabled")
-    add_definitions(-DMKLDNN_ENABLE_JIT_PROFILING=0)
+    message(STATUS "Intel(R) VTune(TM) Amplifier JIT profiling disabled")
+    add_definitions(-DDNNL_ENABLE_JIT_PROFILING=0)
 elseif(UNIX AND NOT APPLE)
     # Not every compiler adds -ldl automatically
     list(APPEND EXTRA_SHARED_LIBS "${CMAKE_DL_LIBS}")
@@ -149,35 +68,21 @@ if(WIN32)
     endif()
 endif()
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-    # to make computations more stable and to align the jitted code
-    # with the reference one use precise division and square root
-    # by default
-    file(GLOB FILES_REQUIRED_PREC_SQRT
-        ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*normalization*.cpp)
-    file(GLOB FILES_REQUIRED_PREC_DIV
-        ${CMAKE_CURRENT_SOURCE_DIR}/cpu/*normalization*.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/cpu/ref_rnn.cpp)
-    if(WIN32)
-        set_source_files_properties(${FILES_REQUIRED_PREC_SQRT}
-            PROPERTIES COMPILE_FLAGS "/Qprec-sqrt")
-        set_source_files_properties(${FILES_REQUIRED_PREC_DIV}
-            PROPERTIES COMPILE_FLAGS "/Qprec-div")
-    else()
-        set_source_files_properties(${FILES_REQUIRED_PREC_SQRT}
-            PROPERTIES COMPILE_FLAGS "-prec-sqrt")
-        set_source_files_properties(${FILES_REQUIRED_PREC_DIV}
-            PROPERTIES COMPILE_FLAGS "-prec-div")
-    endif()
+add_subdirectory(common)
+add_subdirectory(cpu)
+
+if(DNNL_GPU_RUNTIME STREQUAL "OCL")
+    add_subdirectory(ocl)
 endif()
 
-add_library(${LIB_NAME} ${MKLDNN_LIBRARY_TYPE} ${HEADERS} ${SOURCES})
-set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${PROJECT_VERSION}.0")
-set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "0")
+add_library(${LIB_NAME} ${DNNL_LIBRARY_TYPE}
+    ${VERSION_RESOURCE_FILE} ${HEADERS} ${${LIB_NAME}_SUB_OBJS})
+
+set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${DNNL_VERSION_MAJOR}.${DNNL_VERSION_MINOR}")
+set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "${DNNL_VERSION_MAJOR}")
 set_property(TARGET ${LIB_NAME} PROPERTY PUBLIC_HEADER ${HEADERS})
 
-# Compile the library for SSE4.1
-set_target_properties(${LIB_NAME} PROPERTIES COMPILE_FLAGS "${ISA_FLAGS_SSE41}")
+set_target_properties(${LIB_NAME} PROPERTIES COMPILE_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
 
 target_include_directories(${LIB_NAME} PUBLIC
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
@@ -189,7 +94,7 @@ target_include_directories(${LIB_NAME} PUBLIC
 target_link_libraries_build(${LIB_NAME}
     "${EXTRA_SHARED_LIBS};${EXTRA_STATIC_LIBS}")
 target_link_libraries_install(${LIB_NAME} "${EXTRA_SHARED_LIBS}")
-if(MKLDNN_LIBRARY_TYPE STREQUAL "STATIC")
+if(DNNL_LIBRARY_TYPE STREQUAL "STATIC")
     target_link_libraries_install(${LIB_NAME} "${EXTRA_STATIC_LIBS}")
 endif()
 
@@ -223,10 +128,35 @@ install(EXPORT ${LIB_EXPORT_NAME}
     NAMESPACE ${LIB_NAMESPACE}
     DESTINATION ${LIB_CONFIG_INSTALL_DIR})
 
-# On Windows we need to add mkldnn.dll path to CTESTCONFIG_PATH which is later
+# MKL-DNN compat cmake files
+install(CODE "execute_process(COMMAND ${CMAKE_COMMAND}
+    -DDIR=${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake
+    -P ${PROJECT_SOURCE_DIR}/cmake/gen_mkldnn_compat_cmakes.cmake)")
+
+# Install custom find modules for transitive dependencies
+#if(DNNL_CPU_RUNTIME STREQUAL "TBB")
+#    if(WIN32)
+#        install(FILES "../cmake/win/TBBConfig.cmake" RENAME "FindTBB.cmake"
+#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+#    elseif(APPLE)
+#        install(FILES "../cmake/mac/TBBConfig.cmake" RENAME "FindTBB.cmake"
+#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+#    elseif(UNIX)
+#        install(FILES "../cmake/lnx/TBBConfig.cmake" RENAME "FindTBB.cmake"
+#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+#    endif()
+#endif()
+
+if(DNNL_GPU_RUNTIME STREQUAL "OCL")
+    install(FILES
+        "../cmake/FindOpenCL.cmake"
+        DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+endif()
+
+# On Windows we need to add dnnl.dll path to CTESTCONFIG_PATH which is later
 # passed to ctest and Visual Studio solutions
 if(WIN32)
-    if(NOT(MINGW))
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
         foreach(BUILD_TYPE Release Debug RelWithDebInfo MinSizeRel)
             append_to_windows_path_list(CTESTCONFIG_PATH
                 "${CMAKE_CURRENT_BINARY_DIR}/${BUILD_TYPE}")

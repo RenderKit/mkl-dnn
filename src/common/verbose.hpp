@@ -17,37 +17,40 @@
 #ifndef VERBOSE_HPP
 #define VERBOSE_HPP
 
-#include <stdio.h>
 #include <cinttypes>
+#include <stdio.h>
 
-#include "mkldnn_debug.h"
 #include "c_types_map.hpp"
+#include "dnnl_debug.h"
 #include "utils.hpp"
 #include "z_magic.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 
 struct verbose_t {
     int level;
 };
 
-const verbose_t *mkldnn_verbose();
+const verbose_t *dnnl_verbose();
 double get_msec();
 const char *get_isa_info();
 
 #if !defined(DISABLE_VERBOSE)
-#define MKLDNN_VERBOSE_BUF_LEN 1024
+#define DNNL_VERBOSE_BUF_LEN 1024
 #else
-#define MKLDNN_VERBOSE_BUF_LEN 1
+#define DNNL_VERBOSE_BUF_LEN 1
 #endif
 
 void init_info(batch_normalization_pd_t *s, char *buffer);
+void init_info(binary_pd_t *s, char *buffer);
 void init_info(concat_pd_t *s, char *buffer);
 void init_info(convolution_pd_t *s, char *buffer);
 void init_info(deconvolution_pd_t *s, char *buffer);
 void init_info(eltwise_pd_t *s, char *buffer);
+void init_info(gemm_pd_t *s, char *buffer);
 void init_info(inner_product_pd_t *s, char *buffer);
+void init_info(layer_normalization_pd_t *s, char *buffer);
 void init_info(lrn_pd_t *s, char *buffer);
 void init_info(pooling_pd_t *s, char *buffer);
 void init_info(reorder_pd_t *s, char *buffer);
@@ -56,7 +59,7 @@ void init_info(shuffle_pd_t *s, char *buffer);
 void init_info(softmax_pd_t *s, char *buffer);
 void init_info(sum_pd_t *s, char *buffer);
 
-}
-}
+} // namespace impl
+} // namespace dnnl
 
 #endif

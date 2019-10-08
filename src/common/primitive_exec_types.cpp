@@ -14,15 +14,15 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include "primitive_exec_types.hpp"
 #include "memory.hpp"
 #include "primitive.hpp"
-#include "primitive_exec_types.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 
 status_t cvt_primtive_args(const primitive_desc_t *pd, int nargs,
-        const mkldnn_exec_arg_t *c_args, exec_args_t &args) {
+        const dnnl_exec_arg_t *c_args, exec_args_t &args) {
     using namespace status;
 
     if (!IMPLICATION(nargs > 0, c_args != nullptr)) return invalid_arguments;
@@ -31,22 +31,21 @@ status_t cvt_primtive_args(const primitive_desc_t *pd, int nargs,
     int n_outputs = 0;
 
     for (int i = 0; i < nargs; ++i) {
-        primitive_arg_index_t arg = c_args[i].arg;
+        int arg = c_args[i].arg;
         auto *mem = c_args[i].memory;
 
         switch (pd->arg_usage(arg)) {
-        case primitive_desc_t::arg_usage_t::input:
-            if (args.count(arg) != 0) return invalid_arguments;
-            args[arg] = {mem, true};
-            n_inputs++;
-            break;
-        case primitive_desc_t::arg_usage_t::output:
-            if (args.count(arg) != 0) return invalid_arguments;
-            args[arg] = {mem, false};
-            n_outputs++;
-            break;
-        case primitive_desc_t::arg_usage_t::unused:
-            break;
+            case primitive_desc_t::arg_usage_t::input:
+                if (args.count(arg) != 0) return invalid_arguments;
+                args[arg] = {mem, true};
+                n_inputs++;
+                break;
+            case primitive_desc_t::arg_usage_t::output:
+                if (args.count(arg) != 0) return invalid_arguments;
+                args[arg] = {mem, false};
+                n_outputs++;
+                break;
+            case primitive_desc_t::arg_usage_t::unused: break;
         }
     }
 
@@ -59,32 +58,36 @@ status_t cvt_primtive_args(const primitive_desc_t *pd, int nargs,
     return success;
 }
 
-const void *exec_ctx_t::input(primitive_arg_index_t arg) const {
+memory_t *exec_ctx_t::input(int arg) const {
     if (args_.count(arg) != 1) return nullptr;
     const auto ma = args_.at(arg);
     assert(ma.is_const);
-    void *ptr;
-    status_t status = ma.mem->get_data_handle(&ptr);
-    assert(status == status::success); MAYBE_UNUSED(status);
-    return ptr;
+    return ma.mem;
 }
 
-void *exec_ctx_t::output(primitive_arg_index_t arg) const {
+memory_t *exec_ctx_t::output(int arg) const {
     if (args_.count(arg) != 1) return nullptr;
     const auto ma = args_.at(arg);
     assert(!ma.is_const);
-    void *ptr;
-    status_t status = ma.mem->get_data_handle(&ptr);
-    assert(status == status::success); MAYBE_UNUSED(status);
-    return ptr;
+    return ma.mem;
 }
 
-const memory_t *exec_ctx_t::memory(primitive_arg_index_t arg) const {
+memory_t *exec_ctx_t::memory(int arg) const {
     assert(args_.count(arg) == 1);
     const auto ma = args_.at(arg);
     assert(!ma.is_const);
     return ma.mem;
 }
 
+void exec_ctx_t::set_scratchpad_grantor(
+        const memory_tracking::grantor_t &scratchpad_grantor) {
+    scratchpad_grantor_ = utils::make_unique<memory_tracking::grantor_t>(
+            scratchpad_grantor);
 }
+
+const memory_tracking::grantor_t &exec_ctx_t::get_scratchpad_grantor() const {
+    assert(scratchpad_grantor_.get());
+    return *(scratchpad_grantor_.get());
 }
+} // namespace impl
+} // namespace dnnl

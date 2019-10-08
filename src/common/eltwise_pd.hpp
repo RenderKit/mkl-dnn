@@ -17,39 +17,41 @@
 #ifndef ELTWISE_PD_HPP
 #define ELTWISE_PD_HPP
 
-#include "mkldnn.h"
+#include "dnnl.h"
 
 #include "c_types_map.hpp"
 #include "primitive_desc.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 
 struct eltwise_fwd_pd_t;
 
-struct eltwise_pd_t: public primitive_desc_t {
+struct eltwise_pd_t : public primitive_desc_t {
     static constexpr auto base_pkind = primitive_kind::eltwise;
 
-    eltwise_pd_t(mkldnn::impl::engine_t *engine,
-            const eltwise_desc_t *adesc,
-            const primitive_attr_t *attr,
-            const eltwise_fwd_pd_t *hint_fwd_pd)
+    eltwise_pd_t(dnnl::impl::engine_t *engine, const eltwise_desc_t *adesc,
+            const primitive_attr_t *attr, const eltwise_fwd_pd_t *hint_fwd_pd)
         : primitive_desc_t(engine, attr, base_pkind)
         , desc_(*adesc)
         , hint_fwd_pd_(hint_fwd_pd)
-        , data_md_(desc_.data_desc)
-    {}
+        , data_md_(desc_.data_desc) {}
 
     const eltwise_desc_t *desc() const { return &desc_; }
-    virtual const op_desc_t *op_desc() const override
-    { return reinterpret_cast<const op_desc_t *>(this->desc()); }
+    virtual const op_desc_t *op_desc() const override {
+        return reinterpret_cast<const op_desc_t *>(this->desc());
+    }
     virtual void init_info() override { impl::init_info(this, this->info_); }
 
     virtual status_t query(query_t what, int idx, void *result) const override {
         switch (what) {
-        case query::eltwise_d:
-            *(const eltwise_desc_t**)result = desc(); break;
-        default: return primitive_desc_t::query(what, idx, result);
+            case query::prop_kind:
+                *(prop_kind_t *)result = desc()->prop_kind;
+                break;
+            case query::eltwise_d:
+                *(const eltwise_desc_t **)result = desc();
+                break;
+            default: return primitive_desc_t::query(what, idx, result);
         }
         return status::success;
     }
@@ -69,8 +71,9 @@ struct eltwise_pd_t: public primitive_desc_t {
                 prop_kind::forward_inference);
     }
 
-    bool has_zero_dim_memory() const
-    { return memory_desc_wrapper(desc_.data_desc).has_zero_dim(); }
+    bool has_zero_dim_memory() const {
+        return memory_desc_wrapper(desc_.data_desc).has_zero_dim();
+    }
 
 protected:
     eltwise_desc_t desc_;
@@ -82,67 +85,64 @@ private:
     const memory_desc_t &data_desc() const { return desc_.data_desc; }
 };
 
-struct eltwise_fwd_pd_t: public eltwise_pd_t {
+struct eltwise_fwd_pd_t : public eltwise_pd_t {
     typedef eltwise_fwd_pd_t base_class;
     typedef eltwise_fwd_pd_t hint_class;
 
-    eltwise_fwd_pd_t(mkldnn::impl::engine_t *engine,
-            const eltwise_desc_t *adesc,
-            const primitive_attr_t *attr,
-            const eltwise_fwd_pd_t *hint_fwd_pd)
-        : eltwise_pd_t(engine, adesc, attr, hint_fwd_pd)
-    {}
+    eltwise_fwd_pd_t(dnnl::impl::engine_t *engine, const eltwise_desc_t *adesc,
+            const primitive_attr_t *attr, const eltwise_fwd_pd_t *hint_fwd_pd)
+        : eltwise_pd_t(engine, adesc, attr, hint_fwd_pd) {}
 
-    virtual arg_usage_t arg_usage(primitive_arg_index_t arg) const override {
-        if (arg == MKLDNN_ARG_SRC)
-            return arg_usage_t::input;
+    virtual arg_usage_t arg_usage(int arg) const override {
+        if (arg == DNNL_ARG_SRC) return arg_usage_t::input;
 
-        if (arg == MKLDNN_ARG_DST)
-            return arg_usage_t::output;
+        if (arg == DNNL_ARG_DST) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override
-    { return index == 0 ? &data_md_ : nullptr; }
-    virtual const memory_desc_t *dst_md(int index = 0) const override
-    { return index == 0 ? &data_md_ : nullptr; }
+    virtual const memory_desc_t *src_md(int index = 0) const override {
+        return index == 0 ? &data_md_ : &glob_zero_md;
+    }
+    virtual const memory_desc_t *dst_md(int index = 0) const override {
+        return index == 0 ? &data_md_ : &glob_zero_md;
+    }
 
     virtual int n_inputs() const override { return 1; }
     virtual int n_outputs() const override { return 1; }
 
-    bool is_zero_preserved() const
-    { return math::eltwise_fwd_preserves_zero(desc_.alg_kind); }
+    bool is_zero_preserved() const {
+        return math::eltwise_fwd_preserves_zero(desc_.alg_kind);
+    }
 };
 
-struct eltwise_bwd_pd_t: public eltwise_pd_t {
+struct eltwise_bwd_pd_t : public eltwise_pd_t {
     typedef eltwise_bwd_pd_t base_class;
     typedef eltwise_fwd_pd_t hint_class;
 
-    eltwise_bwd_pd_t(engine_t *engine,
-            const eltwise_desc_t *adesc,
-            const primitive_attr_t *attr,
-            const eltwise_fwd_pd_t *hint_fwd_pd)
+    eltwise_bwd_pd_t(engine_t *engine, const eltwise_desc_t *adesc,
+            const primitive_attr_t *attr, const eltwise_fwd_pd_t *hint_fwd_pd)
         : eltwise_pd_t(engine, adesc, attr, hint_fwd_pd)
-        , diff_data_md_(desc_.diff_data_desc)
-    {}
+        , diff_data_md_(desc_.diff_data_desc) {}
 
-    virtual arg_usage_t arg_usage(primitive_arg_index_t arg) const override {
-        if (utils::one_of(arg, MKLDNN_ARG_SRC, MKLDNN_ARG_DIFF_DST))
+    virtual arg_usage_t arg_usage(int arg) const override {
+        if (utils::one_of(arg, DNNL_ARG_SRC, DNNL_ARG_DIFF_DST))
             return arg_usage_t::input;
 
-        if (arg == MKLDNN_ARG_DIFF_SRC)
-            return arg_usage_t::output;
+        if (arg == DNNL_ARG_DIFF_SRC) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override
-    { return index == 0 ? &data_md_ : nullptr; }
-    virtual const memory_desc_t *diff_dst_md(int index = 0) const override
-    { return index == 0 ? &diff_data_md_ : nullptr; }
-    virtual const memory_desc_t *diff_src_md(int index = 0) const override
-    { return index == 0 ? &diff_data_md_ : nullptr; }
+    virtual const memory_desc_t *src_md(int index = 0) const override {
+        return index == 0 ? &data_md_ : &glob_zero_md;
+    }
+    virtual const memory_desc_t *diff_dst_md(int index = 0) const override {
+        return index == 0 ? &diff_data_md_ : &glob_zero_md;
+    }
+    virtual const memory_desc_t *diff_src_md(int index = 0) const override {
+        return index == 0 ? &diff_data_md_ : &glob_zero_md;
+    }
 
     virtual int n_inputs() const override { return 2; }
     virtual int n_outputs() const override { return 1; }
@@ -151,11 +151,19 @@ struct eltwise_bwd_pd_t: public eltwise_pd_t {
 
 protected:
     memory_desc_t diff_data_md_;
+
+    bool set_default_formats_common() {
+        if (diff_data_md_.format_kind != format_kind::any) return true;
+
+        return memory_desc_init_by_md_and_dt(
+                       diff_data_md_, data_md_, diff_data_md_.data_type)
+                == status::success;
+    }
 };
 
-}
-}
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

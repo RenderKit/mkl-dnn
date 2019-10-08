@@ -18,9 +18,9 @@ if(TBB_cmake_included)
     return()
 endif()
 set(TBB_cmake_included true)
-#include("cmake/Threading.cmake")
+include(Threading)
 
-if(NOT MKLDNN_THREADING STREQUAL "TBB")
+if(NOT DNNL_CPU_THREADING_RUNTIME STREQUAL "TBB")
     return()
 endif()
 
@@ -189,7 +189,6 @@ if(TBB_FOUND)
 
     set(TBB_LIBRARIES TBB::tbb TBB::tbbmalloc)
 
-    set_threading("TBB")
     list(APPEND EXTRA_SHARED_LIBS ${TBB_LIBRARIES})
 endif()
 

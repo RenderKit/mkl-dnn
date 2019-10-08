@@ -21,18 +21,24 @@
 
 #include "cpu_isa_traits.hpp"
 #include "cpu_lrn_pd.hpp"
-#include "cpu_primitive.hpp"
+#include "jit_avx512_core_bf16cvt.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-struct jit_avx512_common_lrn_fwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_lrn_fwd_pd_t {
+template <data_type_t d_type>
+struct jit_avx512_common_lrn_fwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_lrn_fwd_pd_t {
         using cpu_lrn_fwd_pd_t::cpu_lrn_fwd_pd_t;
 
         DECLARE_COMMON_PD_T(
-                JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
+                JIT_IMPL_NAME_HELPER("lrn_jit:",
+                        (d_type == data_type::bf16) ? (mayiuse(avx512_core_bf16)
+                                        ? avx512_core_bf16
+                                        : bf16_emulation_t::get_isa())
+                                                    : avx512_common,
+                        ""),
                 jit_avx512_common_lrn_fwd_t);
 
         status_t init();
@@ -41,7 +47,7 @@ struct jit_avx512_common_lrn_fwd_t: public cpu_primitive_t {
     jit_avx512_common_lrn_fwd_t(const pd_t *apd);
     ~jit_avx512_common_lrn_fwd_t();
 
-    typedef typename prec_traits<data_type::f32>::type data_t;
+    typedef typename prec_traits<d_type>::type data_t;
 
     virtual status_t execute(const exec_ctx_t &ctx) const override {
         execute_forward(ctx);
@@ -49,20 +55,28 @@ struct jit_avx512_common_lrn_fwd_t: public cpu_primitive_t {
     }
 
 private:
+    static const int vsize = 16;
     void execute_forward(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
     int use_h_parallelism;
-    struct jit_avx512_common_lrn_kernel_f32;
-    jit_avx512_common_lrn_kernel_f32 *ker_, *ker_first_, *ker_last_;
+
+    struct jit_avx512_common_lrn_kernel_f;
+    jit_avx512_common_lrn_kernel_f *ker_, *ker_first_, *ker_last_;
 };
 
-struct jit_avx512_common_lrn_bwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_lrn_bwd_pd_t {
+template <data_type_t d_type>
+struct jit_avx512_common_lrn_bwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_lrn_bwd_pd_t {
         using cpu_lrn_bwd_pd_t::cpu_lrn_bwd_pd_t;
 
         DECLARE_COMMON_PD_T(
-                JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
+                JIT_IMPL_NAME_HELPER("lrn_jit:",
+                        (d_type == data_type::bf16) ? (mayiuse(avx512_core_bf16)
+                                        ? avx512_core_bf16
+                                        : bf16_emulation_t::get_isa())
+                                                    : avx512_common,
+                        ""),
                 jit_avx512_common_lrn_bwd_t);
 
         status_t init();
@@ -71,7 +85,7 @@ struct jit_avx512_common_lrn_bwd_t: public cpu_primitive_t {
     jit_avx512_common_lrn_bwd_t(const pd_t *apd);
     ~jit_avx512_common_lrn_bwd_t();
 
-    typedef typename prec_traits<data_type::f32>::type data_t;
+    typedef typename prec_traits<d_type>::type data_t;
 
     virtual status_t execute(const exec_ctx_t &ctx) const override {
         execute_backward(ctx);
@@ -79,18 +93,19 @@ struct jit_avx512_common_lrn_bwd_t: public cpu_primitive_t {
     }
 
 private:
+    static const int vsize = 16;
     void execute_backward(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
     int use_h_parallelism;
-    struct jit_avx512_common_lrn_kernel_f32;
-    jit_avx512_common_lrn_kernel_f32 *ker_, *ker_first_, *ker_last_;
+    struct jit_avx512_common_lrn_kernel_f;
+    jit_avx512_common_lrn_kernel_f *ker_, *ker_first_, *ker_last_;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

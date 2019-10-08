@@ -26,80 +26,99 @@ set(options_cmake_included true)
 # Features
 # ========
 
-option(MKLDNN_VERBOSE
-    "allows Intel(R) MKL-DNN be verbose whenever MKLDNN_VERBOSE
+option(DNNL_VERBOSE
+    "allows DNNL be verbose whenever DNNL_VERBOSE
     environment variable set to 1" ON) # enabled by default
 
-option(MKLDNN_ENABLE_CONCURRENT_EXEC
+option(DNNL_ENABLE_CONCURRENT_EXEC
     "disables sharing a common scratchpad between primitives.
     This option must be turned on if there is a possibility of concurrent
     execution of primitives that were created in the same thread.
     CAUTION: enabling this option increases memory consumption"
     OFF) # disabled by default
 
+option(DNNL_ENABLE_PRIMITIVE_CACHE "enables primitive cache.
+    WARNING: the primitive cache is an experimental feature and might be
+    changed without prior notification in future releases" OFF)
+    # disabled by default
+
 # =============================
 # Building properties and scope
 # =============================
 
-set(MKLDNN_LIBRARY_TYPE "SHARED" CACHE STRING
-    "specifies whether Intel(R) MKL-DNN library should be SHARED or STATIC")
-option(MKLDNN_BUILD_EXAMPLES "builds examples"  ON)
-option(MKLDNN_BUILD_TESTS "builds tests" ON)
+set(DNNL_LIBRARY_TYPE "SHARED" CACHE STRING
+    "specifies whether DNNL library should be SHARED or STATIC")
+option(DNNL_BUILD_EXAMPLES "builds examples"  ON)
+option(DNNL_BUILD_TESTS "builds tests" ON)
+option(DNNL_BUILD_FOR_CI "specifies whether DNNL library should be built for CI" OFF)
+option(DNNL_WERROR "treat warnings as errors" OFF)
 
-set(MKLDNN_THREADING "OMP" CACHE STRING
-    "specifies threading type; supports OMP (default), OMP:COMP, OMP:INTEL, or TBB.
+set(DNNL_INSTALL_MODE "DEFAULT" CACHE STRING
+    "specifies installation mode; supports DEFAULT or BUNDLE.
 
-    When OpenMP is used a user can choose what runtime to use:
-    - native OpenMP runtime that comes with the compiler (OMP:COMP), or
-    - Intel OpenMP runtime that is compatible with all the compilers that
-      Intel MKL-DNN supports (OMP:INTEL). This option requires Intel MKL
-      be installed or Intel MKL-ML library be downloaded. This option doesn't
-      work with MSVC (w/o Intel Compiler).
-    The default option is OMP, which gives a preference to OMP:INTEL, but if
-    neither Intel MKL is installed nor Intel MKL-ML is available then fallback
-    to OMP:COMP.
+    When BUNDLE option is set DNNL will be installed as a bundle
+    which contains examples and benchdnn.")
 
-    To use Intel(R) Threading Building Blocks (Intel(R) TBB) one should also
-    set TBBROOT (either environment variable or CMake option) to the library
-    location")
+# =============
+# Optimizations
+# =============
 
-set(MKLDNN_USE_MKL "DEF" CACHE STRING
-    "specifies what Intel MKL library to use.
-    Supports DEF (default), NONE, ML, FULL, FULL:STATIC.
+set(DNNL_ARCH_OPT_FLAGS "HostOpts" CACHE STRING
+    "specifies compiler optimization flags (see below for more information).
+    If empty default optimization level would be applied which depends on the
+    compiler being used.
 
-    By default (DEF) cmakes tries to find Intel MKL-ML library, then full
-    Intel MKL library, or just builds Intel MKL-DNN w/o any binary dependency.
+    - For Intel(R) C++ Compilers the default option is `-xSSE4.1` which instructs
+      the compiler to generate the code for the processors that support SSE4.1
+      instructions. This option would not allow to run the library on older
+      architectures.
 
-    To build Intel MKL-DNN w/o any dependencies on Intel MKL / Intel MKL-ML
-    use NONE. Note that building system would not be able to use Intel OpenMP
-    runtime that comes with Intel MKL or Intel MKL-ML, and would be available
-    only if Intel Compiler is used.
+    - For GNU* Compiler Collection and Clang, the default option is `-msse4.1` which
+      behaves similarly to the description above.
 
-    To force Intel MKL-DNN to use Intel MKL-ML use ML. Depending on the
-    threading the build system would choose between libmklml_intel or
-    libmklml_gnu.
+    - For all other cases there are no special optimizations flags.
 
-    To force Intel MKL-DNN to use the full Intel MKL pass FULL or FULL:STATIC
-    to cmake. The former option would make Intel MKL-DNN link against
-    Intel MKL RT (libmkl_rt). The latter one would link against static
-    Intel MKL. Use static linking to reduce the size of the resulting library
-    (including its dependencies).
-    Caution: Intel MKL RT allows setting the threading layer using environment
-             variable MKL_THREADING_LAYER. By default Intel MKL would use
-             OpenMP. If Intel MKL-DNN is built with TBB it is recommended to
-             set MKL_THREADING_LAYER to `tbb` or `sequential`, to avoid
-             conflict between OpenMP and TBB thread pools.")
+    If the library is to be built for generic architecture (e.g. built by a
+    Linux distributive maintainer) one may want to specify DNNL_ARCH_OPT_FLAGS=\"\"
+    to not use any host specific instructions")
 
 # ======================
 # Profiling capabilities
 # ======================
 
-option(MKLDNN_ENABLE_JIT_PROFILING
-    "Enable registration of Intel(R) MKL-DNN kernels that are generated at
+option(DNNL_ENABLE_JIT_PROFILING
+    "Enable registration of DNNL kernels that are generated at
     runtime with Intel VTune Amplifier (on by default). Without the
     registrations, Intel VTune Amplifier would report data collected inside
     the kernels as `outside any known module`."
     ON)
+
+# ===================
+# Engine capabilities
+# ===================
+
+set(DNNL_CPU_RUNTIME "OMP" CACHE STRING
+    "specifies the threading runtime for CPU engines;
+    supports OMP (default) or TBB.
+
+    To use Intel(R) Threading Building Blocks (Intel(R) TBB) one should also
+    set TBB_ROOT (either environment variable or CMake option) to the library
+    location.")
+
+set(TBB_ROOT "" CACHE STRING
+    "path to Intel(R) Thread Building Blocks (Intel(R) TBB).
+    Use this option to specify Intel(R) TBB installation locaton.")
+
+set(DNNL_GPU_RUNTIME "NONE" CACHE STRING
+    "specifies the runtime to use for GPU engines.
+    Can be NONE (default; no GPU engines) or OCL (OpenCL GPU engines).
+
+    Using OpenCL for GPU requires setting OPENCLROOT if the libraries are
+    installed in a non-standard location.")
+
+set(OPENCLROOT "" CACHE STRING
+    "path to Intel(R) SDK for OpenCL(TM).
+    Use this option to specify custom location for OpenCL.")
 
 # =============
 # Miscellaneous
@@ -110,11 +129,11 @@ option(BENCHDNN_USE_RDPMC
      CAUTION: may not work on all cpus (hence disabled by default)"
     OFF) # disabled by default
 
-# =============
-# Developer flags
-# =============
+# =========================
+# Developer and debug flags
+# =========================
 
-set(MKLDNN_USE_CLANG_SANITIZER "" CACHE STRING
+set(DNNL_USE_CLANG_SANITIZER "" CACHE STRING
     "instructs build system to use a Clang sanitizer. Possible values:
     Address: enables AddressSanitizer
     Memory: enables MemorySanitizer
@@ -122,7 +141,4 @@ set(MKLDNN_USE_CLANG_SANITIZER "" CACHE STRING
     Undefined: enables UndefinedBehaviourSanitizer
     This feature is experimental and is only available on Linux.")
 
-option(MKLDNN_PRODUCT_BUILD_MODE
-    "Enables/disables product build mode. For example,
-    setting MKLDNN_PRODUCT_BUILD_MODE=OFF makes warnings non-fatal"
-    ON)
+option(_DNNL_USE_MKL "use BLAS functions from Intel MKL" OFF)

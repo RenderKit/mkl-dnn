@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,14 +14,19 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "common.hpp"
-#include "nstl.hpp"
-#include "math_utils.hpp"
+#include <cstdint>
+
+#include "simple_gemm_s8s8s32.hpp"
 
 #include "../gemm.hpp"
-#include "jit_avx512_core_gemm_s8u8s32.hpp"
+#include "dnnl_thread.hpp"
+#include "dnnl_types.h"
+#include "jit_generator.hpp"
+#include "math_utils.hpp"
+#include "nstl.hpp"
+#include "utils.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
@@ -30,15 +35,16 @@ void compensation_init(const char *offsetC, int32_t *compensation, int len,
     bool OCisC = (*offsetC == 'C' || *offsetC == 'c');
     bool OCisF = (*offsetC == 'F' || *offsetC == 'f');
 
-   if (OCisF && (*oc) != 0) {
-       for (int i = 0; i < len; i++)
-           compensation[i] = *oc;
-   } else if (OCisC) {
-       for (int i = 0; i < len; i++)
-           compensation[i] = oc[i];
-   } else {
-       parallel_nd(len, [=](int i) { compensation[i] = 0; });
-   }
+    if (OCisF && (*oc) != 0) {
+        for (int i = 0; i < len; i++)
+            compensation[i] = *oc;
+    } else if (OCisC) {
+        for (int i = 0; i < len; i++)
+            compensation[i] = oc[i];
+    } else {
+        for (int i = 0; i < len; i++)
+            compensation[i] = 0;
+    }
 }
 
 void compensation_compute(bool transa, int m, int k, float alpha,
@@ -53,11 +59,11 @@ void compensation_compute(bool transa, int m, int k, float alpha,
             int32_t val = 0;
             for (int jb = 0; jb < blocking_factor; jb++) {
                 val += a[(i + (ptrdiff_t)j * blocking_factor * lda)
-                    + (ptrdiff_t)jb * lda];
+                        + (ptrdiff_t)jb * lda];
             }
             if (alpha != 1.0f) {
-                val = math::out_round<int32_t>(math::saturate<int32_t>(
-                    (double)val * alpha * -128.0));
+                val = math::out_round<int32_t>(
+                        math::saturate<int32_t>((double)val * alpha * -128.0));
             } else {
                 val *= -128;
             }
@@ -72,7 +78,7 @@ void compensation_compute(bool transa, int m, int k, float alpha,
                 }
                 if (alpha != 1.0f) {
                     val = math::out_round<int32_t>(math::saturate<int32_t>(
-                        (double)val * alpha * -128.0));
+                            (double)val * alpha * -128.0));
                 } else {
                     val *= -128;
                 }
@@ -86,8 +92,8 @@ void compensation_compute(bool transa, int m, int k, float alpha,
                 val += a[j + (ptrdiff_t)i * lda];
             }
             if (alpha != 1.0f) {
-                val = math::out_round<int32_t>(math::saturate<int32_t>(
-                    (double)val * alpha * -128.0));
+                val = math::out_round<int32_t>(
+                        math::saturate<int32_t>((double)val * alpha * -128.0));
             } else {
                 val *= -128;
             }
@@ -135,15 +141,14 @@ void copy_and_shift_b(bool transb, int k, int n, uint8_t *b_u8, int ldb_u8,
  *  - if op(A) = A**T: compensation contains sum of the elements in each column
  *   scaled by -128 * alpha
  *
- * The rest of parameters is described in mkldnn.h
+ * The rest of parameters is described in dnnl.h
  */
-mkldnn_status_t simple_gemm_s8s8s32(
-        const char *transA, const char *transB, const char *offsetC,
-        const int *m, const int *n, const int *k,
+dnnl_status_t simple_gemm_s8s8s32(const char *transA, const char *transB,
+        const char *offsetC, const int *m, const int *n, const int *k,
         const float *alpha, const int8_t *a, const int *lda, const int8_t *oa,
-        const int8_t *b, const int *ldb, const int8_t *ob,
-        const float *beta, int32_t *c, const int *ldc, const int32_t *oc) {
-    if (*oa != 0 || *ob != 0) return mkldnn_unimplemented;
+        const int8_t *b, const int *ldb, const int8_t *ob, const float *beta,
+        int32_t *c, const int *ldc, const int32_t *oc) {
+    if (*oa != 0 || *ob != 0) return dnnl_unimplemented;
 
     int M = *m, N = *n, K = *k;
     bool transa = (*transA == 'T' || *transA == 't');
@@ -151,30 +156,31 @@ mkldnn_status_t simple_gemm_s8s8s32(
     int ld = transb ? N : K;
 
     uint8_t *b_u8 = (uint8_t *)malloc(sizeof(uint8_t) * K * N, 64);
+    uint8_t ob_u8 = 0;
     int32_t *compensation = (int32_t *)malloc(sizeof(int32_t) * M, 64);
 
     if (utils::any_null(b_u8, compensation)) {
         free(b_u8);
         free(compensation);
-        return mkldnn_out_of_memory;
+        return dnnl_out_of_memory;
     }
 
     compensation_init(offsetC, compensation, M, oc);
     compensation_compute(transa, M, K, *alpha, a, *lda, compensation);
     copy_and_shift_b(transb, K, N, b_u8, ld, b, *ldb);
 
-    gemm_s8x8s32(transA, transB, "C", m, n, k, alpha, a, lda, oa, b_u8,
-        &ld, ob, beta, c, ldc, compensation);
+    gemm_s8x8s32(transA, transB, "C", m, n, k, alpha, a, lda, oa, b_u8, &ld,
+            &ob_u8, beta, c, ldc, compensation);
 
     if ((*offsetC == 'R' || *offsetC == 'r'))
         parallel_nd(M, N,
-            [=](int i, int j) { c[i + (ptrdiff_t)j * *ldc] += oc[j]; });
+                [=](int i, int j) { c[i + (ptrdiff_t)j * *ldc] += oc[j]; });
 
     free(b_u8);
     free(compensation);
 
-    return mkldnn_success;
+    return dnnl_success;
 }
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl

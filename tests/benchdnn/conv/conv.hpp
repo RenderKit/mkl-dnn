@@ -14,24 +14,24 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef _CONV_HPP
-#define _CONV_HPP
+#ifndef CONV_HPP
+#define CONV_HPP
 
-#include <stdint.h>
-#include <limits.h>
 #include <assert.h>
+#include <limits.h>
+#include <stdint.h>
 
 #include "common.hpp"
 #include "dnn_types.hpp"
-#include "mkldnn_common.hpp"
-#include "mkldnn_memory.hpp"
+#include "dnnl_common.hpp"
+#include "dnnl_memory.hpp"
 
 #include "conv/conv_common.hpp"
 namespace conv {
 
 int doit(const prb_t *p, res_t *res);
-int bench(int argc, char **argv, bool main_bench = true);
+int bench(int argc, char **argv);
 
-}
+} // namespace conv
 
 #endif

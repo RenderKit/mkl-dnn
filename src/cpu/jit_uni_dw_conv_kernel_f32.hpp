@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,48 +24,35 @@
 #include "jit_primitive_conf.hpp"
 #include "jit_uni_eltwise.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <cpu_isa_t isa>
-struct jit_uni_dw_conv_fwd_kernel_f32: public jit_generator {
+struct jit_uni_dw_conv_fwd_kernel_f32 : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_dw_conv_fwd_kernel_f32)
 
     jit_uni_dw_conv_fwd_kernel_f32(jit_conv_conf_t ajcp)
-        : jcp(ajcp), eltwise_injector_(nullptr)
-    {
+        : jcp(ajcp), eltwise_injector_(nullptr) {
         if (jcp.with_eltwise)
-            eltwise_injector_ = new jit_uni_eltwise_injector_f32<isa>(this,
-                    jcp.eltwise);
+            eltwise_injector_
+                    = new jit_uni_eltwise_injector_f32<isa>(this, jcp.eltwise);
 
         this->generate();
         jit_ker = (void (*)(jit_conv_call_s *))this->getCode();
     }
 
-    ~jit_uni_dw_conv_fwd_kernel_f32() {
-        delete eltwise_injector_;
-    }
-
-    static bool post_ops_ok(jit_conv_conf_t &jcp,
-            const primitive_attr_t &attr);
-    static status_t init_conf(jit_conv_conf_t &jcp,
-            const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
-            const memory_desc_wrapper &weights_d,
-            const memory_desc_wrapper &dst_d, const primitive_attr_t &attr);
-
-    static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
-            const jit_conv_conf_t &jcp);
+    ~jit_uni_dw_conv_fwd_kernel_f32() { delete eltwise_injector_; }
 
     jit_conv_conf_t jcp;
     void (*jit_ker)(jit_conv_call_s *);
 
 private:
-    using Vmm = typename utils::conditional3<isa == sse42, Xbyak::Xmm,
-        isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
+    using Vmm = typename utils::conditional3<isa == sse41, Xbyak::Xmm,
+            isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
     using reg64_t = const Xbyak::Reg64;
-    const Xbyak::AddressFrame &vmmword = (isa == sse42)
-        ? xword : (isa == avx2) ? yword : zword;
+    const Xbyak::AddressFrame &vmmword
+            = (isa == sse41) ? xword : (isa == avx2) ? yword : zword;
     const int vlen = cpu_isa_traits<isa>::vlen;
 
     // dw convolution
@@ -102,50 +89,40 @@ private:
 };
 
 template <cpu_isa_t isa>
-struct jit_uni_dw_conv_bwd_data_kernel_f32: public jit_generator {
+struct jit_uni_dw_conv_bwd_data_kernel_f32 : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_dw_conv_bwd_data_kernel_f32)
 
-    jit_uni_dw_conv_bwd_data_kernel_f32(jit_conv_conf_t ajcp): jcp(ajcp) {
+    jit_uni_dw_conv_bwd_data_kernel_f32(jit_conv_conf_t ajcp) : jcp(ajcp) {
         this->generate();
         jit_ker = (void (*)(jit_conv_call_s *))this->getCode();
     }
-
-    static status_t init_conf(jit_conv_conf_t &jcp,
-            const convolution_desc_t &cd,
-            const memory_desc_wrapper &diff_src_d,
-            const memory_desc_wrapper &weights_d,
-            const memory_desc_wrapper &diff_dst_d);
-
-    static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
-            const jit_conv_conf_t &jcp);
-
     jit_conv_conf_t jcp;
     void (*jit_ker)(jit_conv_call_s *);
 
 private:
-    using Vmm = typename utils::conditional3<isa == sse42, Xbyak::Xmm,
-        isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
+    using Vmm = typename utils::conditional3<isa == sse41, Xbyak::Xmm,
+            isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
     using reg64_t = const Xbyak::Reg64;
 
     inline Vmm get_ker_reg(int idx) { return Vmm(idx + 0); }
     inline Vmm get_src_reg(int idx) { return Vmm(idx + 1); }
     inline Vmm get_acc_reg(int idx) { return Vmm(idx + 4); }
 
-    reg64_t reg_ddst       = rax;
-    reg64_t aux_reg_ddst   = r8;
+    reg64_t reg_ddst = rax;
+    reg64_t aux_reg_ddst = r8;
     reg64_t aux1_reg_ddst = abi_not_param1;
-    reg64_t reg_kernel     = rdx;
+    reg64_t reg_kernel = rdx;
     reg64_t aux_reg_kernel = r10;
     reg64_t aux1_reg_kernel = rbp;
-    reg64_t reg_dsrc       = rsi;
+    reg64_t reg_dsrc = rsi;
 
     reg64_t reg_ur_str_w = r9;
     reg64_t reg_ch_blocks = rbx;
 
     reg64_t iter_kh = r11;
     reg64_t iter_kw = r12;
-    reg64_t reg_kh  = r13;
-    reg64_t reg_kw  = r14;
+    reg64_t reg_kh = r13;
+    reg64_t reg_kw = r14;
 
     inline void loop_body(int ur_ch_blocks);
     inline void load_ddst(int ur_ch_blocks, int ur_str_w);
@@ -162,31 +139,21 @@ struct jit_uni_dw_conv_bwd_weights_kernel_f32 : public jit_generator {
 
     jit_uni_dw_conv_bwd_weights_kernel_f32(jit_conv_conf_t ajcp) : jcp(ajcp) {
         this->generate();
-        jit_ker = (void (*)(jit_dw_conv_call_s *)) this->getCode();
+        jit_ker = (void (*)(jit_dw_conv_call_s *))this->getCode();
     }
-
-    static status_t init_conf(jit_conv_conf_t &jcp,
-            const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
-            const memory_desc_wrapper &diff_weights_d,
-            const memory_desc_wrapper &diff_dst_d, int nthreads);
-
-    static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
-            const jit_conv_conf_t &jcp);
-
-    static void balance(jit_conv_conf_t &jcp, int nthreads);
 
     jit_conv_conf_t jcp;
     void (*jit_ker)(jit_dw_conv_call_s *);
 
 private:
-    using Vmm = typename utils::conditional3<isa == sse42, Xbyak::Xmm,
+    using Vmm = typename utils::conditional3<isa == sse41, Xbyak::Xmm,
             isa == avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
     using reg64_t = const Xbyak::Reg64;
     const int simd_w = cpu_isa_traits<isa>::vlen / sizeof(float);
-    const int reg_repeats = (isa == sse42) ? 2 : 1;
+    const int reg_repeats = (isa == sse41) ? 2 : 1;
 
     const Xbyak::AddressFrame &vmmword
-            = (isa == sse42) ? xword : (isa == avx2) ? yword : zword;
+            = (isa == sse41) ? xword : (isa == avx2) ? yword : zword;
 
     /* XXX: offset between input and accummulators is 3, therefore, assume 'kw'
      * is no larger than 3*/
@@ -207,7 +174,7 @@ private:
     reg64_t reg_oh_worksize = r14;
     reg64_t reg_oh = rax;
 
-    reg64_t iter_ow_blk = r11;
+    reg64_t reg_iter_ow_blk = r11;
 
     reg64_t reg_kh = rsi;
     reg64_t reg_kh_count = rdx;
@@ -246,8 +213,9 @@ private:
 
     void generate();
 };
-}
-}
-}
+
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif

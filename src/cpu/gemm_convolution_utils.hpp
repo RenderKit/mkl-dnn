@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,32 +18,35 @@
 #define CPU_JIT_GEMM_CONVOLUTION_UTILS_HPP
 
 #include "c_types_map.hpp"
+#include "dnnl_thread.hpp"
 #include "memory_tracking.hpp"
-#include "mkldnn_thread.hpp"
 
 #include "cpu_convolution_pd.hpp"
 #include "cpu_engine.hpp"
 #include "jit_primitive_conf.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 namespace jit_gemm_convolution_utils {
+template <typename data_type_t>
+void im2col_3d(const jit_gemm_conv_conf_t &jcp, const data_type_t *im,
+        data_type_t *col, int od);
 
-void im2col_3d(const jit_gemm_conv_conf_t &jcp, const float *im, float *col,
-        int od);
-void im2col(const jit_gemm_conv_conf_t &jcp, const float *__restrict im,
-       float *__restrict col, int hs, int hb, int ws, int wb);
+template <typename data_type_t>
+void im2col(const jit_gemm_conv_conf_t &jcp, const data_type_t *__restrict im,
+        data_type_t *__restrict col, int ss, int sb, int cs, int cb);
+
 template <typename T>
 void im2col_u8(const jit_gemm_conv_conf_t &jcp, const T *__restrict im,
-        T* __restrict imtr, uint8_t *__restrict col,
-        int hs, int hb, int ws, int wb);
+        T *__restrict imtr, uint8_t *__restrict col, int hs, int hb, int ws,
+        int wb);
 
 void col2im_s32(const jit_gemm_conv_conf_t &jcp, const int32_t *__restrict col,
         int32_t *__restrict im);
-void col2im_3d(const jit_gemm_conv_conf_t &jcp, const float *col, float *im,
-        int od);
+void col2im_3d(
+        const jit_gemm_conv_conf_t &jcp, const float *col, float *im, int od);
 void col2im(const jit_gemm_conv_conf_t &jcp, const float *col, float *im);
 
 status_t init_conf(jit_gemm_conv_conf_t &jcp,
@@ -51,16 +54,16 @@ status_t init_conf(jit_gemm_conv_conf_t &jcp,
         const memory_desc_wrapper &src_d, const memory_desc_wrapper &weights_d,
         const memory_desc_wrapper &dst_d, int max_threads);
 
-void bwd_weights_balance(int ithr, int nthr, int ngroups, int mb,
-        int &ithr_g, int &nthr_g, int &ithr_mb, int &nthr_mb);
+void bwd_weights_balance(int ithr, int nthr, int ngroups, int mb, int &ithr_g,
+        int &nthr_g, int &ithr_mb, int &nthr_mb);
 void bwd_weights_reduction_par(int ithr, int nthr,
         const jit_gemm_conv_conf_t &jcp, const float *weights_reduce_ws,
         float *weights);
 
-}
+} // namespace jit_gemm_convolution_utils
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif

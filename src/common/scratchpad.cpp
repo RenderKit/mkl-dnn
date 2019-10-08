@@ -14,12 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "mkldnn_thread.hpp"
 #include "utils.hpp"
 
 #include "scratchpad.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 
 /* Allocating memory buffers on a page boundary to reduce TLB/page misses */
@@ -29,24 +28,22 @@ const size_t page_size = 2097152;
   Implementation of the scratchpad_t interface that is compatible with
   a concurrent execution
 */
-struct concurent_scratchpad_t : public scratchpad_t {
-    concurent_scratchpad_t(size_t size) {
+struct concurrent_scratchpad_t : public scratchpad_t {
+    concurrent_scratchpad_t(size_t size) {
         size_ = size;
-        scratchpad_ = (char *) malloc(size, page_size);
+        scratchpad_ = (char *)malloc(size, page_size);
         assert(scratchpad_ != nullptr);
     }
 
-    ~concurent_scratchpad_t() {
-        free(scratchpad_);
-    }
+    ~concurrent_scratchpad_t() { free(scratchpad_); }
 
-    virtual char *get() const {
-        return scratchpad_;
-    }
+    virtual char *get() const { return scratchpad_; }
 
 private:
     char *scratchpad_;
     size_t size_;
+
+    DNNL_DISALLOW_COPY_AND_ASSIGN(concurrent_scratchpad_t);
 };
 
 /*
@@ -59,7 +56,7 @@ struct global_scratchpad_t : public scratchpad_t {
         if (size > size_) {
             if (scratchpad_ != nullptr) free(scratchpad_);
             size_ = size;
-            scratchpad_ = (char *) malloc(size, page_size);
+            scratchpad_ = (char *)malloc(size, page_size);
             assert(scratchpad_ != nullptr);
         }
         reference_count_++;
@@ -74,9 +71,7 @@ struct global_scratchpad_t : public scratchpad_t {
         }
     }
 
-    virtual char *get() const {
-        return scratchpad_;
-    }
+    virtual char *get() const { return scratchpad_; }
 
 private:
     /*
@@ -96,17 +91,16 @@ private:
 /*thread_local*/ size_t global_scratchpad_t::size_ = 0;
 /*thread_local*/ unsigned int global_scratchpad_t::reference_count_ = 0;
 
-
 /*
    Scratchpad creation routine
 */
 scratchpad_t *create_scratchpad(size_t size) {
-#ifndef MKLDNN_ENABLE_CONCURRENT_EXEC
+#ifndef DNNL_ENABLE_CONCURRENT_EXEC
     return new global_scratchpad_t(size);
 #else
-    return new concurent_scratchpad_t(size);
+    return new concurrent_scratchpad_t(size);
 #endif
 }
 
-}
-}
+} // namespace impl
+} // namespace dnnl

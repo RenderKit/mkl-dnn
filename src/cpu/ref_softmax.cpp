@@ -19,69 +19,68 @@
 #include <math.h>
 
 #include "c_types_map.hpp"
-#include "mkldnn_thread.hpp"
+#include "dnnl_thread.hpp"
 #include "type_helpers.hpp"
 
 #include "ref_softmax.hpp"
-#include "gemm/os_blas.hpp"
 
-#ifdef USE_MKL
-#include "mkl_vml_functions.h"
-#endif
-
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <impl::data_type_t data_type>
 void ref_softmax_fwd_t<data_type>::execute_forward_dense(
         const exec_ctx_t &ctx) const {
-    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
+    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
+
+    const auto ou_stride = pd()->outer_stride();
 
     parallel_nd(outer_size_, [&](int ou) {
-        const data_t *src_data = src + ou * channels_;
-        data_t *dst_data = dst + ou * channels_;
+        const data_t *src_data = src + ou * ou_stride;
+        data_t *dst_data = dst + ou * ou_stride;
         data_t scalar = 0;
 
         _max(channels_, src_data, &scalar);
         _sub(channels_, scalar, src_data, dst_data);
         _exp(channels_, dst_data, dst_data);
         _sum(channels_, dst_data, &scalar);
-        _scal(channels_, data_t(1)/scalar, dst_data);
+        _scal(channels_, data_t(1) / scalar, dst_data);
     });
 }
 
 template <impl::data_type_t data_type>
 void ref_softmax_fwd_t<data_type>::execute_forward_generic(
         const exec_ctx_t &ctx) const {
-    auto src = CTX_IN_MEM(const data_t *, MKLDNN_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DST);
-
-    data_t space_max_val = 0, space_denom_val = 0;
-    data_t *space_max = &space_max_val, *space_denom = &space_denom_val;
-    if (inner_size_ > 1) {
-        using namespace memory_tracking::names;
-        space_max = scratchpad(ctx).template get<data_t>(key_softmax_reduction);
-        space_denom = space_max + inner_size_;
-    }
+    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
 
     const memory_desc_wrapper data_d(pd()->src_md());
     const size_t dim = channels_ * inner_size_;
 
-    for (int ou = 0; ou < outer_size_; ou++) {
+    parallel_nd(outer_size_, [&](int ou) {
+        data_t space_max_val = 0, space_denom_val = 0;
+        data_t *space_max = &space_max_val, *space_denom = &space_denom_val;
+        if (inner_size_ > 1) {
+            using namespace memory_tracking::names;
+            space_max = ctx.get_scratchpad_grantor().template get<data_t>(
+                                key_softmax_reduction)
+                    + ou * 2 * inner_size_;
+            space_denom = space_max + inner_size_;
+        }
+
         utils::array_set(space_max, -FLT_MAX, inner_size_);
         utils::array_set(space_denom, 0, inner_size_);
 
         for (int c = 0; c < channels_; c++) {
-            for(int in = 0; in < inner_size_; in++) {
+            for (int in = 0; in < inner_size_; in++) {
                 size_t off = data_d.off_l(ou * dim + c * inner_size_ + in);
                 space_max[in] = nstl::max(space_max[in], src[off]);
             }
         }
 
         for (int c = 0; c < channels_; c++) {
-            for(int in = 0; in < inner_size_; in++) {
+            for (int in = 0; in < inner_size_; in++) {
                 size_t off = data_d.off_l(ou * dim + c * inner_size_ + in);
                 space_denom[in] += dst[off] = exp(src[off] - space_max[in]);
             }
@@ -93,12 +92,12 @@ void ref_softmax_fwd_t<data_type>::execute_forward_generic(
                 dst[off] /= space_denom[in];
             }
         }
-    }
+    });
 }
 
 template <impl::data_type_t data_type>
-void ref_softmax_fwd_t<data_type>::_max(int n, const data_t *x,
-        data_t *max_data) const {
+void ref_softmax_fwd_t<data_type>::_max(
+        int n, const data_t *x, data_t *max_data) const {
 // Intel(R) C++ Compiler generates the maxps + shuffle pattern
 // for the max search which works faster
 #if !defined(__INTEL_COMPILER)
@@ -140,8 +139,8 @@ void ref_softmax_fwd_t<data_type>::_max(int n, const data_t *x,
 }
 
 template <impl::data_type_t data_type>
-void ref_softmax_fwd_t<data_type>::_sub(int n, data_t alpha, const data_t *x,
-        data_t *y) const {
+void ref_softmax_fwd_t<data_type>::_sub(
+        int n, data_t alpha, const data_t *x, data_t *y) const {
     constexpr int unroll_factor = 32;
     int tail = n % unroll_factor;
     for (int i = 0; i < n - tail; i += unroll_factor) {
@@ -157,28 +156,14 @@ void ref_softmax_fwd_t<data_type>::_sub(int n, data_t alpha, const data_t *x,
 }
 
 template <impl::data_type_t data_type>
-void ref_softmax_fwd_t<data_type>::_exp(int n, const data_t *a,
-        data_t *r) const {
-#ifdef USE_MKL
-    if (data_type == data_type::f32) {
-        vsExp(n, a, r);
-        return;
-    }
-#endif
+void ref_softmax_fwd_t<data_type>::_exp(
+        int n, const data_t *a, data_t *r) const {
     parallel_nd(n, [&](int c) { r[c] = expf(a[c]); });
 }
 
 template <impl::data_type_t data_type>
-void ref_softmax_fwd_t<data_type>::_sum(int n, const data_t *x,
-        data_t *sum_data) const {
-#ifdef USE_CBLAS
-    // Here we are summing x's eg. e^z , which are positives
-    // so we can use BLAS ASUM
-    if (data_type == data_type::f32) {
-        sum_data[0] = cblas_sasum(n, x, 1);
-        return;
-    }
-#endif
+void ref_softmax_fwd_t<data_type>::_sum(
+        int n, const data_t *x, data_t *sum_data) const {
     data_t tsum = static_cast<data_t>(0);
     PRAGMA_OMP_SIMD(reduction(+ : tsum))
     for (int c = 0; c < n; ++c)
@@ -188,39 +173,34 @@ void ref_softmax_fwd_t<data_type>::_sum(int n, const data_t *x,
 
 template <impl::data_type_t data_type>
 void ref_softmax_fwd_t<data_type>::_scal(int n, data_t alpha, data_t *x) const {
-#ifdef USE_CBLAS
-    if (data_type == data_type::f32) {
-        cblas_sscal(n, alpha, x, 1);
-        return;
-    }
-#endif
     parallel_nd(n, [&](int c) { x[c] *= alpha; });
 }
 
 template struct ref_softmax_fwd_t<data_type::f32>;
 
-
-// NC/NCHW softmax for along final axe (1 for NC, 3 for NCHW)
+// softmax along last physical dimension
 template <impl::data_type_t data_type>
 void ref_softmax_bwd_t<data_type>::execute_backward_dense(
         const exec_ctx_t &ctx) const {
-    auto dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DST);
-    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
-    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
+    auto dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DST);
+    auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
+    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
+
+    const auto ou_stride = pd()->outer_stride();
 
     parallel_nd(outer_size_, [&](int ou) {
         data_t sbr = 0;
-        size_t off = channels_*ou;
-        for (int c = 0; c < channels_; c++) {
+        size_t off = ou * ou_stride;
+        for (int c = 0; c < channels_; ++c) {
             size_t loff = off + c;
             data_t ldata = dst[loff];
-            sbr += diff_dst[loff]*ldata;
+            sbr += diff_dst[loff] * ldata;
             diff_src[loff] = ldata;
         }
 
-        for(int c=0; c < channels_ ; ++c) {
-          size_t loff = off + c;
-          diff_src[loff] *= (diff_dst[loff] - sbr);
+        for (int c = 0; c < channels_; ++c) {
+            size_t loff = off + c;
+            diff_src[loff] *= (diff_dst[loff] - sbr);
         }
     });
 }
@@ -228,37 +208,35 @@ void ref_softmax_bwd_t<data_type>::execute_backward_dense(
 template <impl::data_type_t data_type>
 void ref_softmax_bwd_t<data_type>::execute_backward_generic(
         const exec_ctx_t &ctx) const {
-    auto dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DST);
-    auto diff_dst = CTX_IN_MEM(const data_t *, MKLDNN_ARG_DIFF_DST);
-    auto diff_src = CTX_OUT_MEM(data_t *, MKLDNN_ARG_DIFF_SRC);
+    auto dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DST);
+    auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
+    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
 
     const memory_desc_wrapper diff_d(pd()->diff_src_md());
     const memory_desc_wrapper data_d(pd()->dst_md());
 
     const size_t dim = channels_ * inner_size_;
 
-    parallel_nd(outer_size_, [&](int ou) {
-        for (int in = 0; in < inner_size_; in++) {
-            data_t sbr = 0;
-            for (int c = 0; c < channels_; c++) {
-                size_t off_diff = diff_d.off_l(ou * dim + c * inner_size_ + in);
-                size_t off_data = diff_d.off_l(ou * dim + c * inner_size_ + in);
-                sbr += diff_dst[off_diff] * dst[off_data];
-            }
+    parallel_nd(outer_size_, inner_size_, [&](int ou, int in) {
+        data_t sbr = 0;
+        for (int c = 0; c < channels_; ++c) {
+            size_t off_diff = diff_d.off_l(ou * dim + c * inner_size_ + in);
+            size_t off_data = data_d.off_l(ou * dim + c * inner_size_ + in);
+            sbr += diff_dst[off_diff] * dst[off_data];
+        }
 
-            for(int c=0; c < channels_ ; ++c) {
-              size_t off_diff = diff_d.off_l(ou * dim + c * inner_size_ + in);
-              size_t off_data = data_d.off_l(ou * dim + c * inner_size_ + in);
-              diff_src[off_diff] = dst[off_data] * (diff_dst[off_diff] - sbr);
-            }
+        for (int c = 0; c < channels_; ++c) {
+            size_t off_diff = diff_d.off_l(ou * dim + c * inner_size_ + in);
+            size_t off_data = data_d.off_l(ou * dim + c * inner_size_ + in);
+            diff_src[off_diff] = dst[off_data] * (diff_dst[off_diff] - sbr);
         }
     });
 }
 
 template struct ref_softmax_bwd_t<data_type::f32>;
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

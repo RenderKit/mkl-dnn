@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,21 +17,21 @@
 #ifndef SIMPLE_GEMM_S8S8S32_HPP
 #define SIMPLE_GEMM_S8S8S32_HPP
 
-#include <stdint.h>
-#include "mkldnn_types.h"
+#include <cstdint>
 
-namespace mkldnn {
+#include "dnnl_types.h"
+
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-mkldnn_status_t simple_gemm_s8s8s32(
-        const char *transA, const char *transB, const char *offsetC,
-        const int *m, const int *n, const int *k,
+dnnl_status_t simple_gemm_s8s8s32(const char *transA, const char *transB,
+        const char *offsetC, const int *m, const int *n, const int *k,
         const float *alpha, const int8_t *a, const int *lda, const int8_t *oa,
-        const int8_t *b, const int *ldb, const int8_t *ob,
-        const float *beta, int32_t *c, const int *ldc, const int32_t *oc);
+        const int8_t *b, const int *ldb, const int8_t *ob, const float *beta,
+        int32_t *c, const int *ldc, const int32_t *oc);
 }
-}
-}
+} // namespace impl
+} // namespace dnnl
 
 #endif // SIMPLE_GEMM_S8S8S32_HPP

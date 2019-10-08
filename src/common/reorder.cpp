@@ -15,7 +15,7 @@
 *******************************************************************************/
 
 #include <assert.h>
-#include "mkldnn.h"
+#include "dnnl.h"
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
@@ -24,14 +24,33 @@
 
 #include "reorder_pd.hpp"
 
-using namespace mkldnn::impl;
-using namespace mkldnn::impl::utils;
-using namespace mkldnn::impl::status;
+using namespace dnnl::impl;
+using namespace dnnl::impl::utils;
+using namespace dnnl::impl::status;
 
-status_t mkldnn_reorder_primitive_desc_create(
-        primitive_desc_t **reorder_pd,
-        engine_t *src_engine, const memory_desc_t *src_md,
-        engine_t *dst_engine, const memory_desc_t *dst_md,
+static engine_t *get_reorder_engine(
+        engine_t *src_engine, engine_t *dst_engine) {
+    auto s_ek = src_engine->kind();
+    auto d_ek = dst_engine->kind();
+    auto s_rk = src_engine->runtime_kind();
+    auto d_rk = dst_engine->runtime_kind();
+
+    if (is_native_runtime(d_rk)) return src_engine;
+
+    if (is_native_runtime(s_rk)) return dst_engine;
+
+    if (d_ek == engine_kind::cpu) return src_engine;
+
+    if (s_ek == engine_kind::cpu) return dst_engine;
+
+    assert(s_ek == engine_kind::gpu);
+    assert(d_ek == engine_kind::gpu);
+    return src_engine;
+}
+
+status_t dnnl_reorder_primitive_desc_create(primitive_desc_t **reorder_pd,
+        const memory_desc_t *src_md, engine_t *src_engine,
+        const memory_desc_t *dst_md, engine_t *dst_engine,
         const primitive_attr_t *attr) {
     if (any_null(reorder_pd, src_engine, src_md, dst_engine, dst_md))
         return invalid_arguments;
@@ -45,24 +64,19 @@ status_t mkldnn_reorder_primitive_desc_create(
     auto s_mdw = memory_desc_wrapper(*src_md);
     auto d_mdw = memory_desc_wrapper(*dst_md);
 
-    if (!s_mdw.consistent_with(d_mdw))
-        return invalid_arguments;
-
-    auto e = (s_ek != engine_kind::cpu) ? src_engine : dst_engine;
+    if (!s_mdw.consistent_with(d_mdw)) return invalid_arguments;
 
     const primitive_attr_t dummy_attr;
-    if (attr == NULL)
-        attr = &dummy_attr;
+    if (attr == NULL) attr = &dummy_attr;
 
+    auto e = get_reorder_engine(src_engine, dst_engine);
     for (auto r = e->get_reorder_implementation_list(); *r; ++r) {
         if ((*r)(r_pd, e, attr, src_engine, src_md, dst_engine, dst_md)
                 == success) {
-            (*r_pd)->init_info();
-            (*r_pd)->init_scratchpad_md();
             return success;
         }
     }
     return unimplemented;
 }
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

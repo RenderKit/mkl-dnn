@@ -23,7 +23,7 @@
 #include "nstl.hpp"
 #include "utils.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace memory_tracking {
 
@@ -119,7 +119,7 @@ namespace memory_tracking {
  *
  *      void exec() {
  *          // get the base pointer to a scratchpad memory from a user
- *          void *scratchpad_ptr = this->input(MKLDNN_MEM_SCRATCHPAD);
+ *          void *scratchpad_ptr = this->input(DNNL_MEM_SCRATCHPAD);
  *
  *          // create a grantor to the scratchpad (and provide the base
  *          // pointer).
@@ -139,11 +139,12 @@ namespace memory_tracking {
  *  ```
  */
 
-
 /* namespace with common keys and prefixes */
 namespace names {
 enum {
     key_none = 0,
+    key_barrier,
+    key_bnorm_bf16cvt,
     key_bnorm_tmp_mean,
     key_bnorm_tmp_var,
     key_bnorm_tmp_diff_ss,
@@ -153,8 +154,11 @@ enum {
     key_concat_istrides,
     key_concat_nelems,
     key_concat_optrs,
+    key_concat_tent_dst,
     key_conv_adjusted_scales,
     key_conv_bia_reduction,
+    key_conv_bias_bf16_convert_wsp,
+    key_conv_dst_bf16_convert_wsp,
     key_conv_gemm_col,
     key_conv_gemm_imtr,
     key_conv_int_dat_in_acc_dt,
@@ -167,22 +171,35 @@ enum {
     key_conv_wei_reduction,
     key_conv_wei_bia_reduction,
     key_conv_wei_bia_reduction_bctx,
+    key_iprod_bias_bf16_convert_wsp,
+    key_iprod_dst_bf16_convert_wsp,
     key_iprod_int_dat_in_acc_dt,
+    key_lnorm_tmp_mean,
+    key_lnorm_tmp_var,
+    key_lnorm_tmp_diff_ss,
+    key_lnorm_reduction,
+    key_pool_dst_bf16cvt,
+    key_pool_src_bf16cvt,
     key_reducer_space,
     key_reducer_space_bctx,
+    key_reorder_space,
     key_reorder_wino_plain,
     key_reorder_wino_transform_space,
     key_reorder_rnn_weights_quantization,
     key_reorder_rnn_weights_reduction,
+    key_reorder_rnn_weights_transposition,
     key_rnn_space,
+    key_rnn_cell,
+    key_rnn_gates,
     key_rnn_ptrs_bia,
     key_rnn_ptrs_wei_layer,
     key_rnn_ptrs_wei_iter,
     key_softmax_reduction,
+    key_sum_reduction,
+    key_sum_srcs_cvt,
     key_wino_U,
     key_wino_V,
     key_wino_M,
-    key_barrier,
 };
 
 enum {
@@ -190,7 +207,7 @@ enum {
     prefix_reducer_bia,
     prefix_reducer_wei,
 };
-}
+} // namespace names
 
 // level 0: 00 00 00 xxx
 // level 1: 00 00 aa xxx
@@ -202,14 +219,20 @@ enum {
 //      aa, bb, cc : [1 .. MAX_PREFIX) : prefixes for levels 1, 2, and 3
 
 using key_t = uint32_t;
-enum { MAX_KEY = (1u << 10), MAX_PREFIX = (1u << 7), };
+enum {
+    MAX_KEY = (1u << 10),
+    MAX_PREFIX = (1u << 7),
+};
 
 /// generates global key based on a prefix and a local key
-inline key_t make_key(key_t prefix, key_t key) { return prefix + key; }
+inline key_t make_key(key_t prefix, key_t key) {
+    return prefix + key;
+}
 
 /// generates global prefix based on the global parent and the local ones
-inline key_t make_prefix(key_t parent_prefix, key_t prefix)
-{ return MAX_PREFIX * parent_prefix + MAX_KEY * prefix; }
+inline key_t make_prefix(key_t parent_prefix, key_t prefix) {
+    return MAX_PREFIX * parent_prefix + MAX_KEY * prefix;
+}
 
 struct registrar_t;
 struct grantor_t;
@@ -221,13 +244,16 @@ struct registry_t {
 
         size = utils::rnd_up(size, minimal_alignment);
         alignment = nstl::max<size_t>(alignment, minimal_alignment);
-        offset_map_[key] = entry_t{size_, size, alignment};
+        offset_map_[key] = entry_t {size_, size, alignment};
 
         size_ += size + alignment - minimal_alignment;
     }
 
     void *get(const key_t &key, void *base_ptr) const {
-        if (base_ptr == nullptr) { assert(size() == 0); return nullptr; }
+        if (base_ptr == nullptr) {
+            assert(size() == 0);
+            return nullptr;
+        }
         if (offset_map_.count(key) != 1) return nullptr;
 
         const auto &e = offset_map_.at(key);
@@ -236,15 +262,18 @@ struct registry_t {
         return utils::align_ptr<void>(ptr, e.alignment);
     }
 
-    size_t size() const
-    { return size_ > 0 ? size_ + minimal_alignment - 1 : 0; }
+    size_t size() const {
+        return size_ > 0 ? size_ + minimal_alignment - 1 : 0;
+    }
 
     registrar_t registrar();
     grantor_t grantor(void *base_ptr) const;
 
 protected:
     enum { minimal_alignment = 64 };
-    struct entry_t { size_t offset, size, alignment; };
+    struct entry_t {
+        size_t offset, size, alignment;
+    };
 
     std::unordered_map<key_t, entry_t> offset_map_;
     size_t size_ = 0;
@@ -253,14 +282,15 @@ protected:
 struct registrar_t {
     enum { default_alignment = 64 };
 
-    registrar_t(registry_t &registry): registry_(registry), prefix_(0) {}
+    registrar_t(registry_t &registry) : registry_(registry), prefix_(0) {}
     registrar_t(registrar_t &parent, const key_t &prefix)
         : registry_(parent.registry_)
         , prefix_(make_prefix(parent.prefix_, prefix)) {}
 
     void book(const key_t &key, size_t size,
-            size_t alignment = default_alignment)
-    { registry_.book(make_key(prefix_, key), size, alignment); }
+            size_t alignment = default_alignment) {
+        registry_.book(make_key(prefix_, key), size, alignment);
+    }
 
 protected:
     registry_t &registry_;
@@ -275,8 +305,10 @@ struct grantor_t {
         , prefix_(make_prefix(parent.prefix_, prefix))
         , base_ptr_(parent.base_ptr_) {}
 
-    template <typename T = void> T *get(const key_t &key) const
-    { return (T *)registry_.get(make_key(prefix_, key), base_ptr_); }
+    template <typename T = void>
+    T *get(const key_t &key) const {
+        return (T *)registry_.get(make_key(prefix_, key), base_ptr_);
+    }
 
 protected:
     const registry_t &registry_;
@@ -284,12 +316,15 @@ protected:
     void *base_ptr_;
 };
 
-inline registrar_t registry_t::registrar() { return registrar_t(*this); }
-inline grantor_t registry_t::grantor(void *base_ptr) const
-{ return grantor_t(*this, base_ptr); }
+inline registrar_t registry_t::registrar() {
+    return registrar_t(*this);
+}
+inline grantor_t registry_t::grantor(void *base_ptr) const {
+    return grantor_t(*this, base_ptr);
+}
 
-}
-}
-}
+} // namespace memory_tracking
+} // namespace impl
+} // namespace dnnl
 
 #endif

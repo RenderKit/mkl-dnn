@@ -18,15 +18,14 @@
 #define CPU_REF_ELTWISE_HPP
 
 #include <assert.h>
-
 #include "c_types_map.hpp"
+#include "cpu_isa_traits.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
 #include "cpu_eltwise_pd.hpp"
-#include "cpu_primitive.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
@@ -45,8 +44,8 @@ public:
 };
 
 template <impl::data_type_t data_type>
-struct ref_eltwise_fwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_eltwise_fwd_pd_t {
+struct ref_eltwise_fwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_eltwise_fwd_pd_t {
         using cpu_eltwise_fwd_pd_t::cpu_eltwise_fwd_pd_t;
 
         DECLARE_COMMON_PD_T("ref:any", ref_eltwise_fwd_t);
@@ -56,27 +55,27 @@ struct ref_eltwise_fwd_t: public cpu_primitive_t {
 
             auto src_d = memory_desc_wrapper(src_md());
 
-            use_dense_ = false
-                || src_d.is_dense()
-                || (src_d.is_dense(true) && is_zero_preserved());
+            use_dense_ = false || src_d.is_dense()
+                    || (src_d.is_dense(true) && is_zero_preserved());
 
             use_nCspBc_padded_ = !use_dense_
-                && src_d.blocking_desc().inner_nblks == 1
-                && one_of(src_d.blocking_desc().inner_blks[0], 8, 16)
-                && src_d.blocking_desc().inner_idxs[0] == 1
-                && src_d.only_padded_dim(1)
-                && src_d.is_dense(true);
+                    && src_d.blocking_desc().inner_nblks == 1
+                    && one_of(src_d.blocking_desc().inner_blks[0], 8, 16)
+                    && src_d.blocking_desc().inner_idxs[0] == 1
+                    && src_d.only_padded_dim(1) && src_d.is_dense(true);
 
-            if (has_zero_dim_memory())
-                use_dense_ = use_nCspBc_padded_ = false;
+            if (has_zero_dim_memory()) use_dense_ = use_nCspBc_padded_ = false;
 
             const bool use_generic = !use_dense_ && !use_nCspBc_padded_;
 
-            bool ok = true
-                && is_fwd()
-                && everyone_is(data_type, desc()->data_desc.data_type)
-                && IMPLICATION(use_generic, one_of(src_d.ndims(), 4, 5))
-                && attr()->has_default_values();
+            bool ok = true && is_fwd()
+                    && everyone_is(data_type, desc()->data_desc.data_type)
+                    /*bf16<->f32 cvt operators don't work on non-avx512_core*/
+                    && IMPLICATION(
+                            desc()->data_desc.data_type == data_type::bf16,
+                            mayiuse(avx512_core))
+                    && IMPLICATION(use_generic, one_of(src_d.ndims(), 4, 5))
+                    && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
             return status::success;
@@ -85,7 +84,7 @@ struct ref_eltwise_fwd_t: public cpu_primitive_t {
         bool use_dense_, use_nCspBc_padded_;
     };
 
-    ref_eltwise_fwd_t(const pd_t *apd): cpu_primitive_t(apd) {}
+    ref_eltwise_fwd_t(const pd_t *apd) : primitive_impl_t(apd) {}
     typedef typename prec_traits<data_type>::type data_t;
 
     virtual status_t execute(const exec_ctx_t &ctx) const override {
@@ -102,12 +101,12 @@ private:
     void execute_forward_nCspBc_padded(const exec_ctx_t &ctx) const;
     void execute_forward_dense(const exec_ctx_t &ctx) const;
     void execute_forward_generic(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 };
 
 template <impl::data_type_t data_type>
-struct ref_eltwise_bwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_eltwise_bwd_pd_t {
+struct ref_eltwise_bwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_eltwise_bwd_pd_t {
         using cpu_eltwise_bwd_pd_t::cpu_eltwise_bwd_pd_t;
 
         DECLARE_COMMON_PD_T("ref:any", ref_eltwise_bwd_t);
@@ -115,22 +114,22 @@ struct ref_eltwise_bwd_t: public cpu_primitive_t {
         status_t init() {
             using namespace utils;
 
-            bool ok = true
-                && !is_fwd()
-                && everyone_is(data_type,
-                        desc()->data_desc.data_type,
-                        desc()->diff_data_desc.data_type)
-                && attr()->has_default_values();
+            bool ok = true && !is_fwd()
+                    && everyone_is(data_type, desc()->data_desc.data_type,
+                            desc()->diff_data_desc.data_type)
+                    /*bf16<->f32 cvt operators don't work on non-avx512_core*/
+                    && IMPLICATION(
+                            desc()->data_desc.data_type == data_type::bf16,
+                            mayiuse(avx512_core))
+                    && set_default_formats_common()
+                    && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
             auto diff_dst_d = memory_desc_wrapper(diff_dst_md());
             const bool same_fmt_ = diff_dst_d == memory_desc_wrapper(src_md());
 
-            use_dense_ = true
-                && same_fmt_
-                && diff_dst_d.is_dense(true)
-                && is_zero_preserved()
-                && !has_zero_dim_memory();
+            use_dense_ = true && same_fmt_ && diff_dst_d.is_dense(true)
+                    && is_zero_preserved() && !has_zero_dim_memory();
             const bool use_generic = !use_dense_;
 
             if (use_generic && !one_of(diff_dst_d.ndims(), 4, 5))
@@ -142,7 +141,7 @@ struct ref_eltwise_bwd_t: public cpu_primitive_t {
         bool use_dense_;
     };
 
-    ref_eltwise_bwd_t(const pd_t *apd): cpu_primitive_t(apd) {}
+    ref_eltwise_bwd_t(const pd_t *apd) : primitive_impl_t(apd) {}
     typedef typename prec_traits<data_type>::type data_t;
 
     virtual status_t execute(const exec_ctx_t &ctx) const override {
@@ -156,13 +155,13 @@ struct ref_eltwise_bwd_t: public cpu_primitive_t {
 private:
     void execute_backward_dense(const exec_ctx_t &ctx) const;
     void execute_backward_generic(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

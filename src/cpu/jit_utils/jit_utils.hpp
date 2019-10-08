@@ -17,7 +17,9 @@
 #ifndef JIT_SUPPORT_HPP
 #define JIT_SUPPORT_HPP
 
-namespace mkldnn {
+#include <cstdlib>
+
+namespace dnnl {
 namespace impl {
 namespace cpu {
 namespace jit_utils {
@@ -26,7 +28,7 @@ void register_jit_code(const void *code, size_t code_size,
         const char *code_name, const char *source_file_name);
 
 }
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 #endif

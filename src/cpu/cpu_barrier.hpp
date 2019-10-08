@@ -22,22 +22,30 @@
 #include "jit_generator.hpp"
 #include "utils.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 namespace simple_barrier {
 
-STRUCT_ALIGN(64,
-struct ctx_t {
-    enum { CACHE_LINE_SIZE = 64 };
-    volatile size_t ctr;
-    char pad1[CACHE_LINE_SIZE - 1 * sizeof(size_t)];
-    volatile size_t sense;
-    char pad2[CACHE_LINE_SIZE - 1 * sizeof(size_t)];
-});
+#ifdef _WIN32
+#define CTX_ALIGNMENT 64
+#else
+#define CTX_ALIGNMENT 4096
+#endif
 
-inline void ctx_init(ctx_t *ctx) { *ctx = utils::zero<ctx_t>(); }
+STRUCT_ALIGN(
+        CTX_ALIGNMENT, struct ctx_t {
+            enum { CACHE_LINE_SIZE = 64 };
+            volatile size_t ctr;
+            char pad1[CACHE_LINE_SIZE - 1 * sizeof(size_t)];
+            volatile size_t sense;
+            char pad2[CACHE_LINE_SIZE - 1 * sizeof(size_t)];
+        });
+
+inline void ctx_init(ctx_t *ctx) {
+    *ctx = utils::zero<ctx_t>();
+}
 void barrier(ctx_t *ctx, int nthr);
 
 /** injects actual barrier implementation into another jitted code
@@ -46,15 +54,14 @@ void barrier(ctx_t *ctx, int nthr);
  *   reg_ctx   -- read-only register with pointer to the barrier context
  *   reg_nnthr -- read-only register with the # of synchronizing threads
  */
-void generate(jit_generator &code, Xbyak::Reg64 reg_ctx,
-        Xbyak::Reg64 reg_nthr);
+void generate(jit_generator &code, Xbyak::Reg64 reg_ctx, Xbyak::Reg64 reg_nthr);
 
-}
+} // namespace simple_barrier
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

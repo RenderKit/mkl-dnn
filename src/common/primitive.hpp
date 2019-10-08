@@ -19,58 +19,48 @@
 
 #include <assert.h>
 
-#include "mkldnn.h"
+#include "dnnl.h"
 
 #include "c_types_map.hpp"
-#include "nstl.hpp"
-#include "primitive_desc.hpp"
+#include "memory_tracking.hpp"
 #include "primitive_exec_types.hpp"
+#include "primitive_impl.hpp"
+#include "scratchpad.hpp"
 
-/** \brief A pure virtual primitive class
- *
- * Primitive contains links to its inputs & outputs, though it does not track
- * their readiness on execution step.
- *
- * @remark @b Rational.
- *   Dependencies are essential through-out the whole MKL-DNN library, so it
- *   makes sense to include them on the very low level. On the other hand,
- *   tracking them should be a task for corresponding essence, like scheduler,
- *   stream or whatever. Primitive itself should know nothing about the
- *   environment it is running in.
- *
- * @note
- *   To make user experience better we should provide API which allows
- *   achieving the best (or good enough) performance when creating primitives
- *   in natural order: i.e. from bottom to top for forward pass and from top to
- *   bottom for backward pass. Please consider restriction [1] in Level 0.
- */
-struct mkldnn_primitive: public mkldnn::impl::c_compatible {
-    mkldnn_primitive(const mkldnn::impl::primitive_desc_t *pd)
-        : pd_(pd->clone()) {}
-    virtual ~mkldnn_primitive() { delete pd_; }
+#include <type_traits>
 
-    /** returns primitive's engine */
-    mkldnn::impl::engine_t *engine() const { return pd_->engine(); }
-    /** returns primitive's inputs */
-    const mkldnn::impl::primitive_desc_t *pd() const { return pd_; }
-    /** returns primitive's kind */
-    mkldnn::impl::primitive_kind_t kind() const { return pd_->kind(); }
+#define ARG_TYPE(t) \
+    typename std::remove_cv<typename std::remove_pointer<t>::type>::type
 
-    /** executes primitive with execution context @p ctx */
-    virtual mkldnn::impl::status_t execute(const mkldnn::impl::exec_ctx_t &ctx)
-        const = 0;
+#define CTX_IN_MEM(type, arg) \
+    static_cast<const ARG_TYPE(type) *>(CTX_IN_STORAGE(arg).data_handle())
 
-protected:
-    const mkldnn::impl::primitive_desc_t *pd_;
+#define CTX_OUT_MEM(type, arg) \
+    static_cast<ARG_TYPE(type) *>(CTX_OUT_STORAGE(arg).data_handle())
+
+struct dnnl_primitive : public dnnl::impl::c_compatible {
+    dnnl_primitive(
+            const std::shared_ptr<dnnl::impl::primitive_impl_t> &primitive_impl,
+            bool use_global_scratchpad);
+
+    dnnl::impl::status_t init();
+    dnnl::impl::engine_t *engine() const;
+    const dnnl::impl::primitive_desc_t *pd() const;
+    const std::shared_ptr<dnnl::impl::primitive_impl_t> &
+    get_primitive_impl() const;
+    dnnl::impl::status_t execute(dnnl::impl::exec_ctx_t &ctx) const;
+
+    ~dnnl_primitive();
 
 private:
-    mkldnn_primitive() = delete;
-    mkldnn_primitive(const mkldnn_primitive &) = delete;
-    mkldnn_primitive(mkldnn_primitive &&) = delete;
-    mkldnn_primitive &operator=(const mkldnn_primitive &) = delete;
-    mkldnn_primitive &operator=(mkldnn_primitive &&) = delete;
+    std::shared_ptr<dnnl::impl::primitive_impl_t> primitive_impl_;
+    void *scratchpad_buffer_;
+    dnnl::impl::scratchpad_t *global_scratchpad_;
+
+    dnnl_primitive() = delete;
+    DNNL_DISALLOW_COPY_AND_ASSIGN(dnnl_primitive);
 };
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

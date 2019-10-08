@@ -14,73 +14,70 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef _SHUFFLE_HPP
-#define _SHUFFLE_HPP
+#ifndef SHUFFLE_HPP
+#define SHUFFLE_HPP
 
-#include <stdint.h>
-#include <limits.h>
 #include <assert.h>
-#include <vector>
+#include <limits.h>
+#include <stdint.h>
+
+#include <iostream>
 
 #include "common.hpp"
 #include "dnn_types.hpp"
-#include "mkldnn_common.hpp"
-#include "mkldnn_memory.hpp"
-#include "mkldnn_debug.hpp"
+#include "dnnl_common.hpp"
+#include "dnnl_debug.hpp"
+#include "dnnl_memory.hpp"
+#include "perf_report.hpp"
 
 namespace shuffle {
 
-using dims_t = std::vector<int64_t>;
-
-struct dt_conf_t {
-    mkldnn_data_type_t dt;
-    int min;
-    int range;
-};
-
-const int int_max_exact = 1<<24;
-
-const dt_conf_t conf_f32 = {mkldnn_f32, -int_max_exact, 2*int_max_exact};
-const dt_conf_t conf_s8 = {mkldnn_s8, INT8_MIN, -2*INT8_MIN};
-const dt_conf_t conf_u8 = {mkldnn_u8, 0, UINT8_MAX};
-const dt_conf_t conf_s32 = {mkldnn_s32, -int_max_exact, 2*int_max_exact};
-
-const size_t max_desc_len = 196;
-
 struct prb_t {
-    prb_t(dims_t &dims, dir_t dir, mkldnn_data_type_t dt,
-            mkldnn_format_tag_t tag, int axis, int64_t group)
-        : dims(dims), dir(dir), dt(dt), tag(tag), a(axis), g(group) {}
+    prb_t(const dims_t &dims, dir_t dir, dnnl_data_type_t dt,
+            dnnl_format_tag_t tag, int axis, int64_t group)
+        : dims(dims), dir(dir), dt(dt), tag(tag), axis(axis), group(group) {}
     ~prb_t() {}
 
     dims_t dims;
     dir_t dir;
-    mkldnn_data_type_t dt;
-    mkldnn_format_tag_t tag;
-    int a;
-    int64_t g;
+    dnnl_data_type_t dt;
+    dnnl_format_tag_t tag;
+    int axis;
+    int64_t group;
+};
+std::ostream &operator<<(std::ostream &s, const prb_t &p);
+
+struct perf_report_t : public base_perf_report_t {
+    using base_perf_report_t::base_perf_report_t;
+
+    void report(const prb_t *p, const res_t *r, const char *prb_str) {
+        p_ = p;
+        base_report(r, prb_str);
+    }
+
+    virtual void dump_desc_csv(std::ostream &s) const override {
+        s << p_->dims;
+    }
+
+    virtual const int *axis() const override { return &p_->axis; }
+    virtual const int64_t *group() const override { return &p_->group; }
+    virtual const dir_t *dir() const override { return &p_->dir; }
+    virtual const dnnl_data_type_t *dt() const override { return &p_->dt; }
+    virtual const dnnl_format_tag_t *tag() const override { return &p_->tag; }
+
+private:
+    const prb_t *p_ = NULL;
 };
 
-const size_t max_dims_len = 20;
-dims_t str2dims(const char *str);
-void dims2str(const dims_t &dims, char *buffer);
-const size_t max_prb_len = max_desc_len + 196;
-void prb2str(const prb_t *p, char *buffer, bool canonical = false);
-
-extern const char *perf_template; /* performance output template */
-void perf_report(const prb_t *p, const res_t *r, const char *pstr);
-
-inline size_t data_off(const prb_t *p,
-        int64_t mb, int64_t c, int64_t d, int64_t h, int64_t w) {
+inline size_t data_off(const prb_t *p, int64_t mb, int64_t c, int64_t d,
+        int64_t h, int64_t w) {
     const auto &dims = p->dims;
     return (((mb * dims[1] + c) * dims[2] + d) * dims[3] + h) * dims[4] + w;
 }
 
 void compute_shuffle(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &dst);
-
-int fill_memory(const prb_t *p, dnn_mem_t &src);
 int doit(const prb_t *p, res_t *res);
-int bench(int argc, char **argv, bool main_bench = true);
-}
+int bench(int argc, char **argv);
+} // namespace shuffle
 
 #endif

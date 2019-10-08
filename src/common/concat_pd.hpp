@@ -20,70 +20,96 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "nstl.hpp"
 #include "primitive_desc.hpp"
 #include "type_helpers.hpp"
+
 #include "utils.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 
-struct concat_pd_t: public primitive_desc_t {
+struct concat_pd_t : public primitive_desc_t {
     concat_pd_t(engine_t *engine, const primitive_attr_t *attr,
             const memory_desc_t *dst_md, int n, int concat_dim,
             const memory_desc_t *src_mds)
         : primitive_desc_t(engine, attr, primitive_kind::concat)
-        , n_(n), concat_dim_(concat_dim), dst_md_(*dst_md)
-    {
+        , n_(n)
+        , concat_dim_(concat_dim)
+        , dst_md_(*dst_md) {
         src_mds_.reserve(n_);
-        for (int i = 0; i < n_; ++i) src_mds_.push_back(src_mds[i]);
+        for (int i = 0; i < n_; ++i)
+            src_mds_.push_back(src_mds[i]);
+
+        // Fill a desc that is intended for internal use only
+        desc_ = concat_desc_t();
+        desc_.primitive_kind = primitive_kind::concat;
+        desc_.dst_md = dst_md_;
+        desc_.n = n_;
+        desc_.concat_dimension = concat_dim_;
+        desc_.src_mds = src_mds_;
     }
 
-    concat_pd_t(const concat_pd_t &rhs) = default;
+    const concat_desc_t *desc() const { return &desc_; }
+    virtual const op_desc_t *op_desc() const override {
+        return reinterpret_cast<const op_desc_t *>(this->desc());
+    }
 
     virtual void init_info() override { impl::init_info(this, this->info_); }
 
-    virtual arg_usage_t arg_usage(primitive_arg_index_t arg) const override {
-        if (arg >= MKLDNN_ARG_MULTIPLE_SRC
-                && arg < MKLDNN_ARG_MULTIPLE_SRC + n_inputs())
+    virtual arg_usage_t arg_usage(int arg) const override {
+        if (arg >= DNNL_ARG_MULTIPLE_SRC
+                && arg < DNNL_ARG_MULTIPLE_SRC + n_inputs())
             return arg_usage_t::input;
 
-        if (arg == MKLDNN_ARG_DST)
-            return arg_usage_t::output;
+        if (arg == DNNL_ARG_DST) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override
-    { return index < n_inputs() ? &src_mds_[index] : nullptr; }
-    virtual const memory_desc_t *dst_md(int index = 0) const override
-    { return index == 0 ? &dst_md_ : nullptr; }
+    virtual const memory_desc_t *src_md(int index = 0) const override {
+        return index < n_inputs() ? &src_mds_[index] : &glob_zero_md;
+    }
+    virtual const memory_desc_t *dst_md(int index = 0) const override {
+        return index == 0 ? &dst_md_ : &glob_zero_md;
+    }
 
     virtual int n_inputs() const override { return n_; }
     virtual int n_outputs() const override { return 1; }
 
     int concat_dim() const { return concat_dim_; }
 
-    const memory_desc_t *src_image_md(int index = 0) const
-    { return index < n_inputs() ? &src_image_mds_[index] : nullptr; }
+    const memory_desc_t *src_image_md(int index = 0) const {
+        return index < n_inputs() ? &src_image_mds_[index] : &glob_zero_md;
+    }
 
 protected:
     int n_, concat_dim_;
     memory_desc_t dst_md_;
-    nstl::vector<memory_desc_t> src_mds_;
+    std::vector<memory_desc_t> src_mds_;
 
     /* contains images of srcs in the dst memory (if possible)
      * Lives here to simplify some implementations. An implementation might
      * use this auxiliary array iff init() returned success */
-    nstl::vector<memory_desc_t> src_image_mds_;
+    std::vector<memory_desc_t> src_image_mds_;
 
 protected:
-    /* inits src_image_mds_ and dst_md_ in simple cases. The call may fail */
-    status_t init() {
-        bool ok = true
-            && set_default_params() == status::success
-            && attr()->has_default_values();
+    concat_desc_t desc_;
+
+    /* inits src_image_mds_ and dst_md_ in simple cases. It is possible to
+     * override dst_md_ by using force_dst_md.
+     * Rationale: if user forces particular dst_md, that cannot be used to
+     *            create src_img_mds, the implementation might need to use
+     *            intermediate (force_dst_md) memory with some plain format.
+     *
+     * @warning The call may fail. */
+    status_t init(const memory_desc_t *force_dst_md = nullptr) {
+        bool ok = attr()->has_default_values();
+        if (force_dst_md == nullptr)
+            ok = ok && set_default_params() == status::success;
         if (!ok) return status::unimplemented;
+
+        /* work with force_dst_md */
+        if (force_dst_md == nullptr) force_dst_md = &dst_md_;
 
         for (int i = 0; i < n_; ++i) {
             const memory_desc_wrapper i_d(&src_mds_[i]);
@@ -91,19 +117,22 @@ protected:
                 return status::unimplemented;
         }
 
-        const int ndims = dst_md_.ndims;
+        const int ndims = force_dst_md->ndims;
         int current_concat_dim_offset = 0;
         for (int i = 0; i < n_; ++i) {
             const int dim = src_mds_[i].dims[concat_dim_];
             dims_t dims, offsets = {};
-            utils::array_copy(dims, dst_md_.dims, ndims);
+            utils::array_copy(dims, force_dst_md->dims, ndims);
             dims[concat_dim_] = dim;
             offsets[concat_dim_] = current_concat_dim_offset;
 
             memory_desc_t src_img_d;
-            status_t status = mkldnn_memory_desc_init_submemory(&src_img_d,
-                    &dst_md_, dims, offsets);
-            if (status != status::success) return status;
+            status_t status = dnnl_memory_desc_init_submemory(
+                    &src_img_d, force_dst_md, dims, offsets);
+            if (status != status::success) {
+                src_image_mds_.clear();
+                return status;
+            }
             src_image_mds_.push_back(src_img_d);
             current_concat_dim_offset += dim;
         }
@@ -112,8 +141,7 @@ protected:
     }
 
     status_t set_default_params() {
-        if (dst_md_.format_kind != format_kind::any)
-            return status::success;
+        if (dst_md_.format_kind != format_kind::any) return status::success;
 
         const int ndims = dst_md_.ndims;
 
@@ -127,8 +155,8 @@ protected:
         for (int i = 0; i < n_; ++i) {
             const memory_desc_wrapper src_d(src_mds_[i]);
             if (src_d.is_blocking_desc() && !src_d.is_plain()) {
-                status = memory_desc_init_by_blocking_desc(dst_md_,
-                        src_d.blocking_desc());
+                status = memory_desc_init_by_blocking_desc(
+                        dst_md_, src_d.blocking_desc());
                 if (status == status::success) break;
             }
         }
@@ -145,8 +173,8 @@ protected:
                 offsets[concat_dim_] = current_concat_dim_offset;
 
                 memory_desc_t src_img_d;
-                status_t status = mkldnn_memory_desc_init_submemory(&src_img_d,
-                        &dst_md_, dims, offsets);
+                status_t status = dnnl_memory_desc_init_submemory(
+                        &src_img_d, &dst_md_, dims, offsets);
                 if (status != status::success) {
                     desired_format_ok = false;
                     break;
@@ -154,8 +182,7 @@ protected:
                 current_concat_dim_offset += dim;
             }
 
-            if (!desired_format_ok)
-                status = status::unimplemented;
+            if (!desired_format_ok) status = status::unimplemented;
         }
 
         /* if no success so far, try using the format of the first plain input */
@@ -179,33 +206,34 @@ protected:
 };
 
 #define DECLARE_CONCAT_PD_t(impl_name, ...) \
-    static status_t create(concat_pd_t **concat_pd, \
-            engine_t *engine, const primitive_attr_t *attr, \
-            const memory_desc_t *dst_md, int n, int concat_dim, \
-            const memory_desc_t *src_mds) { \
+    static status_t create(concat_pd_t **concat_pd, engine_t *engine, \
+            const primitive_attr_t *attr, const memory_desc_t *dst_md, int n, \
+            int concat_dim, const memory_desc_t *src_mds) { \
         using namespace status; \
         auto _pd = new pd_t(engine, attr, dst_md, n, concat_dim, src_mds); \
         if (_pd == nullptr) return out_of_memory; \
-        if (_pd->init() != success) { delete _pd; return unimplemented; } \
+        if (_pd->init() != success) { \
+            delete _pd; \
+            return unimplemented; \
+        } \
+        _pd->init_info(); \
+        _pd->init_scratchpad_md(); \
         return safe_ptr_assign<concat_pd_t>(*concat_pd, _pd); \
     } \
     virtual status_t create_primitive(primitive_t **p) const override { \
-        double ms = get_msec(); \
-        auto ret = safe_ptr_assign<primitive_t>(*p, new (__VA_ARGS__)(this)); \
-        ms = get_msec() - ms; \
-        if (mkldnn_verbose()->level >= 2) { \
-            printf("mkldnn_verbose,create,%s,%g\n", this->info(), ms); \
-            fflush(0); \
-        } \
-        return ret; \
+        auto status = this->engine()->get_primitive( \
+                p, this, [=] { return std::make_shared<__VA_ARGS__>(this); }, \
+                false); \
+        return status; \
     } \
     virtual pd_t *clone() const override { return new pd_t(*this); } \
     virtual const char *name() const override { return impl_name; } \
+    virtual std::type_index impl_id() const override { return typeid(pd_t); }
 
 #define DECLARE_CONCAT_PD_T(impl_name, ...) \
     DECLARE_CONCAT_PD_t(impl_name, __VA_ARGS__)
 
-}
-}
+} // namespace impl
+} // namespace dnnl
 
 #endif

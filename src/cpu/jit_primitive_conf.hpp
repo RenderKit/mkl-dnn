@@ -20,25 +20,58 @@
 #include <stdint.h>
 
 #include "common/primitive_attr.hpp"
+#include "cpu_isa_traits.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 /* convolution */
-enum conv_version_t {ver_unused, ver_fma, ver_avx512_core, ver_4fma, ver_vnni};
-enum conv_loop_order_t {loop_cgn, loop_gnc, loop_ngc, loop_gncw, loop_cwgn,
-                            loop_ngcw, loop_nhwcg, loop_nwcg};
-enum conv_1x1_loop_order_t {loop_rbl, loop_rlb, loop_lbr, loop_lrb, loop_blr,
-                            loop_brl};
-enum conv_kernel_kind_t {embd_bcast, expl_bcast};
+enum conv_version_t {
+    ver_unused,
+    ver_fma,
+    ver_avx512_core,
+    ver_4fma,
+    ver_vnni
+};
+enum conv_loop_order_t {
+    loop_cgn,
+    loop_gnc,
+    loop_ngc,
+    loop_gncw,
+    loop_cwgn,
+    loop_ngcw,
+    loop_nhwcg,
+    loop_nwcg
+};
+enum conv_1x1_loop_order_t {
+    loop_rbl,
+    loop_rlb,
+    loop_lbr,
+    loop_lrb,
+    loop_blr,
+    loop_brl
+};
+enum conv_gemm_loop_order_t { gemm_loop_rlb, gemm_loop_lrb };
+
+enum conv_kernel_kind_t { embd_bcast, expl_bcast };
+enum conv_harness_t {
+    harness_2d_reduction,
+    harness_3d_reduction,
+    harness_mb_reduction
+};
 
 enum {
-    FLAG_MB_FIRST = 1 << 0, FLAG_MB_LAST = 1 << 1,
-    FLAG_OC_FIRST = 1 << 2, FLAG_OC_LAST = 1 << 3,
-    FLAG_IC_FIRST = 1 << 4, FLAG_IC_LAST = 1 << 5,
-    FLAG_SP_FIRST = 1 << 6, FLAG_SP_LAST = 1 << 7,
-    FLAG_REDUCE_FIRST = 1<<8, FLAG_REDUCE_LAST = 1<<9,
+    FLAG_MB_FIRST = 1 << 0,
+    FLAG_MB_LAST = 1 << 1,
+    FLAG_OC_FIRST = 1 << 2,
+    FLAG_OC_LAST = 1 << 3,
+    FLAG_IC_FIRST = 1 << 4,
+    FLAG_IC_LAST = 1 << 5,
+    FLAG_SP_FIRST = 1 << 6,
+    FLAG_SP_LAST = 1 << 7,
+    FLAG_REDUCE_FIRST = 1 << 8,
+    FLAG_REDUCE_LAST = 1 << 9,
     FLAG_ZERO_FILTER = 1 << 0, /* Controls whether the inner kernel skips
                                    loading weights-data from memory; this
                                    needs to happen on the first Group/16
@@ -53,6 +86,7 @@ struct jit_conv_conf_t {
     prop_kind_t prop_kind;
     conv_version_t ver;
     conv_loop_order_t loop_order;
+    conv_harness_t harness;
 
     int simd_w;
     int ndims;
@@ -108,7 +142,12 @@ struct jit_conv_conf_t {
     int ur_ow_max, ur_ow, ur_ow_tail;
     int ur_ow_nsteps;
     data_type_t bia_dt;
+    /* bf16 data-type for output */
     data_type_t dst_dt;
+    /* bf16 weights update */
+    data_type_t wei_dt;
+    data_type_t dsrc_dt;
+    data_type_t dwei_dt;
     /* avx512: max possible value is nregs(32) - aux_regs(4) */
     int src_offsets[28];
     int src_count;
@@ -125,6 +164,10 @@ struct jit_conv_conf_t {
     // s8s8 convolution
     bool signed_input;
     float wei_adj_scale;
+
+    cpu_isa_t isa;
+    // bf16 bwdw conv
+    int tr_ow;
 };
 
 struct jit_conv_conf_2x3_wino_t {
@@ -221,10 +264,10 @@ struct jit_conv_winograd_conf_t : public jit_conv_conf_t {
     int itiles;
     int jtiles;
     int ntiles;
-    int ic_simd_block=16;
+    int ic_simd_block = 16;
     int tile_4fma_padding;
     int tile_4fma;
-    int oc_simd_block=16;
+    int oc_simd_block = 16;
     int oc_reg_block;
     int ic_reg_block;
     int tile_block;
@@ -271,10 +314,12 @@ struct jit_conv_call_s {
     const void *compensation;
     size_t kd_offset;
     size_t kd_offset_prf;
-    size_t d_index;
-    size_t d_index_prf;
-    size_t d_worksize;
-    size_t d_worksize_prf;
+    size_t kh_offset;
+    size_t kh_offset_prf;
+    size_t os_index_begin;
+    size_t os_index_begin_prf;
+    size_t os_index_end;
+    size_t os_index_end_prf;
     size_t kd_padding;
     size_t kd_padding_prf;
     size_t kh_padding;
@@ -357,12 +402,12 @@ struct jit_1x1_conv_conf_t {
 
     int ur, ur_tail;
 
-    int reduce_dim, reduce_block, nb_reduce,
-        nb_reduce_blocking, nb_reduce_blocking_max;
-    int load_dim, load_block, nb_load,
-        nb_load_blocking, nb_load_blocking_max, nb_load_chunk;
-    int bcast_dim, bcast_block, nb_bcast,
-        nb_bcast_blocking, nb_bcast_blocking_max;
+    int reduce_dim, reduce_block, nb_reduce, nb_reduce_blocking,
+            nb_reduce_blocking_max;
+    int load_dim, load_block, nb_load, nb_load_blocking, nb_load_blocking_max,
+            nb_load_chunk;
+    int bcast_dim, bcast_block, nb_bcast, nb_bcast_blocking,
+            nb_bcast_blocking_max;
 
     int reduce_loop_unroll, reduce_loop_bcast_step, reduce_loop_load_step;
     int load_loop_load_step, load_loop_iter_step;
@@ -388,6 +433,8 @@ struct jit_1x1_conv_conf_t {
     data_type_t dst_dt;
     bool signed_input;
     float wei_adj_scale;
+
+    cpu_isa_t isa;
 };
 
 struct jit_gemm_conv_conf_t {
@@ -411,7 +458,10 @@ struct jit_gemm_conv_conf_t {
     bool signed_input;
     int oh_block;
     int ow_block;
+    int os_block;
     bool outer_threading;
+    conv_gemm_loop_order_t loop_order;
+    int nthr_oc;
 };
 
 struct jit_1x1_conv_call_s {
@@ -432,7 +482,6 @@ struct jit_1x1_conv_call_s {
     size_t first_last_flag;
 };
 
-/* pooling */
 struct jit_pool_conf_t {
     int ndims;
     int mb, c;
@@ -452,16 +501,22 @@ struct jit_pool_conf_t {
     int ur_w;
     int ur_w_tail;
     size_t tail[4];
+    bool safe_c_tail;
     data_type_t src_dt;
     data_type_t dst_dt;
+
+    int dt_size;
+    bool is_bf16;
+
+    cpu_isa_t isa;
 };
 
 struct jit_pool_call_s {
-    const float *src;
-    const float *dst;
+    const void *src;
+    const void *dst;
     const void *indices;
-    const float *src_prf;
-    const float *dst_prf;
+    const void *src_prf;
+    const void *dst_prf;
     const void *indices_prf;
     size_t oh;
     size_t kd_padding;
@@ -469,13 +524,12 @@ struct jit_pool_call_s {
     size_t kh_padding_shift;
     size_t kd_padding_shift;
     size_t kw_padding;
-    const float* init_value;
+    const void *init_value;
     float ker_area_h;
 };
 
-
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif

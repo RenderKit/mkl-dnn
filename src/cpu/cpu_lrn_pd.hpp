@@ -19,24 +19,25 @@
 
 #include <assert.h>
 
+#include "cpu_engine.hpp"
 #include "lrn_pd.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-struct cpu_lrn_fwd_pd_t: public lrn_fwd_pd_t {
+struct cpu_lrn_fwd_pd_t : public lrn_fwd_pd_t {
     using lrn_fwd_pd_t::lrn_fwd_pd_t;
 };
 
-struct cpu_lrn_bwd_pd_t: public lrn_bwd_pd_t {
+struct cpu_lrn_bwd_pd_t : public lrn_bwd_pd_t {
     using lrn_bwd_pd_t::lrn_bwd_pd_t;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

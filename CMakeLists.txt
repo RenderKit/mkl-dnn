@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2018 Intel Corporation
+# Copyright 2016-2019 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # limitations under the License.
 #===============================================================================
 
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 2.8.11)
 
 if(POLICY CMP0022)
     cmake_policy(SET CMP0022 NEW)
@@ -42,11 +42,11 @@ if(POLICY CMP0066)
     cmake_policy(SET CMP0066 NEW)
 endif()
 
-set(PROJECT_NAME "Intel(R) MKL-DNN")
-set(PROJECT_FULL_NAME "Intel(R) Math Kernel Library for Deep Neural Networks (Intel(R) MKL-DNN)")
-set(PROJECT_VERSION "0.90.0")
+set(PROJECT_NAME "DNNL")
+set(PROJECT_FULL_NAME "Deep Neural Network Library (DNNL)")
+set(PROJECT_VERSION "1.1.0")
 
-set(LIB_NAME mkldnn)
+set(LIB_NAME dnnl)
 
 if (CMAKE_VERSION VERSION_LESS 3.0)
     project(${PROJECT_NAME} C CXX)
@@ -56,7 +56,7 @@ else()
 endif()
 
 if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message("FATAL_ERROR" "Intel(R) MKL-DNN supports 64 bit platforms only")
+    message(FATAL_ERROR "DNNL supports 64 bit platforms only")
 endif()
 
 if("${CMAKE_BUILD_TYPE}" STREQUAL "")
@@ -64,30 +64,63 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "")
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
 set(CMAKE_SRC_CCXX_FLAGS)       # SRC specifics
 set(CMAKE_EXAMPLE_CCXX_FLAGS)   # EXAMPLE specifics
 set(CMAKE_TEST_CCXX_FLAGS)      # TESTS specifics
 
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
+if(UNIX OR MINGW)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+endif()
 
-include("cmake/utils.cmake")
-include("cmake/options.cmake")
-include("cmake/OpenMP.cmake")
-include("cmake/TBB.cmake")
-include("cmake/platform.cmake")
-include("cmake/SDL.cmake")
-#include("cmake/MKL.cmake")
-#include("cmake/Doxygen.cmake")
-include("cmake/version.cmake")
+include(mkldnn_compat)
+
+include(utils)
+include(options)
+include(OpenMP)
+include(TBB)
+include(OpenCL)
+include(platform)
+include(SDL)
+include(MKL)
+#include(Doxygen)
+include(version)
+
+# Handle cases when OpenMP runtime is requested but not found: override CPU
+# runtime to be sequential
+if(DNNL_CPU_RUNTIME STREQUAL "OMP" AND
+   DNNL_CPU_THREADING_RUNTIME STREQUAL "SEQ")
+    set(DNNL_CPU_RUNTIME "SEQ" CACHE STRING "" FORCE)
+endif()
 
 enable_testing()
 
 include_directories(include)
 
+configure_file(
+    "${PROJECT_SOURCE_DIR}/include/dnnl_config.h.in"
+    "${PROJECT_BINARY_DIR}/include/dnnl_config.h"
+)
+include_directories(${PROJECT_BINARY_DIR}/include)
+
+if(DNNL_INSTALL_MODE STREQUAL "BUNDLE" AND NOT DEFINED CMAKE_INSTALL_LIBDIR)
+    # define CMAKE_INSTALL_LIBDIR as "lib" in the case of bundle
+    set(CMAKE_INSTALL_LIBDIR "lib")
+endif()
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 add_subdirectory(src)
 add_subdirectory(examples)
 add_subdirectory(tests)
 
-# Cannot use CMAKE_INSTALL_DOCDIR since it uses PROJECT_NAME and not LIB_NAME
-install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/${LIB_NAME})
+if(DNNL_INSTALL_MODE STREQUAL "BUNDLE")
+    install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_PREFIX})
+    install(FILES README.md DESTINATION ${CMAKE_INSTALL_PREFIX})
+else()
+    # Cannot use CMAKE_INSTALL_DOCDIR since it uses PROJECT_NAME and not LIB_NAME
+    install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/${LIB_NAME})
+endif()

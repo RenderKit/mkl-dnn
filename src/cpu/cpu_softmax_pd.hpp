@@ -20,26 +20,27 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
+#include "cpu_engine.hpp"
 #include "softmax_pd.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
-struct cpu_softmax_fwd_pd_t: public softmax_fwd_pd_t {
+struct cpu_softmax_fwd_pd_t : public softmax_fwd_pd_t {
     using softmax_fwd_pd_t::softmax_fwd_pd_t;
 };
 
-struct cpu_softmax_bwd_pd_t: public softmax_bwd_pd_t {
+struct cpu_softmax_bwd_pd_t : public softmax_bwd_pd_t {
     using softmax_bwd_pd_t::softmax_bwd_pd_t;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s

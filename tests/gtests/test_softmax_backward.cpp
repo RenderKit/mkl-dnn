@@ -14,93 +14,86 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
-#include "mkldnn_test_common.hpp"
 
-#include "mkldnn.hpp"
 #include <memory>
+#include "dnnl.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 
 template <typename data_t>
-void check_softmax_bwd(memory& dst, memory& diff_dst, memory &diff_src, int axis)
-{
-    data_t *dst_ptr = (data_t *)dst.get_data_handle();
-    data_t *diff_dst_ptr = (data_t *)diff_dst.get_data_handle();
-    data_t *diff_src_ptr = (data_t *)diff_src.get_data_handle();
+void check_softmax_bwd(
+        memory &dst, memory &diff_dst, memory &diff_src, int axis) {
+    auto dst_ptr = map_memory<data_t>(dst);
+    auto diff_dst_ptr = map_memory<data_t>(diff_dst);
+    auto diff_src_ptr = map_memory<data_t>(diff_src);
 
     const memory::desc dst_pd = dst.get_desc();
     const memory::desc diff_dst_pd = diff_dst.get_desc();
 
-    const mkldnn::impl::memory_desc_wrapper dst_mdw(dst_pd.data);
-    const mkldnn::impl::memory_desc_wrapper diff_dst_mdw(diff_dst_pd.data);
+    const dnnl::impl::memory_desc_wrapper dst_mdw(dst_pd.data);
+    const dnnl::impl::memory_desc_wrapper diff_dst_mdw(diff_dst_pd.data);
 
     ASSERT_EQ(diff_dst_mdw.data_type(),
             memory::data_type::f32); // TODO: type assert
 
-    // Allocate buffer for reference BW result
     auto ndims = diff_dst_pd.data.ndims;
-    memory::dim total_dim_size = 1;
-    for (memory::dim i=0; i<ndims; ++i) {
-      total_dim_size *= diff_dst_pd.data.dims[i];
-    }
-    std::unique_ptr<data_t[]> diff_src_ref_ptr(new float[total_dim_size]);
-
     const float eps = 1e-7; //TODO: What should be the threshold?
 
     memory::dim OU = 1;
-    for (int d = 0; d < axis; ++d) OU *= diff_dst_pd.data.dims[d];
+    for (int d = 0; d < axis; ++d)
+        OU *= diff_dst_pd.data.dims[d];
     const int C = diff_dst_pd.data.dims[axis];
     memory::dim IN = 1;
-    for (int d = axis + 1; d < ndims; ++d) IN *= diff_dst_pd.data.dims[d];
+    for (int d = axis + 1; d < ndims; ++d)
+        IN *= diff_dst_pd.data.dims[d];
 
-    mkldnn::impl::parallel_nd(OU, IN, [&](memory::dim ou, memory::dim in) {
+    dnnl::impl::parallel_nd(OU, IN, [&](memory::dim ou, memory::dim in) {
+        if (is_current_test_failed()) return;
+
         const memory::dim idx_start = ou * C * IN + in;
 
         float sbr = 0.0;
-        for (memory::dim c=0; c < C ; ++c) {
-            auto off_d = dst_mdw.off_l(idx_start + c * IN, true);
-            auto off_dd = diff_dst_mdw.off_l(idx_start + c * IN, true);
+        for (memory::dim c = 0; c < C; ++c) {
+            auto off_d = dst_mdw.off_l(idx_start + c * IN);
+            auto off_dd = diff_dst_mdw.off_l(idx_start + c * IN);
             sbr += dst_ptr[off_d] * diff_dst_ptr[off_dd];
         }
 
-        for (memory::dim c=0; c < C ; ++c) {
-            auto off_d = dst_mdw.off_l(idx_start + c * IN, true);
-            auto off_dd = diff_dst_mdw.off_l(idx_start + c * IN, true);
-            diff_src_ref_ptr[off_dd] =
-                dst_ptr[off_d] * (diff_dst_ptr[off_dd] - sbr);
+        for (memory::dim c = 0; c < C; ++c) {
+            auto off_d = dst_mdw.off_l(idx_start + c * IN);
+            auto off_dd = diff_dst_mdw.off_l(idx_start + c * IN);
+            data_t diff_src_ref = dst_ptr[off_d] * (diff_dst_ptr[off_dd] - sbr);
+            ASSERT_NEAR(diff_src_ptr[off_dd], diff_src_ref, eps);
         }
     });
-
-    // Actual check
-    for (memory::dim i=0; i < OU*C*IN; ++i)
-        EXPECT_NEAR(diff_src_ptr[i], diff_src_ref_ptr[i], eps);
 }
 
 template <typename data_t>
 struct softmax_test_params {
-    engine::kind engine_kind;
     memory::format_tag data_memory_format;
     memory::format_tag diff_memory_format;
     memory::dims dims;
     int axis;
     bool expect_to_fail;
-    mkldnn_status_t expected_status;
+    dnnl_status_t expected_status;
 };
 
 template <typename data_t>
-class softmax_test : public ::testing::TestWithParam<softmax_test_params<data_t>> {
+class softmax_test
+    : public ::testing::TestWithParam<softmax_test_params<data_t>> {
     softmax_test_params<data_t> p;
+
 protected:
     virtual void SetUp() {
         p = ::testing::TestWithParam<softmax_test_params<data_t>>::GetParam();
-        catch_expected_failures([=](){Test();}, p.expect_to_fail,
-                    p.expected_status);
+        catch_expected_failures(
+                [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
 
     void Test() {
-        ASSERT_TRUE(p.engine_kind == engine::kind::cpu);
-        auto eng = engine(p.engine_kind, 0);
+        auto eng = engine(get_test_engine_kind(), 0);
         auto strm = stream(eng);
 
         memory::data_type prec = data_traits<data_t>::data_type;
@@ -108,75 +101,95 @@ protected:
         auto data_mem_desc = memory::desc(p.dims, prec, p.data_memory_format);
         auto diff_mem_desc = memory::desc(p.dims, prec, p.data_memory_format);
 
-        std::unique_ptr<data_t[]> src_data(new data_t[data_mem_desc.get_size()]);
-        std::unique_ptr<data_t[]> dst_data(new data_t[data_mem_desc.get_size()]);
+        auto src = memory(data_mem_desc, eng);
+        auto dst = memory(data_mem_desc, eng);
 
-        std::unique_ptr<data_t[]> src_diff(new data_t[diff_mem_desc.get_size()]);
-        std::unique_ptr<data_t[]> dst_diff(new data_t[diff_mem_desc.get_size()]);
-
-        auto src = memory(data_mem_desc, eng, src_data.get());
-        auto dst = memory(data_mem_desc, eng, dst_data.get());
-
-        auto diff_src = memory(diff_mem_desc, eng, src_diff.get());
-        auto diff_dst = memory(diff_mem_desc, eng, dst_diff.get());
+        auto diff_src = memory(diff_mem_desc, eng);
+        auto diff_dst = memory(diff_mem_desc, eng);
 
         // Create softmax backward descriptor
         // before forward so its exceptions can be tested
         auto softmax_desc
-            = softmax_backward::desc(diff_mem_desc, data_mem_desc, p.axis);
+                = softmax_backward::desc(diff_mem_desc, data_mem_desc, p.axis);
 
         // Create softmax forward (hint for backward)
-        auto softmax_fwd_desc = softmax_forward::desc(prop_kind::forward_scoring,
-                data_mem_desc, p.axis);
-        auto softmax_fwd_pdesc = softmax_forward::primitive_desc(softmax_fwd_desc,
-                eng);
+        auto softmax_fwd_desc = softmax_forward::desc(
+                prop_kind::forward_scoring, data_mem_desc, p.axis);
+        auto softmax_fwd_pdesc
+                = softmax_forward::primitive_desc(softmax_fwd_desc, eng);
 
         auto softmax = softmax_forward(softmax_fwd_pdesc);
 
-        auto softmax_prim_desc
-            = softmax_backward::primitive_desc(softmax_desc, eng, softmax_fwd_pdesc);
+        auto softmax_prim_desc = softmax_backward::primitive_desc(
+                softmax_desc, eng, softmax_fwd_pdesc);
+        softmax_prim_desc = softmax_backward::primitive_desc(
+                softmax_prim_desc.get()); // test construction from C pd
         auto softmax_bwd = softmax_backward(softmax_prim_desc);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
             // Fill the softmax forward input
-            fill_data<data_t>(data_mem_desc.get_size(),
-                    (data_t *)src.get_data_handle(), mean, var);
+            fill_data<data_t>(
+                    data_mem_desc.get_size() / sizeof(data_t), src, mean, var);
+            check_zero_tail<data_t>(1, src);
 
             // Fill the softmax backward diffs
             // eg. data diff that comes from upper primitive/layer
-            fill_data<data_t>(diff_mem_desc.get_size(),
-                    (data_t *)diff_dst.get_data_handle(), data_t(0), data_t(1));
+            fill_data<data_t>(diff_mem_desc.get_size() / sizeof(data_t),
+                    diff_dst, data_t(0), data_t(1));
+            check_zero_tail<data_t>(1, diff_dst);
 
-            softmax.execute(strm, {{MKLDNN_ARG_SRC, src}, {MKLDNN_ARG_DST, dst}});
-            softmax_bwd.execute(strm, {
-                    {MKLDNN_ARG_DST, dst},
-                    {MKLDNN_ARG_DIFF_DST, diff_dst},
-                    {MKLDNN_ARG_DIFF_SRC, diff_src}});
+            softmax.execute(strm, {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, dst}});
+            softmax_bwd.execute(strm,
+                    {{DNNL_ARG_DST, dst}, {DNNL_ARG_DIFF_DST, diff_dst},
+                            {DNNL_ARG_DIFF_SRC, diff_src}});
+            strm.wait();
 
             check_softmax_bwd<data_t>(dst, diff_dst, diff_src, p.axis);
+            check_zero_tail<data_t>(0, diff_src);
         };
 
         test_with_given_fill(-200, 1);
-        test_with_given_fill(   0, 1);
-        test_with_given_fill( 200, 1);
+        test_with_given_fill(0, 1);
+        test_with_given_fill(200, 1);
     }
 };
 
 using softmax_backward_test_float = softmax_test<float>;
 using softmax_bwd_test_params_float = softmax_test_params<float>;
 
-TEST_P(softmax_backward_test_float, TestsSoftmax) { }
+TEST_P(softmax_backward_test_float, TestsSoftmax) {}
 INSTANTIATE_TEST_SUITE_P(TestSoftmaxBackward, softmax_backward_test_float,
         ::testing::Values(
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, -2, 128, 256}, 0, true, mkldnn_invalid_arguments},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 19, 128, 256}, 5, true, mkldnn_invalid_arguments},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 0, 5, 5}, 0},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 0, 5, 5}, 1},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 19, 128, 256}, 0},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 19, 128, 256}, 2},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nchw, memory::format_tag::nchw, {2, 19, 128, 256}, 3},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nc, memory::format_tag::nc, {16, 300}, 0},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nc, memory::format_tag::nc, {16, 30000}, 1},
-            softmax_bwd_test_params_float{ engine::kind::cpu, memory::format_tag::nc, memory::format_tag::nc, {2, 1000}, 1}
-));
-}
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, -2, 128, 256}, 0, true,
+                        dnnl_invalid_arguments},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 19, 128, 256}, 5, true,
+                        dnnl_invalid_arguments},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 0, 5, 5}, 0},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 0, 5, 5}, 1},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 19, 128, 256}, 0},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 19, 128, 256}, 2},
+                softmax_bwd_test_params_float {memory::format_tag::nchw,
+                        memory::format_tag::nchw, {2, 19, 128, 256}, 3},
+                softmax_bwd_test_params_float {memory::format_tag::ncw,
+                        memory::format_tag::ncw, {2, 19, 128}, 0},
+                softmax_bwd_test_params_float {memory::format_tag::ncw,
+                        memory::format_tag::ncw, {2, 19, 128}, 1},
+                softmax_bwd_test_params_float {memory::format_tag::ncw,
+                        memory::format_tag::ncw, {2, 19, 128}, 2},
+                softmax_bwd_test_params_float {memory::format_tag::nc,
+                        memory::format_tag::nc, {16, 300}, 0},
+                softmax_bwd_test_params_float {memory::format_tag::nc,
+                        memory::format_tag::nc, {16, 30000}, 1},
+                softmax_bwd_test_params_float {memory::format_tag::nc,
+                        memory::format_tag::nc, {2, 1000}, 1},
+                softmax_bwd_test_params_float {memory::format_tag::nChw8c,
+                        memory::format_tag::nChw8c, {64, 1011, 1, 1}, 1},
+                softmax_bwd_test_params_float {memory::format_tag::nChw8c,
+                        memory::format_tag::nChw8c, {2, 1011, 32, 1}, 2}));
+} // namespace dnnl

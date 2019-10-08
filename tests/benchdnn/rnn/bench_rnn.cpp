@@ -14,126 +14,121 @@
  * limitations under the License.
  *******************************************************************************/
 
-#include <float.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "mkldnn.h"
+#include <sstream>
 
-#include "mkldnn_common.hpp"
-#include "mkldnn_debug.hpp"
-#include "mkldnn_memory.hpp"
+#include "dnnl.h"
+
+#include "dnnl_common.hpp"
+#include "dnnl_memory.hpp"
+#include "parser.hpp"
 
 #include "rnn/rnn.hpp"
 
 namespace rnn {
 
-/* global driver parameters */
-mkldnn_prop_kind_t prop = mkldnn_forward;
-alg_t alg = VANILLA_RNN;
-mkldnn_rnn_direction_t direction = mkldnn_unidirectional_left2right;
-activation_t activation = RELU;
-const char *perf_template = "perf,%n,%d,,,%-t,,%0t,";
-const dt_conf_t *cfg = conf_f32;
-policy_t scale_policy = NONE;
+std::vector<dir_t> prop {FWD_D};
+std::vector<const dt_conf_t *> cfg {conf_f32};
+std::vector<alg_t> alg {VANILLA_RNN};
+std::vector<dnnl_rnn_direction_t> direction {dnnl_unidirectional_left2right};
+std::vector<activation_t> activation {RELU};
+std::vector<bool> skip_nonlinear {false};
+std::vector<int64_t> mb {0};
+std::vector<policy_t> scale_policy {policy_t::NONE};
+
 attr_t attr;
 bool allow_unimpl = false;
-int mb = 0;
+unsigned int flags = 0x0;
+float alpha = 0.0f;
+float beta = 0.0f;
+const char *perf_template_csv
+        = "perf,%engine%,%name%,%prop%,%DESC%,"
+          "%Gops%,%Gfreq%,%-time%,%-Gflops%,%0time%,%0Gflops%";
+const char *perf_template_def = perf_template_csv;
+const char *perf_template = perf_template_def;
 
 void reset_parameters() {
-    cfg = conf_f32;
+    prop = {FWD_D};
+    cfg = {conf_f32};
+    alg = {VANILLA_RNN};
+    direction = {dnnl_unidirectional_left2right};
+    activation = {RELU};
+    mb = {0};
     attr = attr_t();
-    prop = mkldnn_forward;
-    alg = VANILLA_RNN;
-    direction = mkldnn_unidirectional_left2right;
-    activation = RELU;
-    scale_policy = NONE;
+    scale_policy = {policy_t::NONE};
     allow_unimpl = false;
-    mb = 0;
 }
 
-int bench(int argc, char **argv, bool main_bench) {
-    for (int arg = 0; arg < argc; ++arg) {
-        if (!strncmp("--batch=", argv[arg], 8))
-            SAFE(batch(argv[arg] + 8, bench), CRIT);
-        else if (!strncmp("--prop=", argv[arg], 7)) {
-            dir_t dir = str2dir(argv[arg] + 7);
-            if (dir == FWD_D)
-                prop = mkldnn_forward;
-            else if (dir == BWD_DW)
-                prop = mkldnn_backward;
-            else
-                assert("unknown dir");
-        } else if (!strncmp("--alg=", argv[arg], 6))
-            alg = str2alg(argv[arg] + 6);
-        else if (!strncmp("--cfg=", argv[arg], 6))
-            cfg = str2cfg(argv[arg] + 6);
-        else if (!strncmp("--attr=", argv[arg], 7))
-            SAFE(str2attr(&attr, argv[arg] + 7), CRIT);
-        else if (!strncmp("--direction=", argv[arg], 12))
-            direction = str2direction(argv[arg] + 12);
-        else if (!strncmp("--activation=", argv[arg], 13))
-            activation = str2activation(argv[arg] + 13);
-        else if (!strncmp("--allow-unimpl=", argv[arg], 15))
-            allow_unimpl = str2bool(argv[arg] + 15);
-        else if (!strncmp("--scaling=", argv[arg], 10))
-            scale_policy = str2policy(argv[arg] + 10);
-        else if (!strncmp("--reset", argv[arg], 7))
-            reset_parameters();
-        else if (!strncmp("--perf-template=", argv[arg], 16))
-            perf_template = argv[arg] + 16;
-        else if (!strncmp("--mb=", argv[arg], 5))
-            mb = atoi(argv[arg] + 5);
-        else if (!strncmp("-v", argv[arg], 2))
-            verbose = atoi(argv[arg] + 2);
-        else if (!strncmp("--verbose=", argv[arg], 10))
-            verbose = atoi(argv[arg] + 10);
-        else {
-            rnn_desc_t d;
-            if (str2desc(&d, argv[arg]) == FAIL) {
-                fprintf(stderr, "driver: unknown option: `%s`, exiting...\n",
-                        argv[arg]);
-                exit(2);
-            }
-            if (cfg != conf_f32 && alg != VANILLA_LSTM) {
-                fprintf(stderr,
-                        "driver: configuration ``%s` is supported for LSTM "
-                        "cell only, exiting...\n",
-                        cfg2str(cfg));
-                exit(2);
-            }
-            if (cfg != conf_f32 && scale_policy == NONE) {
-                fprintf(stderr,
-                        "driver: configuration ``%s` requires scale policy to "
-                        "be COMMON or PER_OC, exiting...\n",
-                        cfg2str(cfg));
-                exit(2);
-            }
-            check(&d);
+void check_correctness(const desc_t *c) {
+    for_(const auto &i_prop : prop)
+    for_(const auto &i_cfg : cfg)
+    for_(const auto &i_alg : alg)
+    for_(const auto &i_scale_policy : scale_policy)
+    for_(const auto &i_direction : direction)
+    for_(const auto &i_activation : activation)
+    for_(const auto &i_skip_nonlinear : skip_nonlinear)
+    for (const auto &i_mb : mb) {
+        check_case_validity(i_cfg, i_scale_policy);
+        dnnl_prop_kind_t prop_kind = prop2prop_kind(i_prop);
+
+        const prb_t p(*c, i_cfg, prop_kind, i_alg, i_direction, attr,
+                i_scale_policy, flags, i_activation, alpha, beta,
+                i_skip_nonlinear, i_mb);
+        std::stringstream ss;
+        ss << p;
+        const std::string cpp_pstr = ss.str();
+        const char *pstr = cpp_pstr.c_str();
+        print(1, "run: %s\n", pstr);
+
+        res_t res {};
+        const int status = doit(p, &res);
+
+        bool want_perf_report = false;
+        parse_result(res, want_perf_report, allow_unimpl, status, pstr);
+
+        if (want_perf_report && bench_mode & PERF) {
+            perf_report_t pr(perf_template);
+            pr.report(&p, &res, pstr);
+        }
+
+        benchdnn_stat.tests++;
+    }
+}
+
+int bench(int argc, char **argv) {
+    driver_name = "rnn";
+    using namespace parser;
+    for (; argc > 0; --argc, ++argv) {
+        const bool parsed_options = false || parse_bench_settings(argv[0])
+                || parse_batch(bench, argv[0])
+                || parse_dir(prop, argv[0], "prop")
+                || parse_cfg(cfg, str2cfg, argv[0])
+                || parse_vector_option(alg, str2alg, argv[0], "alg")
+                || parse_vector_option(
+                        direction, str2direction, argv[0], "direction")
+                || parse_vector_option(
+                        activation, str2activation, argv[0], "activation")
+                || parse_scale_policy(scale_policy, argv[0])
+                || parse_mb(mb, argv[0])
+                || parse_skip_nonlinear(skip_nonlinear, argv[0])
+                || parse_attr(attr, argv[0])
+                || parse_allow_unimpl(allow_unimpl, argv[0])
+                || parse_perf_template(perf_template, perf_template_def,
+                        perf_template_csv, argv[0])
+                || parse_reset(reset_parameters, argv[0]);
+        if (!parsed_options) {
+            catch_unknown_options(argv[0]);
+
+            desc_t c;
+            SAFE_V(str2desc(&c, argv[0]));
+            check_correctness(&c);
         }
     }
-    return OK;
-}
 
-void check(rnn_desc_t *d) {
-    const rnn_prb_t p(*d, cfg, prop, alg, direction, activation, attr,
-        scale_policy, mb);
-    res_t res{};
-    char pstr[max_prb_len];
-
-    int status = rnn::doit(&p, &res);
-
-    prb2str(&p, &res, pstr);
-    bool want_perf_report = false;
-
-    parse_result(res, want_perf_report, allow_unimpl, status, pstr);
-
-    if (bench_mode & PERF)
-        perf_report(&p, &res, pstr);
-
-    benchdnn_stat.tests++;
+    return parse_last_argument();
 }
 
 } // namespace rnn

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,20 +17,19 @@
 #ifndef REF_GEMM_F32_HPP
 #define REF_GEMM_F32_HPP
 
-#include "mkldnn_types.h"
+#include "dnnl_types.h"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <typename data_t>
-mkldnn_status_t ref_gemm(const char *transa, const char *transb, const int *M,
+dnnl_status_t ref_gemm(const char *transa, const char *transb, const int *M,
         const int *N, const int *K, const data_t *alpha, const data_t *A,
         const int *lda, const data_t *B, const int *ldb, const data_t *beta,
         data_t *C, const int *ldc, const data_t *bias);
+}
+} // namespace impl
+} // namespace dnnl
 
-}
-}
-}
-
-#endif
+#endif // REF_GEMM_F32_HPP

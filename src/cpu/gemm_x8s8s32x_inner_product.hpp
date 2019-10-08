@@ -25,45 +25,41 @@
 #include "utils.hpp"
 
 #include "gemm/gemm.hpp"
+#include "gemm_inner_product_utils.hpp"
 #include "jit_generator.hpp"
 
 #include "cpu_inner_product_pd.hpp"
-#include "cpu_primitive.hpp"
 
-namespace mkldnn {
+namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <impl::data_type_t src_type, impl::data_type_t dst_type>
-struct gemm_x8s8s32x_inner_product_fwd_t: public cpu_primitive_t {
-    struct pd_t: public cpu_inner_product_fwd_pd_t {
+struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_impl_t {
+    struct pd_t : public cpu_inner_product_fwd_pd_t {
         using cpu_inner_product_fwd_pd_t::cpu_inner_product_fwd_pd_t;
 
-        DECLARE_COMMON_PD_T(src_type == data_type::u8
-                ? IGEMM_S8U8S32_IMPL_STR
-                : IGEMM_S8S8S32_IMPL_STR,
-                gemm_x8s8s32x_inner_product_fwd_t);
+        DECLARE_COMMON_PD_T(src_type == data_type::u8 ? IGEMM_S8U8S32_IMPL_STR
+                                                      : IGEMM_S8S8S32_IMPL_STR,
+                gemm_x8s8s32x_inner_product_fwd_t, USE_GLOBAL_SCRATCHPAD);
 
         status_t init() {
             using namespace data_type;
 
-            bool ok = true
-                && set_default_params() == status::success
-                && is_fwd()
-                && !has_zero_dim_memory()
-                && src_md()->data_type == src_type
-                && dst_md()->data_type == dst_type
-                && weights_md()->data_type == s8
-                && IMPLICATION(with_bias(), utils::one_of(
-                            weights_md(1)->data_type, f32, s32, s8, u8))
-                && attr()->post_ops_.len_ <= 1
-                && IMPLICATION(attr()->post_ops_.len_,
-                        attr()->post_ops_.entry_[0].is_relu(true, false))
-                && dense_gemm_consitency_check(src_md(), weights_md(),
-                        dst_md());
+            bool ok = true && is_fwd() && !has_zero_dim_memory()
+                    && src_md()->data_type == src_type
+                    && dst_md()->data_type == dst_type
+                    && weights_md()->data_type == s8
+                    && IMPLICATION(with_bias(),
+                            utils::one_of(
+                                    weights_md(1)->data_type, f32, s32, s8, u8))
+                    && post_ops_ok() && set_default_params() == status::success
+                    && dense_gemm_consitency_check(
+                            src_md(), weights_md(), dst_md());
             if (!ok) return status::unimplemented;
 
-            dst_is_acc_ = utils::one_of(dst_type, s32, f32);
+            bool do_sum = attr()->post_ops_.find(primitive_kind::sum) >= 0;
+            dst_is_acc_ = utils::one_of(dst_type, s32, f32) && !do_sum;
 
             init_scratchpad();
 
@@ -73,19 +69,18 @@ struct gemm_x8s8s32x_inner_product_fwd_t: public cpu_primitive_t {
         bool dst_is_acc_;
 
     protected:
-        status_t set_default_params() {
-            using namespace format_tag;
-            if (src_md_.format_kind == format_kind::any) {
-                CHECK(memory_desc_init_by_tag(src_md_,
-                            utils::pick(ndims() - 2, nc, nwc, nhwc, ndhwc)));
+        bool post_ops_ok() const {
+            auto const &po = attr()->post_ops_;
+            auto is_eltwise
+                    = [&](int idx) { return po.entry_[idx].is_eltwise(false); };
+            auto is_sum = [&](int idx) { return po.entry_[idx].is_sum(false); };
+            switch (po.len_) {
+                case 0: return true; // no post_ops
+                case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
+                case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
+                default: return false;
             }
-            if (dst_md_.format_kind == format_kind::any)
-                CHECK(memory_desc_init_by_tag(dst_md_, nc));
-            if (weights_md_.format_kind == format_kind::any) {
-                CHECK(memory_desc_init_by_tag(weights_md_,
-                            utils::pick(ndims() - 2, io, wio, hwio, dhwio)));
-            }
-            return inner_product_fwd_pd_t::set_default_params();
+            return false;
         }
 
     private:
@@ -99,9 +94,10 @@ struct gemm_x8s8s32x_inner_product_fwd_t: public cpu_primitive_t {
         }
     };
 
-    gemm_x8s8s32x_inner_product_fwd_t(const pd_t *apd)
-        : cpu_primitive_t(apd, true)
-    { pp_kernel_ = new pp_kernel_t(apd, pd()->dst_is_acc_); }
+    gemm_x8s8s32x_inner_product_fwd_t(const pd_t *apd) : primitive_impl_t(apd) {
+        pp_kernel_ = new inner_product_utils::pp_kernel_t<data_type::s32,
+                dst_type>(apd, false);
+    }
     ~gemm_x8s8s32x_inner_product_fwd_t() { delete pp_kernel_; }
 
     typedef typename prec_traits<dst_type>::type data_t;
@@ -117,50 +113,16 @@ struct gemm_x8s8s32x_inner_product_fwd_t: public cpu_primitive_t {
     }
 
 private:
-    // XXX: this is throwaway code that will become unnecessary when we have a
-    // sufficiently advanced igemm jit generator that supports quantization,
-    // relu, and whatnot
-    class pp_kernel_t: jit_generator {
-    public:
-        DECLARE_CPU_JIT_AUX_FUNCTIONS(
-                gemm_x8s8s32x_inner_product_fwd_t::pp_kernel);
-        pp_kernel_t(const pd_t *pd, bool dst_is_acc);
-
-        void operator()(dst_data_t *dst, const acc_data_t *acc,
-                const char *bias, const float *scales, float nslope,
-                size_t start, size_t end);
-    private:
-        void generate();
-
-        struct ker_args {
-            dst_data_t *dst;
-            const acc_data_t *acc;
-            const char *bias;
-            const float *scales;
-            float nslope;
-            size_t len;
-            size_t oc_offset;
-        };
-        void (*ker_)(const ker_args *args);
-
-        size_t OC_;
-        data_type_t bias_data_type_;
-        size_t bias_data_type_size_;
-        size_t scale_idx_mult_;
-        bool do_bias_;
-        bool do_relu_;
-    };
-
     void execute_forward(const exec_ctx_t &ctx) const;
-    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
-    pp_kernel_t *pp_kernel_;
+    inner_product_utils::pp_kernel_t<data_type::s32, dst_type> *pp_kernel_;
 };
 
-}
-}
-}
+} // namespace cpu
+} // namespace impl
+} // namespace dnnl
 
 #endif
 
-// vim: et ts=4 sw=4 cindent cino^=l0,\:0,N-s
+// vim: et ts=4 sw=4 cindent cino+=l0,\:4,N-s
