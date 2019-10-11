@@ -200,65 +200,33 @@ void parallel_nd(Args &&... args) {
 
 template <typename T0, typename F>
 void parallel_nd(const T0 &D0, F f) {
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            T0(0), D0, [&](T0 d0) { f(d0); },
+            0, nthr, [&](int ithr) { for_nd(ithr, nthr, D0, f); },
             dnnl_tbb_partitioner());
 }
 
 template <typename T0, typename T1, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, F f) {
-    const size_t work_amount = (size_t)D0 * D1;
-    if (work_amount == 0) return;
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, work_amount),
-            [&](const tbb::blocked_range<size_t>& r) {
-                T0 d0{0};
-                T1 d1{0};
-                utils::nd_iterator_init(r.begin(), d0, D0, d1, D1);
-                for (size_t iwork = r.begin(); iwork != r.end(); ++iwork) {
-                    f(d0, d1);
-                    utils::nd_iterator_step(d0, D0, d1, D1);
-                }
-            },
+            0, nthr, [&](int ithr) { for_nd(ithr, nthr, D0, D1, f); },
             dnnl_tbb_partitioner());
 }
 
 template <typename T0, typename T1, typename T2, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, F f) {
-    const size_t work_amount = (size_t)D0 * D1 * D2;
-    if (work_amount == 0) return;
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, work_amount),
-            [&](const tbb::blocked_range<size_t>& r) {
-                T0 d0{0};
-                T1 d1{0};
-                T2 d2{0};
-                utils::nd_iterator_init(r.begin(), d0, D0, d1, D1, d2, D2);
-                for (size_t iwork = r.begin(); iwork != r.end(); ++iwork) {
-                    f(d0, d1, d2);
-                    utils::nd_iterator_step(d0, D0, d1, D1, d2, D2);
-                }
-            },
+            0, nthr, [&](int ithr) { for_nd(ithr, nthr, D0, D1, D2, f); },
             dnnl_tbb_partitioner());
 }
 
 template <typename T0, typename T1, typename T2, typename T3, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3, F f) {
-    const size_t work_amount = (size_t)D0 * D1 * D2 * D3;
-    if (work_amount == 0) return;
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, work_amount),
-            [&](const tbb::blocked_range<size_t>& r) {
-                T0 d0{0};
-                T1 d1{0};
-                T2 d2{0};
-                T3 d3{0};
-                utils::nd_iterator_init(r.begin(), d0, D0, d1, D1, d2, D2, d3, D3);
-                for (size_t iwork = r.begin(); iwork != r.end(); ++iwork) {
-                    f(d0, d1, d2, d3);
-                    utils::nd_iterator_step(d0, D0, d1, D1, d2, D2, d3, D3);
-                }
-            },
+            0, nthr, [&](int ithr) { for_nd(ithr, nthr, D0, D1, D2, D3, f); },
             dnnl_tbb_partitioner());
 }
 
@@ -266,22 +234,10 @@ template <typename T0, typename T1, typename T2, typename T3, typename T4,
         typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3,
         const T4 &D4, F f) {
-    const size_t work_amount = (size_t)D0 * D1 * D2 * D3 * D4;
-    if (work_amount == 0) return;
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, work_amount),
-            [&](const tbb::blocked_range<size_t>& r) {
-                T0 d0{0};
-                T1 d1{0};
-                T2 d2{0};
-                T3 d3{0};
-                T4 d4{0};
-                utils::nd_iterator_init(r.begin(), d0, D0, d1, D1, d2, D2, d3, D3, d4, D4);
-                for (size_t iwork = r.begin(); iwork != r.end(); ++iwork) {
-                    f(d0, d1, d2, d3, d4);
-                    utils::nd_iterator_step(d0, D0, d1, D1, d2, D2, d3, D3, d4, D4);
-                }
-            },
+            0, nthr,
+            [&](int ithr) { for_nd(ithr, nthr, D0, D1, D2, D3, D4, f); },
             dnnl_tbb_partitioner());
 }
 
@@ -289,24 +245,10 @@ template <typename T0, typename T1, typename T2, typename T3, typename T4,
         typename T5, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3,
         const T4 &D4, const T5 &D5, F f) {
-    const size_t work_amount = (size_t)D0 * D1 * D2 * D3 * D4 * D5;
-    if (work_amount == 0) return;
+    const int nthr = dnnl_get_max_threads();
     tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, work_amount),
-            [&](const tbb::blocked_range<size_t>& r) {
-                T0 d0{0};
-                T1 d1{0};
-                T2 d2{0};
-                T3 d3{0};
-                T4 d4{0};
-                T5 d5{0};
-                utils::nd_iterator_init(
-                        r.begin(), d0, D0, d1, D1, d2, D2, d3, D3, d4, D4, d5, D5);
-                for (size_t iwork = r.begin(); iwork != r.end(); ++iwork) {
-                    f(d0, d1, d2, d3, d4, d5);
-                    utils::nd_iterator_step(d0, D0, d1, D1, d2, D2, d3, D3, d4, D4, d5, D5);
-                }
-            },
+            0, nthr,
+            [&](int ithr) { for_nd(ithr, nthr, D0, D1, D2, D3, D4, D5, f); },
             dnnl_tbb_partitioner());
 }
 #endif
