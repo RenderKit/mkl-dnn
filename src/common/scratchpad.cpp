@@ -74,22 +74,14 @@ struct global_scratchpad_t : public scratchpad_t {
     virtual char *get() const { return scratchpad_; }
 
 private:
-    /*
-      Using thread-local here is unnecessary and even buggy! All threads
-      actually share the same scratchpad, which is created and queried only
-      on the main thread. If the scratchpad is queried on some thread other
-      than the one it was created on (e.g. the application calls the API from
-      multiple threads), thread-local causes a segfault because the scratchpad
-      is uninitialized on the current thread.
-    */
-    /*thread_local*/ static char *scratchpad_;
-    /*thread_local*/ static size_t size_;
-    /*thread_local*/ static unsigned int reference_count_;
+    static char *scratchpad_;
+    static size_t size_;
+    static unsigned int reference_count_;
 };
 
-/*thread_local*/ char *global_scratchpad_t::scratchpad_ = nullptr;
-/*thread_local*/ size_t global_scratchpad_t::size_ = 0;
-/*thread_local*/ unsigned int global_scratchpad_t::reference_count_ = 0;
+char *global_scratchpad_t::scratchpad_ = nullptr;
+size_t global_scratchpad_t::size_ = 0;
+unsigned int global_scratchpad_t::reference_count_ = 0;
 
 /*
    Scratchpad creation routine
