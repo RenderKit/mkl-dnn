@@ -158,8 +158,6 @@ elseif(UNIX OR MINGW)
         # disable optimizations in debug mode
         append(CMAKE_CXX_FLAGS_DEBUG "-O0")
     endif()
-    # disable assertions
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DNDEBUG")
 endif()
 
 if(WIN32)
@@ -185,6 +183,9 @@ endif()
 if(DNNL_ARCH_OPT_FLAGS STREQUAL "HostOpts")
     set(DNNL_ARCH_OPT_FLAGS "${DEF_ARCH_OPT_FLAGS}")
 endif()
+
+append(CMAKE_C_FLAGS "${CMAKE_CCXX_FLAGS}")
+append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_FLAGS}")
 
 if(APPLE)
     append(CMAKE_CXX_FLAGS "-mmacosx-version-min=10.7") # makes sure code runs on older macOS versions

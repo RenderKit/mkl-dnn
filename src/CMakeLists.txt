@@ -24,6 +24,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/common
     )
 
+# propagate optimization flags
+append(CMAKE_C_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
+append(CMAKE_CXX_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
+
 # propagate SRC specific flags
 append(CMAKE_C_FLAGS "${CMAKE_SRC_CCXX_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_SRC_CCXX_FLAGS}")
@@ -81,8 +85,6 @@ add_library(${LIB_NAME} ${DNNL_LIBRARY_TYPE}
 set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${DNNL_VERSION_MAJOR}.${DNNL_VERSION_MINOR}")
 set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "${DNNL_VERSION_MAJOR}")
 set_property(TARGET ${LIB_NAME} PROPERTY PUBLIC_HEADER ${HEADERS})
-
-set_target_properties(${LIB_NAME} PROPERTIES COMPILE_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
 
 target_include_directories(${LIB_NAME} PUBLIC
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
