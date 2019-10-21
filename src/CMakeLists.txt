@@ -24,10 +24,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/common
     )
 
-# propagate optimization flags
-append(CMAKE_C_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
-append(CMAKE_CXX_FLAGS "${DNNL_ARCH_OPT_FLAGS}")
-
 # propagate SRC specific flags
 append(CMAKE_C_FLAGS "${CMAKE_SRC_CCXX_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_SRC_CCXX_FLAGS}")
@@ -163,18 +159,18 @@ else()
 endif()
 
 # Install custom find modules for transitive dependencies
-#if(DNNL_CPU_RUNTIME STREQUAL "TBB")
-#    if(WIN32)
-#        install(FILES "../cmake/win/TBBConfig.cmake" RENAME "FindTBB.cmake"
-#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
-#    elseif(APPLE)
-#        install(FILES "../cmake/mac/TBBConfig.cmake" RENAME "FindTBB.cmake"
-#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
-#    elseif(UNIX)
-#        install(FILES "../cmake/lnx/TBBConfig.cmake" RENAME "FindTBB.cmake"
-#            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
-#    endif()
-#endif()
+if(DNNL_CPU_RUNTIME STREQUAL "TBB")
+    if(WIN32)
+        install(FILES "../cmake/win/TBBConfig.cmake" RENAME "FindTBB.cmake"
+            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+    elseif(APPLE)
+        install(FILES "../cmake/mac/TBBConfig.cmake" RENAME "FindTBB.cmake"
+            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+    elseif(UNIX)
+        install(FILES "../cmake/lnx/TBBConfig.cmake" RENAME "FindTBB.cmake"
+            DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+    endif()
+endif()
 
 if(DNNL_GPU_RUNTIME STREQUAL "OCL")
     install(FILES

@@ -102,10 +102,10 @@ set(DNNL_CPU_RUNTIME "OMP" CACHE STRING
     supports OMP (default) or TBB.
 
     To use Intel(R) Threading Building Blocks (Intel(R) TBB) one should also
-    set TBB_ROOT (either environment variable or CMake option) to the library
+    set TBBROOT (either environment variable or CMake option) to the library
     location.")
 
-set(TBB_ROOT "" CACHE STRING
+set(TBBROOT "" CACHE STRING
     "path to Intel(R) Thread Building Blocks (Intel(R) TBB).
     Use this option to specify Intel(R) TBB installation locaton.")
 
