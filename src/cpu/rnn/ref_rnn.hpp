@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -61,12 +61,13 @@ void gates_reduction(const rnn_utils::rnn_conf_t &rnn,
 template <prop_kind_t aprop, impl::data_type_t src_type,
         impl::data_type_t weights_type, impl::data_type_t acc_type>
 struct _ref_rnn_common_t : public primitive_impl_t {
+    static constexpr impl::data_type_t scratch_type
+            = aprop == prop_kind::forward ? acc_type : src_type;
+
     typedef typename prec_traits<src_type>::type src_data_t;
     typedef typename prec_traits<weights_type>::type weights_data_t;
     typedef typename prec_traits<acc_type>::type acc_data_t;
-
-    typedef typename utils::conditional<aprop == prop_kind::forward, acc_data_t,
-            src_data_t>::type scratch_data_t;
+    typedef typename prec_traits<scratch_type>::type scratch_data_t;
 
     using class_name
             = _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>;
@@ -117,13 +118,11 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                     && this->with_bias();
             if (!ok) return status::unimplemented;
 
-            init_conf(rnn_, *this->desc(), this->src_md(0), this->src_md(1),
-                    this->weights_md(0), this->weights_md(1), this->dst_md(0));
-
-            // check that bf16 gemm is available
-            ok = ok
-                    && IMPLICATION(
-                            rnn_.dt_conf == all_bf16, mayiuse(avx512_core));
+            ok = init_conf(rnn_, *this->desc(), this->src_md(0),
+                    this->src_md(1), this->src_md(2), this->weights_md(0),
+                    this->weights_md(1), this->dst_md(0), this->dst_md(1),
+                    this->dst_md(2));
+            if (!ok) return status::unimplemented;
 
             /* check that only supported attr have been passed */
             primitive_attr_t::skip_mask_t attr_mask
@@ -224,8 +223,9 @@ struct _ref_rnn_common_t : public primitive_impl_t {
         set_gemm_funcs(pd()->rnn_.use_layer_packed_gemm, gemm_layer_func,
                 weights_layer_assign_func);
 
-        rnn_postgemm_ = new rnn_postgemm_dispatcher<aprop, src_type, acc_type>(
-                pd()->rnn_, pd());
+        rnn_postgemm_
+                = new rnn_postgemm_dispatcher<aprop, src_type, scratch_type>(
+                        pd()->rnn_, pd());
         assert(rnn_postgemm_ != nullptr);
         switch (pd()->cell_kind()) {
             case alg_kind::vanilla_rnn:
@@ -285,18 +285,18 @@ private:
             const float *firstit_c_states_, const acc_data_t *diff_dst_iter_,
             const float *diff_dst_iter_c_) const;
 
-    template <typename dst_data_t>
+    template <typename dst_layer_dt, typename dst_iter_dt>
     void copy_res_layer(const rnn_utils::rnn_conf_t &rnn,
-            dst_data_t *dst_layer_, acc_data_t *diff_src_layer_,
-            const src_data_t *ws_states_,
+            dst_layer_dt *dst_layer_, acc_data_t *diff_src_layer_,
+            const dst_iter_dt *dst_iter_, const src_data_t *ws_states_,
             const acc_data_t *ws_diff_states_) const;
 
-    template <typename output_data_t>
+    template <typename output_data_t, typename dst_data_t>
     void copy_res_iter(const rnn_utils::rnn_conf_t &rnn,
             output_data_t *dst_iter_, float *dst_iter_c_,
             acc_data_t *diff_src_iter_, float *diff_src_iter_c_,
-            const src_data_t *ws_states_, float *ws_c_states,
-            const acc_data_t *ws_diff_states_) const;
+            const dst_data_t *dst_layer_, const src_data_t *ws_states_,
+            const float *ws_c_states, const acc_data_t *ws_diff_states_) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
@@ -308,7 +308,7 @@ private:
     size_t ws_grid_comp_offset_;
     size_t scratch_gates_offset_;
     size_t scratch_cell_offset_;
-    rnn_postgemm_dispatcher<aprop, src_type, acc_type> *rnn_postgemm_;
+    rnn_postgemm_dispatcher<aprop, src_type, scratch_type> *rnn_postgemm_;
 
     grid_execution_f grid_computation;
     cell_execution_f cell_func;

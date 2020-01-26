@@ -53,20 +53,28 @@ struct jit_gen9_gemm_x8x8s32_t : public primitive_impl_t {
         status_t init() {
             using namespace prop_kind;
             using namespace data_type;
+            using namespace primitive_kind;
 
             assert(this->engine()->kind() == engine_kind::gpu);
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine());
 
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::post_ops;
+
             bool ok = true && desc()->a_type == a_type
                     && desc()->b_type == b_type && desc()->c_type == c_type
+                    && desc()->acc_type == c_type
                     && compute_engine->mayiuse(
                             compute::device_ext_t::intel_subgroups)
                     && IMPLICATION(c_type == s32,
                             true
                                     && compute_engine->mayiuse(
                                             compute::device_ext_t::
-                                                    intel_subgroups_short));
+                                                    intel_subgroups_short))
+                    && attr()->has_default_values(attr_skip_mask)
+                    && attr()->post_ops_.len_ <= 1
+                    && IMPLICATION(attr()->post_ops_.len_ == 1,
+                            attr()->post_ops_.find(eltwise) != -1);
             if (!ok) return status::unimplemented;
 
             return status::success;
@@ -130,7 +138,7 @@ struct jit_gen9_gemm_x8x8s32_t : public primitive_impl_t {
         //compute kernel
         switch (c_type) {
             case data_type::s32:
-                kernel_name = "gen9_gemm_compute_x8x8s32_kernel";
+                kernel_name = "gen9_gemm_compute_x8x8s32";
                 break;
             default: return status::unimplemented;
         }
@@ -159,7 +167,7 @@ struct jit_gen9_gemm_x8x8s32_t : public primitive_impl_t {
         if (!compute_x8x8s32_kernel_) return status::runtime_error;
 
         //scale kernel
-        kernel_name = "gen9_gemm_scale_x8x8s32_kernel";
+        kernel_name = "gen9_gemm_scale_x8x8s32";
 
         status = jit_gen9_gemm_scale_x8x8s32_kernel<a_type, b_type,
                 c_type>::init_const_def(kernel_ctx, pd()->with_eltwise(),

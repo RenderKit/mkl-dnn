@@ -23,8 +23,6 @@
 #include "compute/compute.hpp"
 #include "ocl/ocl_inner_product_pd.hpp"
 
-extern const char *gemm_inner_product_kernel;
-
 namespace dnnl {
 namespace impl {
 namespace ocl {
@@ -49,6 +47,7 @@ status_t create_gemm_pd(primitive_desc_t **gemm_pd, engine_t *engine,
     gemm_desc.a_type = a_dt;
     gemm_desc.b_type = b_dt;
     gemm_desc.c_type = c_dt;
+    gemm_desc.acc_type = c_dt;
 
     return dnnl_primitive_desc_create(
             gemm_pd, (op_desc_t *)&gemm_desc, &attr, engine, nullptr);
@@ -83,19 +82,21 @@ struct gemm_inner_product_fwd_t : public primitive_impl_t {
 
             assert(this->engine()->kind() == engine_kind::gpu);
 
-            bool with_eltwise = true
-                    && attr()->output_scales_.has_default_values()
-                    && attr()->post_ops_.find(primitive_kind::eltwise) != -1;
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::post_ops;
+
+            bool with_eltwise
+                    = attr()->post_ops_.find(primitive_kind::eltwise) != -1;
             bool with_sum = attr()->post_ops_.find(primitive_kind::sum) != -1;
 
-            bool ok = true && set_default_params() == status::success
-                    && is_fwd() && !has_zero_dim_memory()
+            bool ok = true && is_fwd()
+                    && set_default_params() == status::success
+                    && !has_zero_dim_memory()
                     && utils::one_of(true,
                             expect_data_types(f16, f16, f16, f16, f16),
                             expect_data_types(f32, f32, f32, f32, f32))
-                    && (attr()->has_default_values()
-                            || IMPLICATION(with_eltwise, !with_bias()))
-                    && !with_sum
+                    && attr()->has_default_values(attr_skip_mask)
+                    && attr()->post_ops_.len_ <= 1
+                    && IMPLICATION(with_eltwise, !with_bias()) && !with_sum
                     && dense_consitency_check(src_md(), weights_md(), dst_md())
                     && dense_gemm_consitency_check(
                             src_md(), weights_md(), dst_md());
@@ -187,8 +188,8 @@ struct gemm_inner_product_bwd_data_t : public primitive_impl_t {
 
             assert(this->engine()->kind() == engine_kind::gpu);
 
-            bool ok = true && set_default_params() == status::success
-                    && this->desc()->prop_kind == backward_data
+            bool ok = true && this->desc()->prop_kind == backward_data
+                    && set_default_params() == status::success
                     && !has_zero_dim_memory()
                     && expect_data_types(f32, f32, data_type::undef, f32, f32)
                     && attr()->has_default_values()
@@ -269,8 +270,8 @@ struct gemm_inner_product_bwd_weights_t : public primitive_impl_t {
 
             assert(this->engine()->kind() == engine_kind::gpu);
 
-            bool ok = true && set_default_params() == status::success
-                    && this->desc()->prop_kind == backward_weights
+            bool ok = true && this->desc()->prop_kind == backward_weights
+                    && set_default_params() == status::success
                     && !has_zero_dim_memory()
                     && expect_data_types(f32, f32, f32, f32, f32)
                     && attr()->has_default_values()

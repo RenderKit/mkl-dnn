@@ -34,13 +34,11 @@ namespace cpu {
 #define DECLARE_READ_STRIDES(name) \
     const size_t name##_n_stride = MEM_D(name).blocking_desc().strides[0]; \
     const size_t name##_d_stride \
-            = (!is_3d) ? 0 : MEM_D(name).blocking_desc().strides[2]; \
-    const size_t name##_h_stride = (!is_3d) \
-            ? MEM_D(name).blocking_desc().strides[2] \
-            : MEM_D(name).blocking_desc().strides[3]; \
-    const size_t name##_w_stride = (!is_3d) \
-            ? MEM_D(name).blocking_desc().strides[3] \
-            : MEM_D(name).blocking_desc().strides[4];
+            = is_3d ? MEM_D(name).blocking_desc().strides[ndims - 3] : 0; \
+    const size_t name##_h_stride \
+            = is_1d ? 0 : MEM_D(name).blocking_desc().strides[ndims - 2]; \
+    const size_t name##_w_stride \
+            = MEM_D(name).blocking_desc().strides[ndims - 1];
 
 namespace nhwc_pooling {
 size_t strided_offset(const int _n, const size_t _sn, const int _d,
@@ -102,7 +100,9 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
     const int padT = pd()->padT();
     const int padL = pd()->padL();
 
+    const bool is_1d = pd()->desc()->src_desc.ndims == 3;
     const bool is_3d = pd()->desc()->src_desc.ndims == 5;
+    const int ndims = pd()->ndims();
     const data_type_t ws_dt = ws ? ws_d.data_type() : data_type::undef;
 
     DECLARE_READ_STRIDES(src);
@@ -236,7 +236,9 @@ void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
     const int padT = pd()->padT();
     const int padL = pd()->padL();
 
+    const bool is_1d = pd()->desc()->src_desc.ndims == 3;
     const bool is_3d = pd()->desc()->src_desc.ndims == 5;
+    const int ndims = pd()->ndims();
     const data_type_t ws_dt = ws ? ws_d.data_type() : data_type::undef;
 
     DECLARE_READ_STRIDES(src);
@@ -368,7 +370,9 @@ void nhwc_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
     const int OH = pd()->OH();
     const int OW = pd()->OW();
 
+    const bool is_1d = pd()->desc()->diff_src_desc.ndims == 3;
     const bool is_3d = pd()->desc()->diff_src_desc.ndims == 5;
+    const int ndims = pd()->ndims();
     auto alg = pd()->desc()->alg_kind;
 
     DECLARE_READ_STRIDES(diff_src);
@@ -422,14 +426,13 @@ void nhwc_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
                 size_t ws_offset_init = strided_offset(mb, ws_n_stride, od,
                         ws_d_stride, oh, ws_h_stride, ow, ws_w_stride);
                 const int index = kd * KH * KW + kh * KW + kw;
+                const unsigned char *ws_ = ws + ws_offset_init;
+                const int *intws_ = (int *)ws + ws_offset_init;
+                const bool ws_is_u8 = MEM_D(ws).data_type() == data_type::u8;
 
                 PRAGMA_OMP_SIMD()
                 for (int oc = 0; oc < OC; ++oc) {
-                    const int index_from_ws
-                            = (MEM_D(ws).data_type() == data_type::u8)
-                            ? (int)ws[ws_offset_init + oc]
-                            : ((int *)ws)[ws_offset_init + oc];
-
+                    const int index_from_ws = ws_is_u8 ? ws_[oc] : intws_[oc];
                     const data_t d = diff_dst[dst_offset_init + oc];
 
                     // Check if kernel windows are disjoint, in this case
@@ -508,7 +511,9 @@ void nhwc_pooling_bwd_t<data_type::bf16>::execute_backward(
     const int OH = pd()->OH();
     const int OW = pd()->OW();
 
+    const bool is_1d = pd()->desc()->diff_src_desc.ndims == 3;
     const bool is_3d = pd()->desc()->diff_src_desc.ndims == 5;
+    const int ndims = pd()->ndims();
     auto alg = pd()->desc()->alg_kind;
 
     DECLARE_READ_STRIDES(diff_src);
@@ -569,13 +574,13 @@ void nhwc_pooling_bwd_t<data_type::bf16>::execute_backward(
                 size_t ws_offset_init = strided_offset(mb, ws_n_stride, od,
                         ws_d_stride, oh, ws_h_stride, ow, ws_w_stride);
                 const int index = kd * KH * KW + kh * KW + kw;
+                const unsigned char *ws_ = ws + ws_offset_init;
+                const int *intws_ = (int *)ws + ws_offset_init;
+                const bool ws_is_u8 = MEM_D(ws).data_type() == data_type::u8;
 
                 PRAGMA_OMP_SIMD()
                 for (int oc = 0; oc < OC; ++oc) {
-                    const int index_from_ws
-                            = (MEM_D(ws).data_type() == data_type::u8)
-                            ? (int)ws[ws_offset_init + oc]
-                            : ((int *)ws)[ws_offset_init + oc];
+                    const int index_from_ws = ws_is_u8 ? ws_[oc] : intws_[oc];
 
                     // Check if kernel windows are disjoint, in this case
                     // there's no update needed and we just write there once

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ const char *perf_template_csv
         = "perf,%engine%,%name%,%dir%,%cfg%,%alg%,%attr%,%DESC%,"
           "%Gops%,%Gfreq%,%-time%,%-Gflops%,%0time%,%0Gflops%";
 const char *perf_template_def
-        = "perf,%engine%,%name%,%desc%,"
+        = "perf,%engine%,%name%,%prb%,"
           "%Gops%,%Gfreq%,%-time%,%-Gflops%,%0time%,%0Gflops%";
 const char *perf_template = perf_template_def;
 

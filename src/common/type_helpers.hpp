@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -163,8 +163,7 @@ inline data_type_t default_accum_data_type(
 
     if (one_of(s8, src_dt, dst_dt) || one_of(u8, src_dt, dst_dt)) return s32;
 
-    assert(!"unimplemented use-case: no default parameters available");
-    return dst_dt;
+    return data_type::undef;
 }
 
 inline data_type_t default_accum_data_type(data_type_t src_dt,
@@ -188,8 +187,7 @@ inline data_type_t default_accum_data_type(data_type_t src_dt,
             return s32;
     }
 
-    assert(!"unimplemented use-case: no default parameters available");
-    return dst_dt;
+    return data_type::undef;
 }
 
 } // namespace types
@@ -301,7 +299,7 @@ inline bool operator==(const gemm_desc_t &lhs, const gemm_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(ldb) && COMPARE_DESC_MEMBERS(ldc)
             && COMPARE_DESC_MEMBERS(alpha) && COMPARE_DESC_MEMBERS(beta)
             && COMPARE_DESC_MEMBERS(a_type) && COMPARE_DESC_MEMBERS(b_type)
-            && COMPARE_DESC_MEMBERS(c_type);
+            && COMPARE_DESC_MEMBERS(c_type) && COMPARE_DESC_MEMBERS(acc_type);
     return ret;
 }
 
@@ -345,6 +343,15 @@ inline bool operator==(const lrn_desc_t &lhs, const lrn_desc_t &rhs) {
     return ret;
 }
 
+inline bool operator==(const matmul_desc_t &lhs, const matmul_desc_t &rhs) {
+    bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
+            && COMPARE_DESC_MEMBERS(src_desc)
+            && COMPARE_DESC_MEMBERS(weights_desc)
+            && COMPARE_DESC_MEMBERS(bias_desc) && COMPARE_DESC_MEMBERS(dst_desc)
+            && COMPARE_DESC_MEMBERS(accum_data_type);
+    return ret;
+}
+
 inline bool operator==(const pooling_desc_t &lhs, const pooling_desc_t &rhs) {
     bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
             && COMPARE_DESC_MEMBERS(prop_kind) && COMPARE_DESC_MEMBERS(alg_kind)
@@ -365,6 +372,17 @@ inline bool operator==(const reorder_desc_t &lhs, const reorder_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(src_md) && COMPARE_DESC_MEMBERS(dst_md)
             && COMPARE_DESC_MEMBERS(src_engine_kind)
             && COMPARE_DESC_MEMBERS(dst_engine_kind);
+    return ret;
+}
+
+inline bool operator==(
+        const resampling_desc_t &lhs, const resampling_desc_t &rhs) {
+    bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
+            && COMPARE_DESC_MEMBERS(alg_kind) && COMPARE_DESC_MEMBERS(src_desc)
+            && COMPARE_DESC_MEMBERS(diff_src_desc)
+            && COMPARE_DESC_MEMBERS(dst_desc)
+            && COMPARE_DESC_MEMBERS(diff_dst_desc)
+            && COMPARE_DESC_ARRAY_MEMBERS(factors, DNNL_MAX_NDIMS);
     return ret;
 }
 
@@ -483,11 +501,16 @@ inline status_t memory_desc_init_by_blocking_desc(
     const int ndims = nstl::min(DNNL_MAX_NDIMS, md.ndims); // make GCC 5 happy
     utils::array_copy(mblk.strides, blk.strides, ndims);
 
-    int perm[DNNL_MAX_NDIMS];
-    for (int d = 0; d < ndims; ++d)
-        perm[d] = d;
+    dims_t ou_blocks = {0};
+    utils::array_copy(ou_blocks, md.padded_dims, ndims);
 
-    utils::simultaneous_sort(mblk.strides, perm, ndims,
+    int perm[DNNL_MAX_NDIMS];
+    for (int d = 0; d < ndims; ++d) {
+        perm[d] = d;
+        ou_blocks[d] /= blocks[d];
+    }
+
+    utils::simultaneous_sort(mblk.strides, ou_blocks, perm, ndims,
             [](stride_t a, stride_t b) { return b - a; });
 
     dim_t stride = block_size;
@@ -565,6 +588,20 @@ format_tag_t memory_desc_matches_one_of_tag(
         if (memory_desc_matches_tag(md, tag)) return tag;
     }
     return format_tag::undef;
+}
+
+/** returns true if fp32 value denotes DNNL_RUNTIME_F32_VAL */
+inline bool is_runtime_value(float val) {
+    union {
+        float f;
+        unsigned u;
+    } tmp {val};
+    return tmp.u == DNNL_RUNTIME_F32_VAL_REP.u;
+}
+
+/** returns true if s32 value denotes DNNL_RUNTIME_S32_VAL */
+inline bool is_runtime_value(int val) {
+    return val == DNNL_RUNTIME_S32_VAL;
 }
 
 } // namespace impl

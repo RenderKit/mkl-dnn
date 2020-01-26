@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,7 +41,6 @@ struct softmax_pd_t : public primitive_desc_t {
     virtual const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
-    virtual void init_info() override { impl::init_info(this, this->info_); }
 
     virtual status_t query(query_t what, int idx, void *result) const override {
         switch (what) {
@@ -50,6 +49,9 @@ struct softmax_pd_t : public primitive_desc_t {
                 break;
             case query::softmax_d:
                 *(const softmax_desc_t **)result = desc();
+                break;
+            case query::logsoftmax_d:
+                *(const logsoftmax_desc_t **)result = desc();
                 break;
             default: return primitive_desc_t::query(what, idx, result);
         }
@@ -90,6 +92,13 @@ struct softmax_pd_t : public primitive_desc_t {
         return memory_desc_wrapper(data_desc()).has_zero_dim();
     }
 
+    bool is_softmax() const {
+        return desc()->primitive_kind == primitive_kind::softmax;
+    }
+    bool is_logsoftmax() const {
+        return desc()->primitive_kind == primitive_kind::logsoftmax;
+    }
+
 protected:
     softmax_desc_t desc_;
     const softmax_fwd_pd_t *hint_fwd_pd_;
@@ -117,6 +126,14 @@ struct softmax_fwd_pd_t : public softmax_pd_t {
             return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
+    }
+
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_SRC: return src_md(0);
+            case DNNL_ARG_DST: return dst_md(0);
+            default: return softmax_pd_t::arg_md(arg);
+        }
     }
 
     virtual const memory_desc_t *src_md(int index = 0) const override {
@@ -151,6 +168,15 @@ struct softmax_bwd_pd_t : public softmax_pd_t {
             return arg_usage_t::input;
 
         return primitive_desc_t::arg_usage(arg);
+    }
+
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_DST: return dst_md(0);
+            case DNNL_ARG_DIFF_SRC: return diff_src_md(0);
+            case DNNL_ARG_DIFF_DST: return diff_dst_md(0);
+            default: return softmax_pd_t::arg_md(arg);
+        }
     }
 
     virtual const memory_desc_t *dst_md(int index = 0) const override {

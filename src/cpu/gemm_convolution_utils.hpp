@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_JIT_GEMM_CONVOLUTION_UTILS_HPP
-#define CPU_JIT_GEMM_CONVOLUTION_UTILS_HPP
+#ifndef CPU_GEMM_CONVOLUTION_UTILS_HPP
+#define CPU_GEMM_CONVOLUTION_UTILS_HPP
 
 #include "c_types_map.hpp"
 #include "dnnl_thread.hpp"
@@ -33,6 +33,14 @@ namespace jit_gemm_convolution_utils {
 template <typename data_type_t>
 void im2col_3d(const jit_gemm_conv_conf_t &jcp, const data_type_t *im,
         data_type_t *col, int od);
+
+template <typename T>
+void transpose_u8(const jit_gemm_conv_conf_t &jcp, const T *__restrict im,
+        T *__restrict imtr);
+
+template <typename T>
+void im2col_u8_3d(const jit_gemm_conv_conf_t &jcp, const T *__restrict im,
+        uint8_t *__restrict col, int od);
 
 template <typename data_type_t>
 void im2col(const jit_gemm_conv_conf_t &jcp, const data_type_t *__restrict im,

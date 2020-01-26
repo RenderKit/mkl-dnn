@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -60,8 +60,8 @@ struct jit_uni_pooling_fwd_t : public primitive_impl_t {
         format_tag_t desired_fmt_tag() {
             using namespace format_tag;
             return utils::one_of(isa, avx512_common, avx512_core)
-                    ? (ndims() == 4 ? nChw16c : nCdhw16c)
-                    : (ndims() == 4 ? nChw8c : nCdhw8c);
+                    ? utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c)
+                    : utils::pick(ndims() - 3, nCw8c, nChw8c, nCdhw8c);
         }
 
         jit_pool_conf_t jpp_;
@@ -129,8 +129,8 @@ struct jit_uni_pooling_bwd_t : public primitive_impl_t {
         format_tag_t desired_fmt_tag() {
             using namespace format_tag;
             return utils::one_of(isa, avx512_common, avx512_core)
-                    ? (ndims() == 4 ? nChw16c : nCdhw16c)
-                    : (ndims() == 4 ? nChw8c : nCdhw8c);
+                    ? utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c)
+                    : utils::pick(ndims() - 3, nCw8c, nChw8c, nCdhw8c);
         }
 
         jit_pool_conf_t jpp_;

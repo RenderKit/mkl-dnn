@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #ifndef COMMON_SCRATCHPAD_HPP
 #define COMMON_SCRATCHPAD_HPP
 
+#include "memory_storage.hpp"
 #include "utils.hpp"
 
 namespace dnnl {
@@ -24,10 +25,11 @@ namespace impl {
 
 struct scratchpad_t {
     virtual ~scratchpad_t() {}
-    virtual char *get() const = 0;
+    virtual const memory_storage_t *get_memory_storage() const = 0;
 };
 
-scratchpad_t *create_scratchpad(size_t size);
+scratchpad_t *create_scratchpad(
+        engine_t *engine, size_t size, bool use_global_scratchpad);
 
 } // namespace impl
 } // namespace dnnl

@@ -43,6 +43,8 @@
 
 #include "dnnl.hpp"
 
+#include "example_utils.hpp"
+
 // MSVC doesn't support collapse clause in omp parallel
 #if defined(_MSC_VER) && !defined(__clang__) && !defined(__INTEL_COMPILER)
 #define collapse(x)
@@ -173,8 +175,10 @@ void copy_context(
     for (dim_t k = 1; k < n_layers; k++)
         for (dim_t j = 0; j < batch; j++)
             for (dim_t i = 0; i < feature_size; i++)
-                src_iter[(k * batch + j) * (feature_size + feature_size) + i]
-                        = src_iter[j * (feature_size + feature_size) + i];
+                src_iter[(k * batch + j) * (feature_size + feature_size)
+                        + feature_size + i]
+                        = src_iter[j * (feature_size + feature_size)
+                                + feature_size + i];
 }
 
 void simple_net() {
@@ -812,13 +816,5 @@ void simple_net() {
 }
 
 int main(int argc, char **argv) {
-    try {
-        simple_net();
-        std::cout << "ok\n";
-    } catch (error &e) {
-        std::cerr << "status: " << e.status << std::endl;
-        std::cerr << "message: " << e.message << std::endl;
-        return 1;
-    }
-    return 0;
+    return handle_example_errors({engine::kind::cpu}, simple_net);
 }

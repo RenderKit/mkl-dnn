@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2018 Intel Corporation
+# Copyright 2018-2019 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,15 +32,19 @@ option(DNNL_VERBOSE
 
 option(DNNL_ENABLE_CONCURRENT_EXEC
     "disables sharing a common scratchpad between primitives.
-    This option must be turned on if there is a possibility of concurrent
-    execution of primitives that were created in the same thread.
-    CAUTION: enabling this option increases memory consumption"
+    This option must be turned ON if there is a possibility of executing
+    distinct primitives concurrently.
+    CAUTION: enabling this option increases memory consumption."
     OFF) # disabled by default
 
 option(DNNL_ENABLE_PRIMITIVE_CACHE "enables primitive cache.
     WARNING: the primitive cache is an experimental feature and might be
     changed without prior notification in future releases" OFF)
     # disabled by default
+
+option(DNNL_ENABLE_MAX_CPU_ISA
+    "enables control of CPU ISA detected by DNNL via DNNL_MAX_CPU_ISA
+    environment variable and dnnl_set_max_cpu_isa() function" ON)
 
 # =============================
 # Building properties and scope
@@ -58,6 +62,13 @@ set(DNNL_INSTALL_MODE "DEFAULT" CACHE STRING
 
     When BUNDLE option is set DNNL will be installed as a bundle
     which contains examples and benchdnn.")
+
+set(DNNL_CODE_COVERAGE "OFF" CACHE STRING
+    "specifies which supported tool for code coverage will be used
+    Currently only gcov supported")
+if(NOT ${DNNL_CODE_COVERAGE} MATCHES "^(OFF|GCOV)$")
+    message(FATAL_ERROR "Unsupported code coverage tool: ${DNNL_CODE_COVERAGE}")
+endif()
 
 # =============
 # Optimizations
@@ -104,6 +115,9 @@ set(DNNL_CPU_RUNTIME "OMP" CACHE STRING
     To use Intel(R) Threading Building Blocks (Intel(R) TBB) one should also
     set TBBROOT (either environment variable or CMake option) to the library
     location.")
+if(NOT ${DNNL_CPU_RUNTIME} MATCHES "^(OMP|TBB|SEQ)$")
+    message(FATAL_ERROR "Unsupported CPU runtime: ${DNNL_CPU_RUNTIME}")
+endif()
 
 set(TBBROOT "" CACHE STRING
     "path to Intel(R) Thread Building Blocks (Intel(R) TBB).
@@ -115,6 +129,9 @@ set(DNNL_GPU_RUNTIME "NONE" CACHE STRING
 
     Using OpenCL for GPU requires setting OPENCLROOT if the libraries are
     installed in a non-standard location.")
+if(NOT ${DNNL_GPU_RUNTIME} MATCHES "^(OCL|NONE)$")
+    message(FATAL_ERROR "Unsupported GPU runtime: ${DNNL_GPU_RUNTIME}")
+endif()
 
 set(OPENCLROOT "" CACHE STRING
     "path to Intel(R) SDK for OpenCL(TM).

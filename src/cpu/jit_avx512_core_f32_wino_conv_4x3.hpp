@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_JIT_AVX512_CORE_F32_WINO_CONV_4x3_HPP
-#define CPU_JIT_AVX512_CORE_F32_WINO_CONV_4x3_HPP
+#ifndef CPU_JIT_AVX512_CORE_F32_WINO_CONV_4X3_HPP
+#define CPU_JIT_AVX512_CORE_F32_WINO_CONV_4X3_HPP
 
 #include "c_types_map.hpp"
 #include "memory_tracking.hpp"
@@ -108,6 +108,9 @@ protected:
             const memory_tracking::grantor_t &scratchpad) const;
     _jit_avx512_core_f32_wino_conv_4x3_data_kernel *kernel_;
     const primitive_attr_t *attr_;
+
+private:
+    DNNL_DISALLOW_COPY_AND_ASSIGN(_jit_avx512_core_f32_wino_conv_4x3_t);
 };
 
 struct jit_avx512_core_f32_wino_conv_4x3_fwd_t
@@ -131,6 +134,8 @@ struct jit_avx512_core_f32_wino_conv_4x3_fwd_t
                             alg_kind::convolution_winograd)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::f32, data_type::f32, data_type::f32)
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops)
                     && set_default_formats();
             if (!ok) return status::unimplemented;
 
@@ -214,7 +219,7 @@ struct jit_avx512_core_f32_wino_conv_4x3_bwd_data_t
                             alg_kind::convolution_winograd)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::undef, data_type::f32, data_type::f32)
-                    && set_default_formats();
+                    && attr()->has_default_values() && set_default_formats();
             if (!ok) return status::unimplemented;
 
             status_t status
@@ -296,7 +301,7 @@ struct jit_avx512_core_f32_wino_conv_4x3_bwd_weights_t
                             alg_kind::convolution_winograd)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::f32, data_type::f32, data_type::f32)
-                    && set_default_formats();
+                    && attr()->has_default_values() && set_default_formats();
             if (!ok) return status::unimplemented;
 
             status_t status

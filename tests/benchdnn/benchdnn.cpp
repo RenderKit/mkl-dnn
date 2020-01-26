@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,8 +36,10 @@
 #include "ip/ip.hpp"
 #include "lnorm/lnorm.hpp"
 #include "lrn/lrn.hpp"
+#include "matmul/matmul.hpp"
 #include "pool/pool.hpp"
 #include "reorder/reorder.hpp"
+#include "resampling/resampling.hpp"
 #include "rnn/rnn.hpp"
 #include "self/self.hpp"
 #include "shuffle/shuffle.hpp"
@@ -45,6 +47,7 @@
 #include "sum/sum.hpp"
 
 int verbose {0};
+bool canonical {false};
 bench_mode_t bench_mode {CORR};
 stat_t benchdnn_stat {0};
 const char *driver_name = "";
@@ -52,6 +55,8 @@ const char *driver_name = "";
 double max_ms_per_prb {3e3};
 int min_times_per_prb {5};
 int fix_times_per_prb {0};
+
+bool fast_ref_gpu {true};
 
 int main(int argc, char **argv) {
     using namespace parser;
@@ -95,6 +100,10 @@ int main(int argc, char **argv) {
             prim = LRN;
         else if (!strcmp("--binary", argv[0]))
             prim = BINARY;
+        else if (!strcmp("--matmul", argv[0]))
+            prim = MATMUL;
+        else if (!strcmp("--resampling", argv[0]))
+            prim = RESAMPLING;
         else
             break;
     }
@@ -119,6 +128,8 @@ int main(int argc, char **argv) {
         case CONCAT: concat::bench(argc, argv); break;
         case LRN: lrn::bench(argc, argv); break;
         case BINARY: binary::bench(argc, argv); break;
+        case MATMUL: matmul::bench(argc, argv); break;
+        case RESAMPLING: resampling::bench(argc, argv); break;
         default: fprintf(stderr, "err: unknown driver\n");
     }
 

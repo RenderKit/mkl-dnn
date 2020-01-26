@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *******************************************************************************/
+
 #ifndef PRIMITIVE_ITERATOR_HPP
 #define PRIMITIVE_ITERATOR_HPP
 
@@ -36,7 +37,7 @@ struct dnnl_primitive_desc_iterator : public dnnl::impl::c_compatible {
         , op_desc_(op_desc)
         , attr_(attr ? *attr : dnnl::impl::primitive_attr_t())
         , hint_fwd_pd_(hint_fwd_pd)
-        , impl_list_(engine_->get_implementation_list())
+        , impl_list_(engine_->get_implementation_list(op_desc_))
         , last_idx_(0) {
         while (impl_list_[last_idx_] != nullptr)
             ++last_idx_;
@@ -72,6 +73,18 @@ struct dnnl_primitive_desc_iterator : public dnnl::impl::c_compatible {
     dnnl::impl::primitive_desc_t *operator*() const {
         if (*this == end() || pd_ == nullptr) return nullptr;
         return pd_->clone();
+    }
+
+    // Unlike `operator*()`, fetch_once() returns the current primitive
+    // descriptor and invalidates the underlying primitive descriptor (but
+    // saves the current position in the implementation list). Hence, the
+    // subsequent calls to `operator*()` and / or `fetch_once()` will return
+    // nullptr, until the iterator moves to the next implementation.
+    dnnl::impl::primitive_desc_t *fetch_once() {
+        if (*this == end() || pd_ == nullptr) return nullptr;
+        dnnl::impl::primitive_desc_t *return_pd = pd_;
+        pd_ = nullptr;
+        return return_pd;
     }
 
 protected:

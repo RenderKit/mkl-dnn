@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,33 +46,21 @@ dnnl_alg_kind_t alg2alg_kind(alg_t alg) {
 }
 
 int str2desc(desc_t *desc, const char *str) {
-    /* canonical form:
-     * mbXicXidXihXiwX_lsXalphaYbetaYkY_nS
-     *
-     * where:
-     *  X is number (integer)
-     *  Y is real (float)
-     *  S - string
-     * note: symbol `_` is ignored
-     *
-     * implicit rules:
-     *  alpha = 1 / 8192 = 0.000122 ~~ 0.0001, but has exact representation
-     *  beta = 0.75
-     *  k = 1
-     *  ls = 5
-     *  S = "wip"
-     *  if iw is unset iw <-- ih
-     *  if ih is unset ih <-- 1
-     *  if id is unset id <-- 1
-     */
+    // Canonical form: mbXicXidXihXiwX_lsXalphaYbetaYkY_nS,
+    // where
+    //     X is integer
+    //     Y is float
+    //     S is string
+    // note: symbol `_` is ignored.
+    // Cubic/square shapes are supported by specifying just highest dimension.
 
     desc_t d {0};
     d.mb = 2;
     d.ls = 5;
-    d.alpha = 1. / 8192;
-    d.beta = 0.75;
+    d.alpha = 1.f / 8192; // = 0.000122 ~~ 0.0001, but has exact representation
+    d.beta = 0.75f;
     d.k = 1;
-    d.name = "\"wip\"";
+    d.ndims = 5;
 
     const char *s = str;
     assert(s);
@@ -115,11 +103,28 @@ int str2desc(desc_t *desc, const char *str) {
 #undef CASE_NN
 #undef CASE_N
 
-    if (d.ic == 0 || (d.id == 0 && d.ih == 0 && d.iw == 0)) return FAIL;
+    if (d.ic == 0) return FAIL;
 
+    if (d.id == 0) { d.ndims--; }
+    if (d.ih == 0) {
+        if (d.id == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.ih = d.id;
+        }
+    }
+    if (d.iw == 0) {
+        if (d.ih == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.iw = d.ih;
+        }
+    }
+
+    // to keep logic when treating unspecified dimension as it's of length 1.
     if (d.id == 0) d.id = 1;
     if (d.ih == 0) d.ih = 1;
-    if (d.iw == 0) d.iw = d.ih;
+    if (d.iw == 0) d.iw = 1;
 
     *desc = d;
 
@@ -127,22 +132,29 @@ int str2desc(desc_t *desc, const char *str) {
 }
 
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
-    const bool canonical = s.flags() & std::ios_base::fixed;
+    const bool square_form = (d.ih == d.iw);
+    const bool cubic_form = square_form && (d.id == d.ih);
+
+    const bool print_d = d.ndims == 5;
+    const bool print_h
+            = d.ndims == 4 || (d.ndims > 4 && (!cubic_form || canonical));
+    const bool print_w
+            = d.ndims == 3 || (d.ndims > 3 && (!square_form || canonical));
 
     if (canonical || d.mb != 2) s << "mb" << d.mb;
 
     s << "ic" << d.ic;
 
-    if (d.id > 1) s << "id" << d.id;
-    s << "ih" << d.ih;
-    if (canonical || d.iw != d.ih || d.id > 1) s << "iw" << d.iw;
+    if (print_d) s << "id" << d.id;
+    if (print_h) s << "ih" << d.ih;
+    if (print_w) s << "iw" << d.iw;
 
     if (canonical || d.ls != 5) s << "ls" << d.ls;
-    if (canonical || d.alpha != 1. / 8192) s << "alpha" << d.alpha;
-    if (canonical || d.beta != 0.75) s << "beta" << d.beta;
+    if (canonical || d.alpha != 1.f / 8192) s << "alpha" << d.alpha;
+    if (canonical || d.beta != 0.75f) s << "beta" << d.beta;
     if (canonical || d.k != 1) s << "k" << d.k;
 
-    s << "n" << d.name;
+    if (d.name) s << "n" << d.name;
 
     return s;
 }
@@ -150,10 +162,11 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
     dump_global_params(s);
 
-    if (p.dir != FWD_D) s << "--dir=" << dir2str(p.dir) << " ";
-    if (p.dt != dnnl_f32) s << "--dt=" << dt2str(p.dt) << " ";
-    if (p.tag != dnnl_nchw) s << "--tag=" << fmt_tag2str(p.tag) << " ";
-    if (p.alg != ACROSS) s << "--alg=" << alg2str(p.alg) << " ";
+    if (canonical || p.dir != FWD_D) s << "--dir=" << dir2str(p.dir) << " ";
+    if (canonical || p.dt != dnnl_f32) s << "--dt=" << dt2str(p.dt) << " ";
+    if (canonical || p.tag != dnnl_nchw)
+        s << "--tag=" << fmt_tag2str(p.tag) << " ";
+    if (canonical || p.alg != ACROSS) s << "--alg=" << alg2str(p.alg) << " ";
 
     s << static_cast<const desc_t &>(p);
 

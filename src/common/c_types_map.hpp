@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef TYPE_MAPPING_HPP
-#define TYPE_MAPPING_HPP
+#ifndef C_TYPES_MAP_HPP
+#define C_TYPES_MAP_HPP
 
 #include "dnnl_types.h"
 #include "gemm_types.hpp"
@@ -76,6 +76,8 @@ const alg_kind_t eltwise_soft_relu = dnnl_eltwise_soft_relu;
 const alg_kind_t eltwise_logistic = dnnl_eltwise_logistic;
 const alg_kind_t eltwise_exp = dnnl_eltwise_exp;
 const alg_kind_t eltwise_gelu = dnnl_eltwise_gelu;
+const alg_kind_t eltwise_log = dnnl_eltwise_log;
+const alg_kind_t eltwise_clip = dnnl_eltwise_clip;
 const alg_kind_t pooling_max = dnnl_pooling_max;
 const alg_kind_t pooling_avg = dnnl_pooling_avg;
 const alg_kind_t pooling_avg_include_padding = dnnl_pooling_avg_include_padding;
@@ -88,6 +90,8 @@ const alg_kind_t vanilla_gru = dnnl_vanilla_gru;
 const alg_kind_t lbr_gru = dnnl_lbr_gru;
 const alg_kind_t binary_add = dnnl_binary_add;
 const alg_kind_t binary_mul = dnnl_binary_mul;
+const alg_kind_t resampling_nearest = dnnl_resampling_nearest;
+const alg_kind_t resampling_linear = dnnl_resampling_linear;
 } // namespace alg_kind
 
 using data_type_t = dnnl_data_type_t;
@@ -136,6 +140,7 @@ const format_tag_t abcdef = dnnl_abcdef;
 const format_tag_t abdec = dnnl_abdec;
 const format_tag_t acb = dnnl_acb;
 const format_tag_t acbde = dnnl_acbde;
+const format_tag_t acbdef = dnnl_acbdef;
 const format_tag_t acdb = dnnl_acdb;
 const format_tag_t acdeb = dnnl_acdeb;
 const format_tag_t ba = dnnl_ba;
@@ -148,13 +153,16 @@ const format_tag_t cba = dnnl_cba;
 const format_tag_t cdba = dnnl_cdba;
 const format_tag_t cdeba = dnnl_cdeba;
 const format_tag_t decab = dnnl_decab;
+const format_tag_t defcab = dnnl_defcab;
 const format_tag_t Abc16a = dnnl_Abc16a;
 const format_tag_t ABc16a16b = dnnl_ABc16a16b;
+const format_tag_t ABc4a4b = dnnl_ABc4a4b;
 const format_tag_t aBc16b = dnnl_aBc16b;
 const format_tag_t ABc16b16a = dnnl_ABc16b16a;
 const format_tag_t Abc4a = dnnl_Abc4a;
 const format_tag_t aBc4b = dnnl_aBc4b;
 const format_tag_t ABc4b16a4b = dnnl_ABc4b16a4b;
+const format_tag_t ABc2b8a4b = dnnl_ABc2b8a4b;
 const format_tag_t ABc4b4a = dnnl_ABc4b4a;
 const format_tag_t ABc8a16b2a = dnnl_ABc8a16b2a;
 const format_tag_t BAc8a16b2a = dnnl_BAc8a16b2a;
@@ -163,6 +171,7 @@ const format_tag_t aBc8b = dnnl_aBc8b;
 const format_tag_t ABc8b16a2b = dnnl_ABc8b16a2b;
 const format_tag_t ABc8b8a = dnnl_ABc8b8a;
 const format_tag_t Abcd16a = dnnl_Abcd16a;
+const format_tag_t Abcd8a = dnnl_Abcd8a;
 const format_tag_t ABcd16a16b = dnnl_ABcd16a16b;
 const format_tag_t aBcd16b = dnnl_aBcd16b;
 const format_tag_t ABcd16b16a = dnnl_ABcd16b16a;
@@ -172,13 +181,17 @@ const format_tag_t Abcd4a = dnnl_Abcd4a;
 const format_tag_t aBcd4b = dnnl_aBcd4b;
 const format_tag_t ABcd4b16a4b = dnnl_ABcd4b16a4b;
 const format_tag_t ABcd4b4a = dnnl_ABcd4b4a;
+const format_tag_t ABcd4a4b = dnnl_ABcd4a4b;
 const format_tag_t aBCd4c16b4c = dnnl_aBCd4c16b4c;
+const format_tag_t aBCd2c8b4c = dnnl_aBCd2c8b4c;
 const format_tag_t aBCd4c4b = dnnl_aBCd4c4b;
+const format_tag_t aBCd4b4c = dnnl_aBCd4b4c;
 const format_tag_t ABcd8a16b2a = dnnl_ABcd8a16b2a;
 const format_tag_t BAcd8a16b2a = dnnl_BAcd8a16b2a;
 const format_tag_t ABcd8a8b = dnnl_ABcd8a8b;
 const format_tag_t aBcd8b = dnnl_aBcd8b;
 const format_tag_t ABcd8b16a2b = dnnl_ABcd8b16a2b;
+const format_tag_t ABcd2b8a4b = dnnl_ABcd2b8a4b;
 const format_tag_t aBCd8b16c2b = dnnl_aBCd8b16c2b;
 const format_tag_t aCBd8b16c2b = dnnl_aCBd8b16c2b;
 const format_tag_t ABcd8b8a = dnnl_ABcd8b8a;
@@ -195,6 +208,7 @@ const format_tag_t aBCde2c8b4c = dnnl_aBCde2c8b4c;
 const format_tag_t Abcde4a = dnnl_Abcde4a;
 const format_tag_t aBcde4b = dnnl_aBcde4b;
 const format_tag_t ABcde4b4a = dnnl_ABcde4b4a;
+const format_tag_t ABcde4a4b = dnnl_ABcde4a4b;
 const format_tag_t aBCde4b4c = dnnl_aBCde4b4c;
 const format_tag_t aBCde4c16b4c = dnnl_aBCde4c16b4c;
 const format_tag_t aBCde4c4b = dnnl_aBCde4c4b;
@@ -204,6 +218,8 @@ const format_tag_t aBcde8b = dnnl_aBcde8b;
 const format_tag_t ABcde8b16a2b = dnnl_ABcde8b16a2b;
 const format_tag_t ABcde8a16b2a = dnnl_ABcde8a16b2a;
 const format_tag_t BAcde8a16b2a = dnnl_BAcde8a16b2a;
+const format_tag_t ABcde4b16a4b = dnnl_ABcde4b16a4b;
+const format_tag_t ABcde2b8a4b = dnnl_ABcde2b8a4b;
 const format_tag_t aBCde8b16c2b = dnnl_aBCde8b16c2b;
 const format_tag_t aCBde8b16c2b = dnnl_aCBde8b16c2b;
 const format_tag_t ABcde8b8a = dnnl_ABcde8b8a;
@@ -217,24 +233,31 @@ const format_tag_t aBCde8c8b = dnnl_aBCde8c8b;
 const format_tag_t aBcdef16b = dnnl_aBcdef16b;
 const format_tag_t aBCdef16b16c = dnnl_aBCdef16b16c;
 const format_tag_t aBCdef16c16b = dnnl_aBCdef16c16b;
+const format_tag_t aBCdef4c16b4c = dnnl_aBCdef4c16b4c;
+const format_tag_t aBCdef2c8b4c = dnnl_aBCdef2c8b4c;
 const format_tag_t aBcdef4b = dnnl_aBcdef4b;
 const format_tag_t aBCdef4c4b = dnnl_aBCdef4c4b;
+const format_tag_t aBCdef4b4c = dnnl_aBCdef4b4c;
 const format_tag_t aBCdef8b8c = dnnl_aBCdef8b8c;
 const format_tag_t aBCdef8c16b2c = dnnl_aBCdef8c16b2c;
 const format_tag_t aBCdef8b16c2b = dnnl_aBCdef8b16c2b;
 const format_tag_t aCBdef8b16c2b = dnnl_aCBdef8b16c2b;
 const format_tag_t aBCdef8c8b = dnnl_aBCdef8c8b;
 const format_tag_t aBdc16b = dnnl_aBdc16b;
+const format_tag_t aBdC16b2c = dnnl_aBdC16b2c;
 const format_tag_t aBdc4b = dnnl_aBdc4b;
 const format_tag_t aBdc8b = dnnl_aBdc8b;
 const format_tag_t aBdec16b = dnnl_aBdec16b;
+const format_tag_t aBdeC16b2c = dnnl_aBdeC16b2c;
 const format_tag_t aBdec4b = dnnl_aBdec4b;
 const format_tag_t aBdec8b = dnnl_aBdec8b;
 const format_tag_t aBdefc16b = dnnl_aBdefc16b;
+const format_tag_t aBdefC16b2c = dnnl_aBdefC16b2c;
 const format_tag_t aCBdef16c16b = dnnl_aCBdef16c16b;
 const format_tag_t aBdefc4b = dnnl_aBdefc4b;
 const format_tag_t aBdefc8b = dnnl_aBdefc8b;
 const format_tag_t Acb16a = dnnl_Acb16a;
+const format_tag_t AcB16a2b = dnnl_AcB16a2b;
 const format_tag_t Acb4a = dnnl_Acb4a;
 const format_tag_t Acb8a = dnnl_Acb8a;
 const format_tag_t aCBd16b16c = dnnl_aCBd16b16c;
@@ -242,9 +265,11 @@ const format_tag_t aCBd16c16b = dnnl_aCBd16c16b;
 const format_tag_t aCBde16b16c = dnnl_aCBde16b16c;
 const format_tag_t aCBde16c16b = dnnl_aCBde16c16b;
 const format_tag_t Acdb16a = dnnl_Acdb16a;
+const format_tag_t AcdB16a2b = dnnl_AcdB16a2b;
 const format_tag_t Acdb4a = dnnl_Acdb4a;
 const format_tag_t Acdb8a = dnnl_Acdb8a;
 const format_tag_t Acdeb16a = dnnl_Acdeb16a;
+const format_tag_t AcdeB16a2b = dnnl_AcdeB16a2b;
 const format_tag_t Acdeb4a = dnnl_Acdeb4a;
 const format_tag_t Acdeb8a = dnnl_Acdeb8a;
 const format_tag_t BAc16a16b = dnnl_BAc16a16b;
@@ -286,8 +311,10 @@ const format_tag_t idhwo = dnnl_idhwo;
 const format_tag_t goiw = dnnl_goiw;
 const format_tag_t goihw = dnnl_goihw;
 const format_tag_t hwigo = dnnl_hwigo;
+const format_tag_t dhwigo = dnnl_dhwigo;
 const format_tag_t giohw = dnnl_giohw;
 const format_tag_t goidhw = dnnl_goidhw;
+const format_tag_t giodhw = dnnl_giodhw;
 const format_tag_t tnc = dnnl_tnc;
 const format_tag_t ntc = dnnl_ntc;
 const format_tag_t ldnc = dnnl_ldnc;
@@ -320,7 +347,9 @@ const format_tag_t OIw16i16o = dnnl_OIw16i16o;
 const format_tag_t OIw16o16i = dnnl_OIw16o16i;
 const format_tag_t Oiw16o = dnnl_Oiw16o;
 const format_tag_t OIw4i16o4i = dnnl_OIw4i16o4i;
+const format_tag_t OIw2i8o4i = dnnl_OIw2i8o4i;
 const format_tag_t OIw4i4o = dnnl_OIw4i4o;
+const format_tag_t OIw4o4i = dnnl_OIw4o4i;
 const format_tag_t Oiw4o = dnnl_Oiw4o;
 const format_tag_t OIw8i16o2i = dnnl_OIw8i16o2i;
 const format_tag_t OIw8i8o = dnnl_OIw8i8o;
@@ -328,10 +357,12 @@ const format_tag_t OIw8o16i2o = dnnl_OIw8o16i2o;
 const format_tag_t IOw8o16i2o = dnnl_IOw8o16i2o;
 const format_tag_t OIw8o8i = dnnl_OIw8o8i;
 const format_tag_t Owi16o = dnnl_Owi16o;
+const format_tag_t OwI16o2i = dnnl_OwI16o2i;
 const format_tag_t Owi4o = dnnl_Owi4o;
 const format_tag_t Owi8o = dnnl_Owi8o;
 const format_tag_t IOhw16o16i = dnnl_IOhw16o16i;
 const format_tag_t Ohwi16o = dnnl_Ohwi16o;
+const format_tag_t OhwI16o2i = dnnl_OhwI16o2i;
 const format_tag_t Ohwi4o = dnnl_Ohwi4o;
 const format_tag_t Ohwi8o = dnnl_Ohwi8o;
 const format_tag_t OIhw16i16o = dnnl_OIhw16i16o;
@@ -339,32 +370,41 @@ const format_tag_t OIhw16o16i = dnnl_OIhw16o16i;
 const format_tag_t Oihw16o = dnnl_Oihw16o;
 const format_tag_t OIhw4i16o4i = dnnl_OIhw4i16o4i;
 const format_tag_t OIhw4i4o = dnnl_OIhw4i4o;
+const format_tag_t OIhw4o4i = dnnl_OIhw4o4i;
 const format_tag_t Oihw4o = dnnl_Oihw4o;
 const format_tag_t OIhw8i16o2i = dnnl_OIhw8i16o2i;
+const format_tag_t OIhw2i8o4i = dnnl_OIhw2i8o4i;
 const format_tag_t OIhw8i8o = dnnl_OIhw8i8o;
 const format_tag_t OIhw8o16i2o = dnnl_OIhw8o16i2o;
 const format_tag_t IOhw8o16i2o = dnnl_IOhw8o16i2o;
 const format_tag_t OIhw8o8i = dnnl_OIhw8o8i;
 const format_tag_t Odhwi16o = dnnl_Odhwi16o;
+const format_tag_t OdhwI16o2i = dnnl_OdhwI16o2i;
 const format_tag_t Odhwi4o = dnnl_Odhwi4o;
 const format_tag_t Odhwi8o = dnnl_Odhwi8o;
 const format_tag_t OIdhw16i16o = dnnl_OIdhw16i16o;
 const format_tag_t OIdhw16o16i = dnnl_OIdhw16o16i;
 const format_tag_t Oidhw16o = dnnl_Oidhw16o;
 const format_tag_t OIdhw4i4o = dnnl_OIdhw4i4o;
+const format_tag_t OIdhw4o4i = dnnl_OIdhw4o4i;
 const format_tag_t Oidhw4o = dnnl_Oidhw4o;
 const format_tag_t OIdhw8i16o2i = dnnl_OIdhw8i16o2i;
+const format_tag_t OIdhw4i16o4i = dnnl_OIdhw4i16o4i;
+const format_tag_t OIdhw2i8o4i = dnnl_OIdhw2i8o4i;
 const format_tag_t OIdhw8o16i2o = dnnl_OIdhw8o16i2o;
 const format_tag_t IOdhw8o16i2o = dnnl_IOdhw8o16i2o;
 const format_tag_t OIdhw8i8o = dnnl_OIdhw8i8o;
 const format_tag_t OIdhw8o8i = dnnl_OIdhw8o8i;
 const format_tag_t gIOw16o16i = dnnl_gIOw16o16i;
 const format_tag_t Goiw16g = dnnl_Goiw16g;
+const format_tag_t Goiw8g = dnnl_Goiw8g;
 const format_tag_t gOIw16i16o = dnnl_gOIw16i16o;
 const format_tag_t gOIw16o16i = dnnl_gOIw16o16i;
 const format_tag_t gOiw16o = dnnl_gOiw16o;
 const format_tag_t gOIw4i16o4i = dnnl_gOIw4i16o4i;
+const format_tag_t gOIw2i8o4i = dnnl_gOIw2i8o4i;
 const format_tag_t gOIw4i4o = dnnl_gOIw4i4o;
+const format_tag_t gOIw4o4i = dnnl_gOIw4o4i;
 const format_tag_t gOiw4o = dnnl_gOiw4o;
 const format_tag_t gOIw8i16o2i = dnnl_gOIw8i16o2i;
 const format_tag_t gOIw8i8o = dnnl_gOIw8i8o;
@@ -372,10 +412,12 @@ const format_tag_t gOIw8o16i2o = dnnl_gOIw8o16i2o;
 const format_tag_t gIOw8o16i2o = dnnl_gIOw8o16i2o;
 const format_tag_t gOIw8o8i = dnnl_gOIw8o8i;
 const format_tag_t gOwi16o = dnnl_gOwi16o;
+const format_tag_t gOwI16o2i = dnnl_gOwI16o2i;
 const format_tag_t gOwi4o = dnnl_gOwi4o;
 const format_tag_t gOwi8o = dnnl_gOwi8o;
 const format_tag_t gIOhw16o16i = dnnl_gIOhw16o16i;
 const format_tag_t gOhwi16o = dnnl_gOhwi16o;
+const format_tag_t gOhwI16o2i = dnnl_gOhwI16o2i;
 const format_tag_t gOhwi4o = dnnl_gOhwi4o;
 const format_tag_t gOhwi8o = dnnl_gOhwi8o;
 const format_tag_t Goihw16g = dnnl_Goihw16g;
@@ -399,14 +441,18 @@ const format_tag_t gOIhw2o8i8o2i = dnnl_gOIhw2o8i8o2i;
 const format_tag_t gOIhw8o8i = dnnl_gOIhw8o8i;
 const format_tag_t gIOdhw16i16o = dnnl_gIOdhw16i16o;
 const format_tag_t gOdhwi16o = dnnl_gOdhwi16o;
+const format_tag_t gOdhwI16o2i = dnnl_gOdhwI16o2i;
 const format_tag_t gOdhwi4o = dnnl_gOdhwi4o;
 const format_tag_t gOdhwi8o = dnnl_gOdhwi8o;
 const format_tag_t gOIdhw16i16o = dnnl_gOIdhw16i16o;
 const format_tag_t gOIdhw16o16i = dnnl_gOIdhw16o16i;
 const format_tag_t gOidhw16o = dnnl_gOidhw16o;
 const format_tag_t gOIdhw4i4o = dnnl_gOIdhw4i4o;
+const format_tag_t gOIdhw4o4i = dnnl_gOIdhw4o4i;
 const format_tag_t gOidhw4o = dnnl_gOidhw4o;
 const format_tag_t gOIdhw8i16o2i = dnnl_gOIdhw8i16o2i;
+const format_tag_t gOIdhw4i16o4i = dnnl_gOIdhw4i16o4i;
+const format_tag_t gOIdhw2i8o4i = dnnl_gOIdhw2i8o4i;
 const format_tag_t gOIdhw8o16i2o = dnnl_gOIdhw8o16i2o;
 const format_tag_t gIOdhw8o16i2o = dnnl_gIOdhw8o16i2o;
 const format_tag_t gOIdhw8i8o = dnnl_gOIdhw8i8o;
@@ -465,6 +511,9 @@ const primitive_kind_t inner_product = dnnl_inner_product;
 const primitive_kind_t rnn = dnnl_rnn;
 const primitive_kind_t gemm = dnnl_gemm;
 const primitive_kind_t binary = dnnl_binary;
+const primitive_kind_t logsoftmax = dnnl_logsoftmax;
+const primitive_kind_t matmul = dnnl_matmul;
+const primitive_kind_t resampling = dnnl_resampling;
 } // namespace primitive_kind
 
 using query_t = dnnl_query_t;
@@ -504,6 +553,9 @@ const query_t inner_product_d = dnnl_query_inner_product_d;
 const query_t rnn_d = dnnl_query_rnn_d;
 const query_t gemm_d = dnnl_query_gemm_d;
 const query_t binary_d = dnnl_query_binary_d;
+const query_t logsoftmax_d = dnnl_query_logsoftmax_d;
+const query_t matmul_d = dnnl_query_matmul_d;
+const query_t resampling_d = dnnl_query_resampling_d;
 
 const query_t some_md = dnnl_query_some_md;
 const query_t src_md = dnnl_query_src_md;
@@ -512,6 +564,7 @@ const query_t weights_md = dnnl_query_weights_md;
 const query_t diff_weights_md = dnnl_query_diff_weights_md;
 const query_t dst_md = dnnl_query_dst_md;
 const query_t diff_dst_md = dnnl_query_diff_dst_md;
+const query_t exec_arg_md = dnnl_query_exec_arg_md;
 
 const query_t workspace_md = dnnl_query_workspace_md;
 const query_t scratchpad_md = dnnl_query_scratchpad_md;
@@ -533,6 +586,9 @@ using batch_normalization_desc_t = dnnl_batch_normalization_desc_t;
 using layer_normalization_desc_t = dnnl_layer_normalization_desc_t;
 using inner_product_desc_t = dnnl_inner_product_desc_t;
 using binary_desc_t = dnnl_binary_desc_t;
+using logsoftmax_desc_t = dnnl_logsoftmax_desc_t;
+using matmul_desc_t = dnnl_matmul_desc_t;
+using resampling_desc_t = dnnl_resampling_desc_t;
 
 using rnn_direction_t = dnnl_rnn_direction_t;
 using rnn_desc_t = dnnl_rnn_desc_t;
@@ -568,9 +624,11 @@ struct op_desc_t {
         reorder_desc_t reorder;
         sum_desc_t sum;
         binary_desc_t binary;
+        matmul_desc_t matmul;
+        resampling_desc_t resampling;
     };
 
-#define DECL_CTOR_AND_CONVERTERS(c_type, name) \
+#define DECL_CTOR_AND_CONVERTERS(c_type) \
     op_desc_t(const c_type &) = delete; \
     static op_desc_t *convert_from_c(c_type *_) { \
         return reinterpret_cast<op_desc_t *>(_); \
@@ -579,21 +637,23 @@ struct op_desc_t {
         return reinterpret_cast<const op_desc_t *>(_); \
     }
 
-    DECL_CTOR_AND_CONVERTERS(convolution_desc_t, convolution);
-    DECL_CTOR_AND_CONVERTERS(shuffle_desc_t, shuffle);
-    DECL_CTOR_AND_CONVERTERS(pooling_desc_t, pooling);
-    DECL_CTOR_AND_CONVERTERS(eltwise_desc_t, eltwise);
-    DECL_CTOR_AND_CONVERTERS(softmax_desc_t, softmax);
-    DECL_CTOR_AND_CONVERTERS(lrn_desc_t, lrn);
-    DECL_CTOR_AND_CONVERTERS(batch_normalization_desc_t, batch_normalization);
-    DECL_CTOR_AND_CONVERTERS(layer_normalization_desc_t, layer_normalization);
-    DECL_CTOR_AND_CONVERTERS(inner_product_desc_t, inner_product);
-    DECL_CTOR_AND_CONVERTERS(rnn_desc_t, rnn);
-    DECL_CTOR_AND_CONVERTERS(gemm_desc_t, gemm);
-    DECL_CTOR_AND_CONVERTERS(concat_desc_t, concat);
-    DECL_CTOR_AND_CONVERTERS(reorder_desc_t, reorder);
-    DECL_CTOR_AND_CONVERTERS(sum_desc_t, sum);
-    DECL_CTOR_AND_CONVERTERS(binary_desc_t, binary);
+    DECL_CTOR_AND_CONVERTERS(convolution_desc_t);
+    DECL_CTOR_AND_CONVERTERS(shuffle_desc_t);
+    DECL_CTOR_AND_CONVERTERS(pooling_desc_t);
+    DECL_CTOR_AND_CONVERTERS(eltwise_desc_t);
+    DECL_CTOR_AND_CONVERTERS(softmax_desc_t);
+    DECL_CTOR_AND_CONVERTERS(lrn_desc_t);
+    DECL_CTOR_AND_CONVERTERS(batch_normalization_desc_t);
+    DECL_CTOR_AND_CONVERTERS(layer_normalization_desc_t);
+    DECL_CTOR_AND_CONVERTERS(inner_product_desc_t);
+    DECL_CTOR_AND_CONVERTERS(rnn_desc_t);
+    DECL_CTOR_AND_CONVERTERS(gemm_desc_t);
+    DECL_CTOR_AND_CONVERTERS(concat_desc_t);
+    DECL_CTOR_AND_CONVERTERS(reorder_desc_t);
+    DECL_CTOR_AND_CONVERTERS(sum_desc_t);
+    DECL_CTOR_AND_CONVERTERS(binary_desc_t);
+    DECL_CTOR_AND_CONVERTERS(matmul_desc_t);
+    DECL_CTOR_AND_CONVERTERS(resampling_desc_t);
 
     // concat_desc_t and sum_desc_t have data members which have non-trivial
     // special member functions hence the default destructor is implicitly
@@ -649,10 +709,12 @@ struct layer_normalization_pd_t;
 struct lrn_bwd_pd_t;
 struct lrn_fwd_pd_t;
 struct lrn_pd_t;
+struct matmul_pd_t;
 struct pooling_bwd_pd_t;
 struct pooling_fwd_pd_t;
 struct pooling_pd_t;
 struct reorder_pd_t;
+struct resampling_pd_t;
 struct rnn_bwd_pd_t;
 struct rnn_fwd_pd_t;
 struct rnn_pd_t;

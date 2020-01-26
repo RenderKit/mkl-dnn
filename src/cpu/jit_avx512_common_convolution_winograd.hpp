@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -66,8 +66,8 @@ inline void init_scratchpad(memory_tracking::registrar_t &scratchpad,
 template <bool is_fwd>
 struct _jit_avx512_common_convolution_winograd_t {
     _jit_avx512_common_convolution_winograd_t(
-            const jit_conv_winograd_conf_t &jcp, const primitive_attr_t *attr)
-        : kernel_(nullptr), attr_(attr) {
+            const jit_conv_winograd_conf_t &jcp)
+        : kernel_(nullptr) {
         kernel_ = new _jit_avx512_common_conv_winograd_data_kernel_f32(jcp);
     }
 
@@ -78,7 +78,9 @@ protected:
             float *bias_ptr,
             const memory_tracking::grantor_t &scratchpad) const;
     _jit_avx512_common_conv_winograd_data_kernel_f32 *kernel_;
-    const primitive_attr_t *attr_;
+
+private:
+    DNNL_DISALLOW_COPY_AND_ASSIGN(_jit_avx512_common_convolution_winograd_t);
 };
 
 struct jit_avx512_common_convolution_winograd_fwd_t
@@ -103,6 +105,8 @@ struct jit_avx512_common_convolution_winograd_fwd_t
                             alg_kind::convolution_winograd)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::f32, data_type::f32, data_type::f32)
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops)
                     && !has_zero_dim_memory() && set_default_formats();
             if (!ok) return status::unimplemented;
 
@@ -130,8 +134,7 @@ struct jit_avx512_common_convolution_winograd_fwd_t
     };
 
     jit_avx512_common_convolution_winograd_fwd_t(const pd_t *apd)
-        : _jit_avx512_common_convolution_winograd_t<true>(
-                apd->jcp_, apd->attr())
+        : _jit_avx512_common_convolution_winograd_t<true>(apd->jcp_)
         , primitive_impl_t(apd) {}
 
     ~jit_avx512_common_convolution_winograd_fwd_t() {};
@@ -174,8 +177,8 @@ struct jit_avx512_common_convolution_winograd_bwd_data_t
                     && utils::one_of(desc()->alg_kind,
                             alg_kind::convolution_auto,
                             alg_kind::convolution_winograd)
-                    && !has_zero_dim_memory() && set_default_formats()
-                    && dnnl_thr_syncable();
+                    && attr()->has_default_values() && !has_zero_dim_memory()
+                    && set_default_formats() && dnnl_thr_syncable();
             if (!ok) return status::unimplemented;
 
             status_t status
@@ -202,8 +205,7 @@ struct jit_avx512_common_convolution_winograd_bwd_data_t
     };
 
     jit_avx512_common_convolution_winograd_bwd_data_t(const pd_t *apd)
-        : _jit_avx512_common_convolution_winograd_t<false>(
-                apd->jcp_, apd->attr())
+        : _jit_avx512_common_convolution_winograd_t<false>(apd->jcp_)
         , primitive_impl_t(apd) {}
 
     ~jit_avx512_common_convolution_winograd_bwd_data_t() {};
@@ -244,8 +246,8 @@ struct jit_avx512_common_convolution_winograd_bwd_weights_t
                             alg_kind::convolution_winograd)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::f32, data_type::f32, data_type::f32)
-                    && !has_zero_dim_memory() && set_default_formats()
-                    && dnnl_thr_syncable();
+                    && attr()->has_default_values() && !has_zero_dim_memory()
+                    && set_default_formats() && dnnl_thr_syncable();
             if (!ok) return status::unimplemented;
 
             status_t status

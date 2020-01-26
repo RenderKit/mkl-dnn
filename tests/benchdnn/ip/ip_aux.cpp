@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -50,22 +50,16 @@ void prb_t::generate_oscales() {
 }
 
 int str2desc(desc_t *desc, const char *str) {
+    // Canonical form: mbXicXidXihXiwXocXnS,
+    // where
+    //     X is integer
+    //     S is string
+    // note: symbol `_` is ignored.
+    // Cubic/square shapes are supported by specifying just highest dimension.
+
     desc_t d {0};
-
-    /* canonical form:
-     * mbXicXidXihXiwXSocXnS
-     *
-     * where: X is number, S - string
-     * note: symbol `_` is ignored
-     *
-     * implicit rules:
-     *  - default values:
-     *      mb = 2, id = 1, S="wip", ih = 1
-     *  - if W is undefined => W = H
-     */
-
     d.mb = 2;
-    d.name = "\"wip\"";
+    d.ndims = 5;
 
     const char *s = str;
     assert(s);
@@ -103,10 +97,26 @@ int str2desc(desc_t *desc, const char *str) {
 
     if (d.ic == 0 || d.oc == 0) return FAIL;
 
+    if (d.id == 0) { d.ndims--; }
+    if (d.ih == 0) {
+        if (d.id == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.ih = d.id;
+        }
+    }
+    if (d.iw == 0) {
+        if (d.ih == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.iw = d.ih;
+        }
+    }
+
+    // to keep logic when treating unspecified dimension as it's of length 1.
     if (d.id == 0) d.id = 1;
     if (d.ih == 0) d.ih = 1;
-    if (d.iw == 0) d.iw = d.ih;
-    if (d.ic == 0 || d.ih == 0 || d.iw == 0) return FAIL;
+    if (d.iw == 0) d.iw = 1;
 
     *desc = d;
 
@@ -114,20 +124,26 @@ int str2desc(desc_t *desc, const char *str) {
 }
 
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
-    const bool canonical = s.flags() & std::ios_base::fixed;
+    const bool square_form = (d.ih == d.iw);
+    const bool cubic_form = square_form && (d.id == d.ih);
+
+    const bool print_d = d.ndims == 5;
+    const bool print_h
+            = d.ndims == 4 || (d.ndims > 4 && (!cubic_form || canonical));
+    const bool print_w
+            = d.ndims == 3 || (d.ndims > 3 && (!square_form || canonical));
 
     if (canonical || d.mb != 2) s << "mb" << d.mb;
-    s << "oc" << d.oc << "ic" << d.ic;
 
-    const bool print_d = d.id > 1;
-    const bool print_h = canonical || print_d || d.ih > 1;
-    const bool print_w = canonical || d.id * d.ih * d.iw != 1;
+    s << "ic" << d.ic;
 
     if (print_d) s << "id" << d.id;
     if (print_h) s << "ih" << d.ih;
     if (print_w) s << "iw" << d.iw;
 
-    s << "n" << d.name;
+    s << "oc" << d.oc;
+
+    if (d.name) s << "n" << d.name;
 
     return s;
 }
@@ -135,9 +151,15 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
     dump_global_params(s);
 
-    if (p.dir != FWD_B) s << "--dir=" << dir2str(p.dir) << " ";
-    if (p.cfg != conf_f32) s << "--cfg=" << cfg2str(p.cfg) << " ";
-    if (!p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
+    if (canonical || p.dir != FWD_B) s << "--dir=" << dir2str(p.dir) << " ";
+    if (canonical || p.cfg != conf_f32) s << "--cfg=" << cfg2str(p.cfg) << " ";
+    if (canonical || p.stag != dnnl_format_tag_any)
+        s << "--stag=" << fmt_tag2str(p.stag) << " ";
+    if (canonical || p.wtag != dnnl_format_tag_any)
+        s << "--wtag=" << fmt_tag2str(p.wtag) << " ";
+    if (canonical || p.dtag != dnnl_format_tag_any)
+        s << "--dtag=" << fmt_tag2str(p.dtag) << " ";
+    if (canonical || !p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
 
     s << static_cast<const desc_t &>(p);
 

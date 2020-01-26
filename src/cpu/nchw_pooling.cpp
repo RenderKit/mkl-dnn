@@ -302,6 +302,7 @@ void nchw_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
 
     auto alg = pd()->desc()->alg_kind;
     const bool is_3d = pd()->desc()->diff_src_desc.ndims == 5;
+    const bool is_2d = pd()->desc()->diff_src_desc.ndims == 4;
 
     auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
@@ -345,8 +346,10 @@ void nchw_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
         auto b_c = ws_d.blocking_desc().inner_nblks == 0
                 ? 1
                 : ws_d.blocking_desc().inner_blks[0];
-        auto ws_offset = is_3d ? ws_d.blk_off(mb, c / b_c, od, oh, ow) + c % b_c
-                               : ws_d.blk_off(mb, c / b_c, oh, ow) + c % b_c;
+        auto ws_offset = (is_3d ? ws_d.blk_off(mb, c / b_c, od, oh, ow)
+                                : is_2d ? ws_d.blk_off(mb, c / b_c, oh, ow)
+                                        : ws_d.blk_off(mb, c / b_c, ow))
+                + c % b_c;
 
         const int index = ws_d.data_type() == data_type::u8
                 ? (int)ws[ws_offset]
@@ -444,6 +447,7 @@ void nchw_pooling_bwd_t<data_type::bf16>::execute_backward(
 
     auto alg = pd()->desc()->alg_kind;
     const bool is_3d = pd()->desc()->diff_src_desc.ndims == 5;
+    const bool is_2d = pd()->desc()->diff_src_desc.ndims == 4;
 
     auto diff_src = CTX_OUT_MEM(bfloat16_t *, DNNL_ARG_DIFF_SRC);
     auto diff_dst = CTX_IN_MEM(const bfloat16_t *, DNNL_ARG_DIFF_DST);
@@ -482,8 +486,9 @@ void nchw_pooling_bwd_t<data_type::bf16>::execute_backward(
         return (index > offset) ? index - offset : 0;
     };
 
-    auto ker_zero = [=](float *diff_src) {
+    auto ker_zero = [=](float *diff_src, int c_block_size) {
         size_t diff_src_offset = 0;
+        for_(int c = 0; c < c_block_size; ++c)
         for_(int id = 0; id < ID; ++id)
         for_(int ih = 0; ih < IH; ++ih)
         for (int iw = 0; iw < IW; ++iw) {
@@ -496,8 +501,10 @@ void nchw_pooling_bwd_t<data_type::bf16>::execute_backward(
         auto b_c = ws_d.blocking_desc().inner_nblks == 0
                 ? 1
                 : ws_d.blocking_desc().inner_blks[0];
-        auto ws_offset = is_3d ? ws_d.blk_off(mb, c / b_c, od, oh, ow) + c % b_c
-                               : ws_d.blk_off(mb, c / b_c, oh, ow) + c % b_c;
+        auto ws_offset = (is_3d ? ws_d.blk_off(mb, c / b_c, od, oh, ow)
+                                : is_2d ? ws_d.blk_off(mb, c / b_c, oh, ow)
+                                        : ws_d.blk_off(mb, c / b_c, ow))
+                + c % b_c;
 
         const int index = ws_d.data_type() == data_type::u8
                 ? (int)ws[ws_offset]
@@ -555,59 +562,70 @@ void nchw_pooling_bwd_t<data_type::bf16>::execute_backward(
     int od_start = max(0, utils::div_up(padF - KD + 1, SD));
     int od_end = min(OD, 1 + (padF + ID - 1) / SD);
 
+    dim_t c_blk = pd()->channel_block_size_;
+    int c_blk_tail = C % c_blk;
     if (alg == alg_kind::pooling_max) {
-        parallel_nd(MB, C, [&](int mb, int c) {
+        parallel_nd(MB, utils::div_up(C, c_blk), [&](int mb, int cb) {
+            bool is_last_c_block = c_blk_tail > 0 && (cb + 1) * c_blk > C;
+            int curr_c_block = is_last_c_block ? c_blk_tail : c_blk;
             size_t diff_dst_offset_b
-                    = ((size_t)mb * C + (size_t)c) * OD * OH * OW;
+                    = ((size_t)mb * C + (size_t)cb * c_blk) * OD * OH * OW;
             size_t diff_src_offset
-                    = ((size_t)mb * C + (size_t)c) * ID * IH * IW;
+                    = ((size_t)mb * C + (size_t)cb * c_blk) * ID * IH * IW;
             float *diff_dst_fp32
-                    = &bf16cvt_dst[dnnl_get_thread_num() * dst_sp_size];
+                    = &bf16cvt_dst[dnnl_get_thread_num() * dst_sp_size * c_blk];
             float *diff_src_fp32
-                    = &bf16cvt_src[dnnl_get_thread_num() * src_sp_size];
+                    = &bf16cvt_src[dnnl_get_thread_num() * src_sp_size * c_blk];
 
-            ker_zero(diff_src_fp32);
+            ker_zero(diff_src_fp32, curr_c_block);
 
-            cvt_bfloat16_to_float(
-                    diff_dst_fp32, &diff_dst[diff_dst_offset_b], dst_sp_size);
+            cvt_bfloat16_to_float(diff_dst_fp32, &diff_dst[diff_dst_offset_b],
+                    dst_sp_size * curr_c_block);
 
+            for_(int c = 0; c < curr_c_block; ++c)
             for_(int od = od_start; od < od_end; ++od)
             for (int oh = oh_start; oh < oh_end; ++oh) {
-                size_t diff_dst_offset = (size_t)od * OH * OW + (size_t)oh * OW;
+                size_t diff_dst_offset = (size_t)c * OD * OH * OW
+                        + (size_t)od * OH * OW + (size_t)oh * OW;
                 for (int ow = ow_start; ow < ow_end; ++ow) {
                     const float *d = &diff_dst_fp32[diff_dst_offset + ow];
-                    ker_max(d, diff_src_fp32, mb, c, od, oh, ow);
+                    ker_max(d, &diff_src_fp32[c * ID * IH * IW], mb,
+                            cb * c_blk + c, od, oh, ow);
                 }
             }
-            cvt_float_to_bfloat16(
-                    &diff_src[diff_src_offset], diff_src_fp32, src_sp_size);
+            cvt_float_to_bfloat16(&diff_src[diff_src_offset], diff_src_fp32,
+                    src_sp_size * curr_c_block);
         });
     } else {
-        parallel_nd(MB, C, [&](int mb, int c) {
-            size_t diff_dst_offset_b
-                    = (size_t)mb * C * OD * OH * OW + (size_t)c * OD * OH * OW;
+        parallel_nd(MB, utils::div_up(C, c_blk), [&](int mb, int cb) {
+            bool is_last_c_block = c_blk_tail > 0 && (cb + 1) * c_blk > C;
+            int curr_c_block = is_last_c_block ? c_blk_tail : c_blk;
+            size_t diff_dst_offset_b = (size_t)mb * C * OD * OH * OW
+                    + (size_t)cb * c_blk * OD * OH * OW;
             float *diff_dst_fp32
-                    = &bf16cvt_dst[dnnl_get_thread_num() * dst_sp_size];
-            size_t diff_src_offset
-                    = (size_t)mb * C * ID * IH * IW + (size_t)c * ID * IH * IW;
+                    = &bf16cvt_dst[dnnl_get_thread_num() * dst_sp_size * c_blk];
+            size_t diff_src_offset = (size_t)mb * C * ID * IH * IW
+                    + (size_t)cb * c_blk * ID * IH * IW;
             float *diff_src_fp32
-                    = &bf16cvt_src[dnnl_get_thread_num() * src_sp_size];
+                    = &bf16cvt_src[dnnl_get_thread_num() * src_sp_size * c_blk];
 
-            ker_zero(diff_src_fp32);
+            ker_zero(diff_src_fp32, curr_c_block);
 
-            cvt_bfloat16_to_float(
-                    diff_dst_fp32, &diff_dst[diff_dst_offset_b], dst_sp_size);
-
+            cvt_bfloat16_to_float(diff_dst_fp32, &diff_dst[diff_dst_offset_b],
+                    dst_sp_size * curr_c_block);
+            for_(int c = 0; c < curr_c_block; ++c)
             for_(int od = od_start; od < od_end; ++od)
             for (int oh = oh_start; oh < oh_end; ++oh) {
-                size_t diff_dst_offset = (size_t)od * OH * OW + (size_t)oh * OW;
+                size_t diff_dst_offset = (size_t)c * OD * OH * OW
+                        + (size_t)od * OH * OW + (size_t)oh * OW;
                 for (int ow = ow_start; ow < ow_end; ++ow) {
                     const float *d = &diff_dst_fp32[diff_dst_offset + ow];
-                    ker_avg(d, diff_src_fp32, mb, c, od, oh, ow);
+                    ker_avg(d, &diff_src_fp32[c * ID * IH * IW], mb,
+                            cb * c_blk + c, od, oh, ow);
                 }
             }
-            cvt_float_to_bfloat16(
-                    &diff_src[diff_src_offset], diff_src_fp32, src_sp_size);
+            cvt_float_to_bfloat16(&diff_src[diff_src_offset], diff_src_fp32,
+                    src_sp_size * curr_c_block);
         });
     }
 }

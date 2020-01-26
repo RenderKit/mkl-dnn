@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef JIT_AVX512_BF16_FWD_KERNEL_HPP
-#define JIT_AVX512_BF16_FWD_KERNEL_HPP
+#ifndef JIT_AVX512_CORE_BF16_CONV_KERNEL_HPP
+#define JIT_AVX512_CORE_BF16_CONV_KERNEL_HPP
 
 #include "c_types_map.hpp"
 #include "memory_tracking.hpp"
@@ -23,9 +23,8 @@
 #include "jit_avx512_core_bf16cvt.hpp"
 #include "jit_generator.hpp"
 #include "jit_primitive_conf.hpp"
-#include "jit_uni_eltwise.hpp"
+#include "jit_uni_eltwise_injector.hpp"
 
-//#define BF16_CONV_BWD_W_JIT_KER_USES_PERMW_TRANSPOSITION
 #if !DNNL_THR_SYNC
 #define BF16_CONV_BWD_W_DOES_NOT_USE_BARRIERS
 #endif
@@ -64,11 +63,9 @@ struct jit_avx512_core_bf16_fwd_kernel : public jit_generator {
 
     static bool post_ops_ok(jit_conv_conf_t &jcp, const primitive_attr_t &attr);
     static status_t init_conf(jit_conv_conf_t &jcp,
-            const convolution_desc_t &cd, const memory_desc_wrapper &src_md,
-            const memory_desc_wrapper &weights_md,
-            const memory_desc_wrapper &dst_md,
-            const memory_desc_wrapper &bias_md, const primitive_attr_t &attr,
-            int nthreads);
+            const convolution_desc_t &cd, memory_desc_t &src_md,
+            memory_desc_t &weights_md, memory_desc_t &dst_md,
+            memory_desc_t &bias_md, const primitive_attr_t &attr, int nthreads);
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
@@ -100,7 +97,7 @@ private:
     reg64_t reg_bias = rbx;
 
     reg64_t reg_kj = abi_not_param1;
-    reg64_t reg_ki = reg_out;
+    reg64_t reg_ki = reg_bias;
     reg64_t reg_oi = rdx;
     reg64_t reg_kh = rsi;
 
@@ -135,6 +132,9 @@ private:
     Xbyak::Zmm bf16_emu_reserv_4 = Xbyak::Zmm(29);
     Xbyak::Zmm bf16_emu_reserv_5 = Xbyak::Zmm(30);
 
+    Xbyak::Opmask odd_load_mask = Xbyak::Opmask(1);
+    Xbyak::Opmask even_load_mask = Xbyak::Opmask(2);
+
     jit_uni_eltwise_injector_f32<avx512_common> *eltwise_injector_;
     bf16_emulation_t *bf16_emu_;
 
@@ -152,8 +152,8 @@ private:
 
     size_t get_input_offset(int ki, int ic, int oi, int pad_l) {
         size_t scale = 2; //bf16 vnni is used
-        size_t iw_str = jcp.ic_block;
-        size_t ic_str = 1;
+        size_t iw_str = jcp.is_1stconv ? 1 : jcp.ic_block;
+        size_t ic_str = jcp.is_1stconv ? (size_t)jcp.iw * jcp.ih * jcp.id : 1;
         return (size_t)jcp.typesize_in
                 * ((size_t)(ki * (jcp.dilate_w + 1) + oi * jcp.stride_w - pad_l)
                                 * iw_str
@@ -162,11 +162,13 @@ private:
 
     size_t get_kernel_offset(int ki, int ic, int n_oc_block, int ker_number) {
         int scale = 2; //bf16 vnni is used
+        int rnd_ic_block = utils::rnd_up(jcp.ic_block, scale);
+
         size_t oc_block_stride
-                = (size_t)jcp.nb_ic * jcp.ic_block * jcp.kh * jcp.kw * jcp.kd;
+                = (size_t)jcp.nb_ic * rnd_ic_block * jcp.kh * jcp.kw * jcp.kd;
         return jcp.typesize_in * jcp.oc_block
                 * (n_oc_block * oc_block_stride + (ic + ker_number) * scale
-                        + ki * jcp.ic_block);
+                        + ki * rnd_ic_block);
     }
 
     int get_ow_start(int ki, int pad_l) {
@@ -202,7 +204,7 @@ struct jit_avx512_core_bf16_bwd_data_kernel : public jit_generator {
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, const memory_desc_wrapper &diff_src_d,
             const memory_desc_wrapper &weights_d,
-            const memory_desc_wrapper &diff_dst_d);
+            const memory_desc_wrapper &diff_dst_d, int nthreads);
 
     const jit_conv_conf_t &jcp;
     void (*jit_ker)(jit_conv_call_s *);
@@ -219,12 +221,14 @@ private:
     reg64_t reg_ker = r9;
     reg64_t reg_src = r10;
 
+    reg64_t reg_iwb = rdx;
+
     reg64_t aux_reg_dst = r14;
     reg64_t aux_reg_ker = r15;
 
     reg64_t aux_reg_dst_d = r12;
     reg64_t aux_reg_ker_d = r13;
-    reg64_t reg_ki = reg_src;
+    reg64_t reg_ki = rsi;
 
     reg64_t reg_kj = rax;
     reg64_t reg_oi = rbx;
@@ -318,6 +322,13 @@ struct jit_avx512_core_bf16_conv_bwd_weights_kernel_f32 : public jit_generator {
 
 private:
     Xbyak::Label dst_prm_table;
+    Xbyak::Opmask full_mask = Xbyak::Opmask(1);
+    Xbyak::Opmask low_mask = Xbyak::Opmask(2);
+    Xbyak::Opmask high_mask = Xbyak::Opmask(3);
+    Xbyak::Opmask m_ffffffff = Xbyak::Opmask(4);
+    Xbyak::Opmask m_0000ffff = Xbyak::Opmask(5);
+
+    Xbyak::Zmm perm = Xbyak::Zmm(24);
 
     using reg64_t = const Xbyak::Reg64;
     enum {
@@ -363,6 +374,12 @@ private:
     inline void compute_ic_block_step(int ur_w, int pad_l, int pad_r,
             int ic_block_step, int input_offset, int kernel_offset,
             int output_offset, bool is_tail = false);
+    inline void compute_ic_block_step_extern(int ur_w, int pad_l, int pad_r,
+            int ic_block_step, int input_offset, int kernel_offset,
+            int output_offset, bool is_tail = false);
+    inline void compute_ic_block_step_vpermw(int ur_w, int pad_l, int pad_r,
+            int ic_block_step, int input_offset, int kernel_offset,
+            int output_offset, bool is_tail = false);
     inline void compute_oh_step_common(int ic_block_step);
     inline void compute_oh_step_disp();
     inline void compute_loop();
@@ -375,9 +392,12 @@ private:
             int &nthr_g, int &nthr_oc_b, int &nthr_ic_b);
 
     bf16_emulation_t *bf16_emu_;
-#ifdef BF16_CONV_BWD_W_JIT_KER_USES_PERMW_TRANSPOSITION
-    int stack_space_needed = 64;
-#endif
+    int stack_space_needed = 296;
+    int kd_count_offset = 256;
+    int input_d_offset = 256 + 8;
+    int output_d_offset = 256 + 16;
+    int d_index_offset = 256 + 24;
+    int trans_tmp_offset = 256 + 32;
 };
 
 } // namespace cpu

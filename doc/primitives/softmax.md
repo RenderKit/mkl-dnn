@@ -2,7 +2,7 @@ Softmax {#dev_guide_softmax}
 ============================
 
 >
-> API reference: [C](@ref c_api_softmax), [C++](@ref cpp_api_softmax)
+> [API Reference](@ref dnnl_api_softmax)
 >
 
 The softmax primitive performs softmax along a particular axis on data with
@@ -24,9 +24,9 @@ In general form, the operation is defined by the following formulas:
 
 where
 
-- \f$c\f$ dimension is called a softmax axis,
-- \f$\overline{ou}\f$ is the outermost indices (to the left from softmax axis),
-- \f$\overline{in}\f$ is the innermost indices (to the right from softmax axis), and
+- \f$c\f$ axis over which the softmax computation is computed on,
+- \f$\overline{ou}\f$ is the outermost index (to the left of softmax axis),
+- \f$\overline{in}\f$ is the innermost index (to the right of softmax axis), and
 - \f$\nu\f$ is used to produce more accurate results and defined as:
 
 \f[
@@ -35,7 +35,7 @@ where
         src(\overline{ou}, ic, \overline{in})
 \f]
 
-#### Difference Between [Forward Training](#dnnl_forward_training) and [Forward Inference](#dnnl_forward_inference)
+#### Difference Between Forward Training and Forward Inference
 
 There is no difference between the #dnnl_forward_training
 and #dnnl_forward_inference propagation kinds.
@@ -51,7 +51,10 @@ based on
 
 ### General Notes
 
-N/A
+1. Both forward and backward propagation support in-place operations, meaning
+   that `src` can be used as input and output for forward propagation, and
+   `diff_dst` can be used as input and output for backward propagation. In case
+   of in-place operation, the original data will be overwritten.
 
 ### Post-ops and Attributes
 
@@ -82,7 +85,9 @@ typically referred to as channels (hence in formulas we use \f$c\f$).
 
 ## Performance Tips
 
- * Currently the softmax primitive is optimized for the cases where
+1. Use in-place operations whenever possible.
+
+2. Currently the softmax primitive is optimized for the cases where
    the dimension of the softmax axis is physically dense. For instance:
    - Optimized: 2D case, tensor \f$A \times B\f$,
                 softmax axis 1 (B), format tag #dnnl_ab
@@ -91,12 +96,15 @@ typically referred to as channels (hence in formulas we use \f$c\f$).
    - Optimized: 4D case, tensor \f$A \times B \times C \times D\f$,
                 softmax axis 1 (B), format tag #dnnl_abcd, and
                 \f$C = D = 1\f$
+   - Optimized: 4D case, tensor \f$A \times B \times C \times D\f$,
+                softmax axis 1 (B), format tag #dnnl_acdb or #dnnl_aBcd16b, and
+                \f$C \cdot D \ne 1\f$
    - Non-optimized: 2D case, tensor \f$A \times B\f$,
                     softmax axis 0 (A), format tag #dnnl_ab,
                     and \f$B \ne 1\f$
    - Non-optimized: 2D case, tensor \f$A \times B\f$,
                     softmax axis 1 (B), format tag #dnnl_ba,
                     and \f$A \ne 1\f$
-   - Non-optimized: 4D case, tensor \f$A \times B\f$,
+   - Non-optimized: 4D case, tensor \f$A \times B \times C \times D\f$,
                     softmax axis 2 (C), format tag #dnnl_acdb, and
                     and \f$D \cdot B \ne 1\f$

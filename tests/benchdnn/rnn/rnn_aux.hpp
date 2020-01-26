@@ -1,18 +1,18 @@
 /*******************************************************************************
- * Copyright 2018 Intel Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *******************************************************************************/
+* Copyright 2018-2019 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
 
 #ifndef BENCHDNN_RNN_AUX_HPP
 #define BENCHDNN_RNN_AUX_HPP
@@ -73,11 +73,12 @@ float one_m_square(float x);
 float x_m_square(float x);
 
 void copy(int64_t dimc, int64_t dimr, int64_t ld_src, int64_t ld_dst,
-        const float *src_, float *dst_, rnn_action_t action = action_copy);
-void shift(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_, float shift,
-        bool round = false);
-void scale(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_, float scale,
-        bool round = false);
+        const float *src_, float *dst_, rnn_action_t action = action_copy,
+        bool saturate_to_u8 = false);
+void data_q10n(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_,
+        float data_scale, float data_shift);
+void data_deq10n(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_,
+        float data_scale, float data_shift);
 void gates_reduction(const prb_t &p, const float *b_gates_, float *diff_bias_);
 
 int compare_dat(const prb_t &p, rnn_data_kind_t kind, dnn_mem_t &mem_dt,

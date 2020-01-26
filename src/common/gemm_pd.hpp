@@ -52,6 +52,15 @@ struct gemm_pd_t : public primitive_desc_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_SRC_0: return src_md(0);
+            case DNNL_ARG_SRC_1: return src_md(1);
+            case DNNL_ARG_DST: return dst_md(0);
+            default: return primitive_desc_t::arg_md(arg);
+        }
+    }
+
     virtual const memory_desc_t *src_md(int index = 0) const override {
         switch (index) {
             case 0: return &a_md_;
@@ -62,8 +71,6 @@ struct gemm_pd_t : public primitive_desc_t {
     virtual const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 ? &c_md_ : &glob_zero_md;
     }
-
-    virtual void init_info() override { impl::init_info(this, this->info_); }
 
     virtual int n_inputs() const override { return 2; }
     virtual int n_outputs() const override { return 1; }

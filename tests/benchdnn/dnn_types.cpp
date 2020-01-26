@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -134,6 +134,13 @@ const char *data_kind2str(data_kind_t kind) {
     return "incorrect data kind";
 }
 
+static const std::map<int, const char *> arg2str = {
+        {DNNL_ARG_SRC, "src:"},
+        {DNNL_ARG_SRC_1, "src1:"},
+        {DNNL_ARG_WEIGHTS, "wei:"},
+        {DNNL_ARG_DST, "dst:"},
+};
+
 attr_t::scale_t::policy_t attr_t::scale_t::str2policy(const char *str) {
 #define CASE(_plc) \
     if (!strcasecmp(STRINGIFY(_plc), str)) return _plc
@@ -185,10 +192,104 @@ int attr_t::scale_t::str2scale(const char *str, const char **end_s) {
     char *end;
     this->scale = strtof(s, &end);
     if (this->scale < 0 || end == s) return FAIL;
-
     s = end;
+
+    if (*s == '*') {
+        ++s;
+        if (this->policy != NONE) this->runtime = true;
+    }
+
     assert(*s == '\0' || *s == ';');
 
+    return OK;
+}
+
+int attr_t::zero_points_t::from_str(const char *str, const char **end_s) {
+    *this = attr_t::zero_points_t();
+
+    if (str == NULL) return FAIL;
+
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
+
+    while (isalpha(*s)) {
+        for (const auto &arg : arg2str) {
+            const size_t arg_name_len = strlen(arg.second);
+            if (!strncasecmp(arg.second, s, arg_name_len)) {
+                s += arg_name_len;
+                char *end = NULL;
+                int zero_point = (int)strtol(s, &end, 10);
+                bool runtime = false;
+                if (end == s) return FAIL;
+                s = end;
+                if (*s == '*') {
+                    runtime = true;
+                    ++s;
+                }
+                set(arg.first, {zero_point, runtime});
+            }
+        }
+
+        while (*s == '_')
+            ++s;
+    }
+
+    while (*s == '_')
+        ++s;
+    assert(*s == '\0' || *s == ';');
+
+    return OK;
+}
+
+int attr_t::arg_scales_t::from_str(const char *str, const char **end_s) {
+    *this = attr_t::arg_scales_t();
+
+    if (str == NULL) return FAIL;
+
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
+    // skip '
+    ++s;
+
+    while (true) {
+        if (*s == '\'') {
+            ++s;
+            return OK;
+        }
+        const char *s_init_pos = s;
+        for (const auto &arg : arg2str) {
+            const size_t arg_name_len = strlen(arg.second);
+            if (!strncasecmp(arg.second, s, arg_name_len)) {
+                s += arg_name_len;
+                scale_t::policy_t policy;
+                for (scale_t::policy_t p = scale_t::NONE; true;
+                        p = (scale_t::policy_t)((int)p + 1)) {
+                    if (p == scale_t::POLICY_TOTAL) return FAIL;
+
+                    const char *ps = scale_t::policy2str(p);
+                    if (!strncasecmp(ps, s, strlen(ps))) {
+                        policy = p;
+                        s += strlen(ps);
+                        break;
+                    }
+                }
+                // skip :
+                s++;
+                char *end;
+                float scale = strtof(s, &end);
+                if (scale < 0 || end == s) return FAIL;
+                set(arg.first, policy, scale);
+                s = end;
+                break;
+            }
+        }
+        if (s_init_pos == s) return FAIL;
+        while (*s == '_' || isspace(*s))
+            ++s;
+    }
+    assert(*s == '\0' || *s == ';');
     return OK;
 }
 
@@ -209,6 +310,8 @@ attr_t::post_ops_t::kind_t attr_t::post_ops_t::str2kind(const char *str) {
     CASE(EXP);
     CASE(GELU);
     CASE(SWISH);
+    CASE(LOG);
+    CASE(CLIP);
 #undef CASE
     assert(!"unknown attr::post_ops::kind");
     return KIND_TOTAL;
@@ -231,6 +334,8 @@ const char *attr_t::post_ops_t::kind2str(attr_t::post_ops_t::kind_t kind) {
     CASE(EXP, "exp");
     CASE(GELU, "gelu");
     CASE(SWISH, "swish");
+    CASE(LOG, "log");
+    CASE(CLIP, "clip");
 #undef CASE
     assert(!"unknown attr::post_ops::kind");
     return "unknown attr::post_ops::kind";
@@ -253,6 +358,8 @@ dnnl_alg_kind_t attr_t::post_ops_t::kind2dnnl_kind(
     CASE(EXP, dnnl_eltwise_exp);
     CASE(GELU, dnnl_eltwise_gelu);
     CASE(SWISH, dnnl_eltwise_swish);
+    CASE(LOG, dnnl_eltwise_log);
+    CASE(CLIP, dnnl_eltwise_clip);
 #undef CASE
     assert(!"unknown attr::post_ops::kind");
     return dnnl_alg_kind_undef;
@@ -288,7 +395,7 @@ int attr_t::post_ops_t::from_str(const char *str, const char **end_s) {
                     if (*s == ':') {
                         char *end;
                         e.sum.scale = strtof(++s, &end);
-                        if (e.sum.scale <= 0 || end == s) return FAIL;
+                        if (end == s) return FAIL;
                         s = end;
                     } else {
                         e.sum.scale = 1.f;
@@ -327,8 +434,18 @@ int attr_t::post_ops_t::from_str(const char *str, const char **end_s) {
     return FAIL; /* unreachable */
 }
 
+int attr_t::post_ops_t::find(
+        attr_t::post_ops_t::kind_t kind, int start, int stop) const {
+    if (stop == -1) stop = len;
+    stop = MIN2(stop, len);
+    for (int idx = start; idx < stop; ++idx)
+        if (entry[idx].kind == kind) return idx;
+    return -1;
+}
+
 bool attr_t::is_def() const {
-    return true && oscale.is_def() && post_ops.is_def();
+    return oscale.is_def() && scales.is_def() && zero_points.is_def()
+            && post_ops.is_def();
 }
 
 int str2attr(attr_t *attr, const char *str) {
@@ -348,6 +465,13 @@ int str2attr(attr_t *attr, const char *str) {
             if (rc != OK) return rc;
         }
 
+        param = "zero_points=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->zero_points.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
         param = "post_ops=";
         if (!strncasecmp(param, s, strlen(param))) {
             s += strlen(param);
@@ -355,15 +479,52 @@ int str2attr(attr_t *attr, const char *str) {
             if (rc != OK) return rc;
         }
 
-        if (rc != OK) return FAIL;
+        param = "scales=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->scales.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
+        if (rc != OK) return rc;
         if (*s == ';') ++s;
     }
-
     return OK;
 }
 
 std::ostream &operator<<(std::ostream &s, const attr_t::scale_t &scale) {
-    return s << attr_t::scale_t::policy2str(scale.policy) << ":" << scale.scale;
+    s << attr_t::scale_t::policy2str(scale.policy) << ":" << scale.scale;
+    if (scale.runtime) s << '*';
+    return s;
+}
+
+std::ostream &operator<<(
+        std::ostream &s, const attr_t::zero_points_t &zero_points) {
+    bool first = true;
+    for (const auto &point : zero_points.points) {
+        if (!first) s << '_';
+        first = false;
+
+        s << arg2str.at(point.first) << point.second.value;
+        if (point.second.runtime) s << '*';
+    }
+
+    return s;
+}
+
+std::ostream &operator<<(std::ostream &s, const attr_t::arg_scales_t &scales) {
+    const char *delim = "";
+    s << "'";
+    for (const auto &v : scales.scales) {
+        if (!v.second.is_def()) {
+            s << delim << arg2str.at(v.first)
+              << attr_t::scale_t::policy2str(v.second.policy) << ":"
+              << v.second.scale;
+            delim = "_";
+        }
+    }
+    s << "'";
+    return s;
 }
 
 std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t &post_ops) {
@@ -394,6 +555,8 @@ std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t &post_ops) {
             case pk::EXP:
             case pk::GELU:
             case pk::SWISH:
+            case pk::LOG:
+            case pk::CLIP:
                 s << kind2str(e.kind);
                 if (e.eltwise.scale != 1.f)
                     s << ":" << e.eltwise.alpha << ":" << e.eltwise.beta << ":"
@@ -414,12 +577,15 @@ std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t &post_ops) {
 
 std::ostream &operator<<(std::ostream &s, const attr_t &attr) {
     if (!attr.oscale.is_def()) s << "oscale=" << attr.oscale << ";";
+    if (!attr.zero_points.is_def())
+        s << "zero_points=" << attr.zero_points << ";";
     if (!attr.post_ops.is_def()) s << "post_ops=" << attr.post_ops << ";";
+    if (!attr.scales.is_def()) s << "scales=" << attr.scales << ";";
     return s;
 }
 
 std::ostream &dump_global_params(std::ostream &s) {
-    if (engine_tgt_kind != dnnl_cpu)
+    if (canonical || engine_tgt_kind != dnnl_cpu)
         s << "--engine=" << engine_kind2str(engine_tgt_kind) << " ";
 
     s << "--" << driver_name << " ";
@@ -447,16 +613,37 @@ const char *engine_kind2str(dnnl_engine_kind_t engine) {
     return "incorrect engine kind";
 }
 
+void attr_bundle_t::init_zero_points() {
+    for (const auto &arg_entry : attr.zero_points)
+        zero_points[arg_entry.first] = {arg_entry.second.value};
+}
+
+int attr_bundle_t::generate(int scale_mask) {
+    dnnl_primitive_attr_t dnnl_attr = create_dnnl_attr(
+            attr, (int64_t)oscale.size(), scale_mask, oscale.data());
+    if (dnnl_attr == NULL) return FAIL;
+
+    scale_mask_ = scale_mask;
+    dnnl_attr_.reset(dnnl_attr, &dnnl_primitive_attr_destroy);
+    initialized_ = true;
+
+    return OK;
+}
+
 dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
         int scale_mask, const float *scales) {
     dnnl_primitive_attr_t dnnl_attr = NULL;
     DNN_SAFE_V(dnnl_primitive_attr_create(&dnnl_attr));
 
+    using P = attr_t::scale_t::policy_t;
+
     if (!attr.oscale.is_def()) {
-        using P = attr_t::scale_t::policy_t;
         int64_t count = attr.oscale.policy == P::COMMON ? 1 : scale_cnt;
         if (scale_mask == -1)
             scale_mask = attr.oscale.policy == P::PER_OC ? 1 << 1 : 0;
+
+        const bool runtime = attr.oscale.runtime;
+        SAFE_V(scales == NULL && runtime ? FAIL : OK);
 
         float *gen_scs = NULL;
         if (scales == NULL) {
@@ -467,10 +654,31 @@ dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
             scales = gen_scs;
         }
 
-        DNN_SAFE_V(dnnl_primitive_attr_set_output_scales(
-                dnnl_attr, count, scale_mask, scales));
-
+        DNN_SAFE_V(dnnl_primitive_attr_set_output_scales(dnnl_attr, count,
+                scale_mask, runtime ? &DNNL_RUNTIME_F32_VAL : scales));
         if (gen_scs) zfree(gen_scs);
+    } else if (!attr.scales.is_def()) {
+        // Only common policy is supported at this point
+        for (const auto &s : attr.scales.scales) {
+            int64_t count = -1;
+            int mask = -1;
+            count = s.second.policy == P::COMMON ? 1 : scale_cnt;
+            if (scale_mask == -1)
+                mask = s.second.policy == P::PER_OC ? 1 << 1 : 0;
+
+            DNN_SAFE_V(dnnl_primitive_attr_set_scales(
+                    dnnl_attr, s.first, count, mask, &s.second.scale));
+        }
+    }
+
+    if (!attr.zero_points.is_def()) {
+        for (const auto &zero_points : attr.zero_points) {
+            DNN_SAFE_V(dnnl_primitive_attr_set_zero_points(dnnl_attr,
+                    zero_points.first,
+                    /* count */ 1, /* mask */ 0,
+                    zero_points.second.runtime ? &DNNL_RUNTIME_S32_VAL
+                                               : &zero_points.second.value));
+        }
     }
 
     if (!attr.post_ops.is_def()) {
@@ -495,6 +703,8 @@ dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
                 case attr_t::post_ops_t::EXP:
                 case attr_t::post_ops_t::GELU:
                 case attr_t::post_ops_t::SWISH:
+                case attr_t::post_ops_t::LOG:
+                case attr_t::post_ops_t::CLIP:
                     DNN_SAFE_V(dnnl_post_ops_append_eltwise(ops,
                             e.eltwise.scale, e.eltwise.alg, e.eltwise.alpha,
                             e.eltwise.beta));
@@ -522,7 +732,7 @@ dnnl_format_tag_t get_default_tag(int ndims) {
         case 4: return dnnl_abcd;
         case 5: return dnnl_abcde;
         case 6: return dnnl_abcdef;
-        default: assert(!"unknown kind");
+        default: assert(!"unsupported ndims");
     }
     return dnnl_format_tag_undef;
 }
@@ -557,6 +767,8 @@ float compute_eltwise_fwd(attr_t::post_ops_t::kind_t kind, float src,
         case pk::EXP: return scale * exp_fwd(src);
         case pk::GELU: return scale * gelu_fwd(src);
         case pk::SWISH: return scale * swish_fwd(src, alpha);
+        case pk::LOG: return scale * log_fwd(src);
+        case pk::CLIP: return scale * clip_fwd(src, alpha, beta);
         default: assert(!"unknown attr::post_ops::kind");
     };
     return NAN;
@@ -581,6 +793,8 @@ float compute_eltwise_bwd(attr_t::post_ops_t::kind_t kind, float d_dst,
         case pk::EXP: return exp_bwd(d_dst, src);
         case pk::GELU: return gelu_bwd(d_dst, src);
         case pk::SWISH: return swish_bwd(d_dst, src, alpha);
+        case pk::LOG: return log_bwd(d_dst, src);
+        case pk::CLIP: return clip_bwd(d_dst, src, alpha, beta);
         default: assert(!"unknown attr::post_ops::kind");
     }
     return NAN;

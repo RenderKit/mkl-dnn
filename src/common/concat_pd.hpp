@@ -54,8 +54,6 @@ struct concat_pd_t : public primitive_desc_t {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual void init_info() override { impl::init_info(this, this->info_); }
-
     virtual arg_usage_t arg_usage(int arg) const override {
         if (arg >= DNNL_ARG_MULTIPLE_SRC
                 && arg < DNNL_ARG_MULTIPLE_SRC + n_inputs())
@@ -64,6 +62,13 @@ struct concat_pd_t : public primitive_desc_t {
         if (arg == DNNL_ARG_DST) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
+    }
+
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        int src_index = arg - DNNL_ARG_MULTIPLE_SRC;
+        if (src_index >= 0 && src_index < n_inputs()) return src_md(src_index);
+        if (arg == DNNL_ARG_DST) return dst_md(0);
+        return primitive_desc_t::arg_md(arg);
     }
 
     virtual const memory_desc_t *src_md(int index = 0) const override {
@@ -216,7 +221,6 @@ protected:
             delete _pd; \
             return unimplemented; \
         } \
-        _pd->init_info(); \
         _pd->init_scratchpad_md(); \
         return safe_ptr_assign<concat_pd_t>(*concat_pd, _pd); \
     } \

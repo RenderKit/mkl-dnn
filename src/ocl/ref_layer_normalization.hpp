@@ -46,12 +46,12 @@ struct ref_layer_normalization_fwd_t : public primitive_impl_t {
                     && (utils::everyone_is(f16, src_data_t, dst_data_t)
                             || utils::everyone_is(bf16, src_data_t, dst_data_t)
                             || utils::everyone_is(f32, src_data_t, dst_data_t))
-                    && IMPLICATION(src_data_t == f16,
-                            !is_training() && stats_are_src())
+                    && IMPLICATION(src_data_t == f16, !is_training())
                     && stat_md()->data_type == f32
                     && IMPLICATION(
                             use_scaleshift(), weights_md()->data_type == f32)
-                    && attr()->has_default_values();
+                    && attr()->has_default_values()
+                    && set_default_formats_common();
             if (!ok) return status::unimplemented;
 
             return jit_ref_layer_normalization_kernel_t::init_conf(jln_, this);
@@ -133,6 +133,11 @@ struct ref_layer_normalization_bwd_t : public primitive_impl_t {
         CHECK(status);
 
         compute_engine->create_kernel(&kernel_, "ref_lnorm_bwd", kernel_ctx);
+        if (pd()->jln_.use_scaleshift) {
+            compute_engine->create_kernel(&kernel_scaleshift_,
+                    "ref_lnorm_bwd_scaleshift", kernel_ctx);
+            if (!kernel_scaleshift_) return status::runtime_error;
+        }
         if (!kernel_) return status::runtime_error;
 
         return status::success;
@@ -146,6 +151,7 @@ private:
     status_t execute_backward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
+    compute::kernel_t kernel_scaleshift_;
     compute::kernel_t kernel_;
 };
 

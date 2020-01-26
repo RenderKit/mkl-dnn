@@ -12,3 +12,6 @@
 --mb=64 --batch=ip_vgg16
 --mb=2048 --batch=ip_ncf
 --mb=1024 --batch=ip_alexnet
+--mb=1000 --batch=ip_maskrcnn
+--mb=128 --batch=ip_bert
+--mb=128 --batch=ip_bert_large

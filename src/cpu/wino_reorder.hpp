@@ -1,18 +1,18 @@
 /*******************************************************************************
- * Copyright 2017-2018 Intel Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *******************************************************************************/
+* Copyright 2017-2019 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
 
 #ifndef CPU_WINO_REORDER_HPP
 #define CPU_WINO_REORDER_HPP
@@ -41,14 +41,14 @@ struct wino_reorder_t : public primitive_impl_t {
             const memory_desc_wrapper id(src_md), od(dst_md);
             bool args_ok = true && id.data_type() == type_i
                     && od.data_type() == type_o
-                    && (id.matches_tag(utils::pick(id.ndims() - 4,
-                                format_tag::oihw, format_tag::goihw))
-                            || id.matches_tag(utils::pick(id.ndims() - 4,
-                                    format_tag::hwio, format_tag::hwigo)))
                     && od.format_kind() == format_kind::wino
                     && utils::one_of(od.wino_desc().wino_format,
                             dnnl_wino_wei_aaOIoi, dnnl_wino_wei_aaOio,
-                            dnnl_wino_wei_aaOBiOo, dnnl_wino_wei_OBaaIBOIio);
+                            dnnl_wino_wei_aaOBiOo, dnnl_wino_wei_OBaaIBOIio)
+                    && (id.matches_tag(utils::pick(id.ndims() - 4,
+                                format_tag::oihw, format_tag::goihw))
+                            || id.matches_tag(utils::pick(id.ndims() - 4,
+                                    format_tag::hwio, format_tag::hwigo)));
             if (!args_ok) return status::invalid_arguments;
 
             auto _pd = new pd_t(
@@ -58,7 +58,6 @@ struct wino_reorder_t : public primitive_impl_t {
                 delete _pd;
                 return status::unimplemented;
             }
-            _pd->init_info();
             _pd->init_scratchpad_md();
             return safe_ptr_assign<reorder_pd_t>(*reorder_pd, _pd);
         }
@@ -66,6 +65,11 @@ struct wino_reorder_t : public primitive_impl_t {
         status_t init() {
             status_t status = cpu_reorder_pd_t::init();
             if (status != status::success) return status;
+
+            bool ok = attr()->has_default_values(
+                    primitive_attr_t::skip_mask_t::oscale
+                    | primitive_attr_t::skip_mask_t::post_ops);
+            if (!ok) return status::unimplemented;
 
             init_scratchpad();
 
@@ -190,8 +194,8 @@ private:
             for_nd(0, 1, size_wspace_, [&](int i) { wspace[i] = 0.f; });
 
             if (has_oihw_format) {
-                for_nd(0, 1,
-                        r_, w_alpha_, oc_block_, [&](int ih, int j, int ioc) {
+                for_nd(0, 1, r_, w_alpha_, oc_block_,
+                        [&](int ih, int j, int ioc) {
                             for (int iw = 0; iw < r_; ++iw) {
                                 int inp_oc = ob * oc_block_ + ioc;
                                 int inp_ic = iic;
@@ -227,8 +231,8 @@ private:
                 });
             }
 
-            for_nd(0, 1,
-                    w_alpha_, w_alpha_, oc_block_, [&](int i, int j, int ioc) {
+            for_nd(0, 1, w_alpha_, w_alpha_, oc_block_,
+                    [&](int i, int j, int ioc) {
                         float t = 0;
                         for (int k = 0; k < r_; ++k)
                             t += g[i * r_ + k]
@@ -317,8 +321,8 @@ private:
             const out_data_t *__restrict tmp_wei) const {
         int oc_chunks = nb_oc_ / oc2_block_;
 
-        for_nd(0, 1,
-                w_alpha_, w_alpha_, oc_chunks, [&](int u_h, int u_w, int occ) {
+        for_nd(0, 1, w_alpha_, w_alpha_, oc_chunks,
+                [&](int u_h, int u_w, int occ) {
                     for (int ib = 0; ib < nb_ic_; ib++) {
                         out_data_t *__restrict wei_ptr = output
                                 + (((u_h * w_alpha_ + u_w) * oc_chunks + occ)
@@ -348,8 +352,8 @@ private:
         int ic_chunks = nb_ic_ / ic2_block_;
         int oc_chunks = nb_oc_ / oc2_block_;
 
-        for_nd(0, 1,
-                oc_chunks, w_alpha_, w_alpha_, [&](int occ, int u_h, int u_w) {
+        for_nd(0, 1, oc_chunks, w_alpha_, w_alpha_,
+                [&](int occ, int u_h, int u_w) {
                     for_(int icc = 0; icc < ic_chunks; icc++)
                     for (int ob = 0; ob < oc2_block_; ob++) {
                         int ocp = (occ * oc2_block_ + ob) * oc_block_;

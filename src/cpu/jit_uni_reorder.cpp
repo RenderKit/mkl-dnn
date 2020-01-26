@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include "nstl.hpp"
 #include "type_helpers.hpp"
 
+#include "cpu_primitive.hpp"
 #include "cpu_reorder_pd.hpp"
 #include "jit_uni_reorder.hpp"
 
@@ -697,7 +698,7 @@ struct jit_uni_reorder_kernel_f32 : public kernel_t, public jit_generator {
         if (prb_.scale_type == scale_type_t::COMMON) {
             auto reg_ptr_scale_tmp = reg_ptr_in;
             mov(reg_ptr_scale_tmp, PARAM(scale));
-            movups(xmm_scale, ptr[reg_ptr_scale_tmp]);
+            uni_vbroadcastss(xmm_scale, ptr[reg_ptr_scale_tmp]);
         } else if (prb_.scale_type == scale_type_t::MANY) {
             mov(reg_ptr_scale, PARAM(scale));
         }
@@ -978,7 +979,6 @@ struct jit_uni_reorder_t : public primitive_impl_t {
             }
             _pd->prb_ = prb;
             _pd->ker_desc_ = ker_desc;
-            _pd->init_info();
             _pd->init_scratchpad_md();
             return safe_ptr_assign<reorder_pd_t>(*reorder_pd, _pd);
         }
@@ -1111,8 +1111,9 @@ struct jit_uni_reorder_t : public primitive_impl_t {
     virtual status_t execute(const exec_ctx_t &ctx) const override {
         auto in = CTX_IN_MEM(const char *, DNNL_ARG_FROM);
         auto out = CTX_OUT_MEM(char *, DNNL_ARG_TO);
+        DEFINE_SCALES_BUFFER(scales);
 
-        omp_driver(in, out, pd()->attr()->output_scales_.scales_);
+        omp_driver(in, out, scales);
 
         return status::success;
     }

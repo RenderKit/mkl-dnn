@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -122,6 +122,9 @@ PKIND_TRAITS_INST(inner_product);
 PKIND_TRAITS_INST(rnn);
 PKIND_TRAITS_INST(gemm);
 PKIND_TRAITS_INST(binary);
+PKIND_TRAITS_INST(logsoftmax);
+PKIND_TRAITS_INST(matmul);
+PKIND_TRAITS_INST(resampling);
 #undef PKIND_TRAITS_INST
 
 } // namespace impl

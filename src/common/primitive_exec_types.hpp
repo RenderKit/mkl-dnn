@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -37,6 +37,10 @@
 namespace dnnl {
 namespace impl {
 
+namespace memory_tracking {
+struct grantor_t;
+} // namespace memory_tracking
+
 struct memory_arg_t {
     memory_t *mem;
     bool is_const;
@@ -59,6 +63,24 @@ struct exec_ctx_t {
     memory_t *input(int arg) const;
     memory_t *output(int arg) const;
     memory_t *memory(int arg) const;
+
+    // Returns memory descriptor wrapper for the corresponding memory argument.
+    //
+    // To support sub-memory flow (when primitive descriptor was created with
+    // a sub-memory, but the primitive is executed on the original memory),
+    // it is recommended to pass the memory descriptor from the primitive
+    // descriptor. If this memory descriptor is fully defined (i.e. no reason
+    // to use memory descriptor from the input memory), exactly it will be
+    // returned.
+    //
+    // Note: fully defined memory descriptor mentioned above is a synonym to
+    //       `mdw::has_runtime_dims_or_strides() == false`.
+    //
+    // XXX: revisit this behavior in DNNL 2.0. It would be more consistent to
+    //      take memory description from the incoming argument. This will
+    //      require a sub-memory object, though...
+    memory_desc_wrapper memory_mdw(int arg,
+            const memory_desc_t *md_from_primitive_desc = nullptr) const;
 
     void set_scratchpad_grantor(
             const memory_tracking::grantor_t &scratchpad_grantor);

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,11 +20,13 @@
 #include <assert.h>
 
 #include "c_types_map.hpp"
-#include "cpu_isa_traits.hpp"
+#include "dnnl_thread.hpp"
 #include "type_helpers.hpp"
 #include "utils.hpp"
 
 #include "cpu_shuffle_pd.hpp"
+
+#include "cpu_isa_traits.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -46,15 +48,16 @@ struct ref_shuffle_t : public primitive_impl_t {
                     && IMPLICATION(this->desc()->data_desc.data_type
                                     == data_type::bf16,
                             mayiuse(avx512_core))
+                    && attr()->has_default_values()
                     && IMPLICATION(!is_fwd(), set_default_formats_common());
             if (!ok) return status::unimplemented;
 
             if (ndims() == 5) {
                 dat_tag_ = memory_desc_matches_one_of_tag(
-                        *data_md(), nCdhw16c, nCdhw8c, ncdhw, ndhwc);
+                        *data_md(), nCdhw16c, nCdhw8c, nCdhw4c, ncdhw, ndhwc);
             } else if (ndims() == 4) {
                 dat_tag_ = memory_desc_matches_one_of_tag(
-                        *data_md(), nChw16c, nChw8c, nchw, nhwc);
+                        *data_md(), nChw16c, nChw8c, nChw4c, nchw, nhwc);
             } else
                 dat_tag_ = any;
 

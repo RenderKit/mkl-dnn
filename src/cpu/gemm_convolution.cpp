@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -128,6 +128,7 @@ void gemm_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
                             for (int oS = 0; oS < m; ++oS) {
                                 d_[oS] += b;
                                 if (d_[oS] < 0) d_[oS] *= eltwise_->alpha_;
+                                d_[oS] *= eltwise_->scale_;
                             }
                         });
                     } else {
@@ -210,9 +211,9 @@ void gemm_convolution_bwd_data_t::execute_backward_data(
     const jit_gemm_conv_conf_t &jcp = this->pd()->jcp_;
 
     const int M = jcp.os * jcp.od;
-    const size_t src_step = jcp.ic * jcp.ih * jcp.iw * jcp.id;
-    const size_t dst_step = jcp.oc * M;
-    const size_t weights_g_size = jcp.ic * jcp.oc * jcp.ks;
+    const size_t src_step = (size_t)jcp.ic * jcp.ih * jcp.iw * jcp.id;
+    const size_t dst_step = (size_t)jcp.oc * M;
+    const size_t weights_g_size = (size_t)jcp.ic * jcp.oc * jcp.ks;
 
     const int m = jcp.os;
     const int K = jcp.oc;

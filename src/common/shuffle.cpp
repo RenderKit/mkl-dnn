@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -38,6 +38,9 @@ status_t shuffle_desc_init(shuffle_desc_t *shuffle_desc, prop_kind_t prop_kind,
             && axis >= 0 && axis < data_desc->ndims && group_size > 0
             && group_size <= data_desc->dims[axis];
     if (!args_ok) return invalid_arguments;
+
+    if (memory_desc_wrapper(data_desc).has_runtime_dims_or_strides())
+        return unimplemented;
 
     auto sd = shuffle_desc_t();
     sd.primitive_kind = primitive_kind::shuffle;

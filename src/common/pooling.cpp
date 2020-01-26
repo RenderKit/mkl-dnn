@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -50,6 +50,11 @@ status_t pooling_desc_init(pooling_desc_t *pool_desc, prop_kind_t prop_kind,
 
     const bool is_fwd = one_of(prop_kind, forward_training, forward_inference);
 
+    bool runtime_dims_or_strides
+            = memory_desc_wrapper(src_desc).has_runtime_dims_or_strides()
+            || memory_desc_wrapper(dst_desc).has_runtime_dims_or_strides();
+    if (runtime_dims_or_strides) return unimplemented;
+
     pd.diff_src_desc = pd.src_desc = zero_md();
     pd.diff_dst_desc = pd.dst_desc = zero_md();
 
@@ -66,6 +71,7 @@ status_t pooling_desc_init(pooling_desc_t *pool_desc, prop_kind_t prop_kind,
                 pooling_avg_exclude_padding)) {
         pd.accum_data_type = types::default_accum_data_type(
                 src_desc->data_type, dst_desc->data_type);
+        if (pd.accum_data_type == data_type::undef) return invalid_arguments;
     } else {
         pd.accum_data_type = dst_desc->data_type;
     }

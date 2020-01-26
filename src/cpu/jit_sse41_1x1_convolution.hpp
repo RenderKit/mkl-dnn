@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_JIT_SSE41_1x1_CONVOLUTION_HPP
-#define CPU_JIT_SSE41_1x1_CONVOLUTION_HPP
+#ifndef CPU_JIT_SSE41_1X1_CONVOLUTION_HPP
+#define CPU_JIT_SSE41_1X1_CONVOLUTION_HPP
 
 #include "c_types_map.hpp"
 #include "dnnl_thread.hpp"
@@ -44,6 +44,8 @@ struct jit_sse41_1x1_convolution_fwd_t : public primitive_impl_t {
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(data_type::f32, data_type::f32,
                             data_type::f32, data_type::f32, data_type::f32)
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops)
                     && !has_zero_dim_memory() && set_default_formats();
             if (!ok) return status::unimplemented;
 

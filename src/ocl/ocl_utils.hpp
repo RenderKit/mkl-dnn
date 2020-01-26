@@ -84,25 +84,31 @@ inline status_t convert_to_dnnl(cl_int cl_status) {
     }
 }
 
-#define OCL_CHECK(x) \
+#ifndef NDEBUG
+#define MAYBE_REPORT_OCL_ERROR(s) \
     do { \
-        cl_int s = x; \
-        if (s != CL_SUCCESS) { \
-            if (dnnl_verbose()->level >= 5) { \
-                printf("Error from OpenCL: %d\n", s); \
-            } \
-            return dnnl::impl::ocl::ocl_utils::convert_to_dnnl(s); \
-        } \
+        if (get_verbose()) \
+            printf("dnnl_verbose,gpu,ocl_error,%d\n", (int)(s)); \
     } while (0)
-
 #define OCL_CHECK_V(x) \
     do { \
         cl_int s = x; \
         if (s != CL_SUCCESS) { \
-            if (dnnl_verbose()->level >= 5) { \
-                printf("Error from OpenCL: %d\n", s); \
-            } \
+            MAYBE_REPORT_OCL_ERROR(s); \
             return; \
+        } \
+    } while (0)
+#else
+#define MAYBE_REPORT_OCL_ERROR(s)
+#define OCL_CHECK_V(x) (void)(x)
+#endif
+
+#define OCL_CHECK(x) \
+    do { \
+        cl_int s = x; \
+        if (s != CL_SUCCESS) { \
+            MAYBE_REPORT_OCL_ERROR(s); \
+            return dnnl::impl::ocl::ocl_utils::convert_to_dnnl(s); \
         } \
     } while (0)
 
@@ -135,25 +141,6 @@ inline status_t check_device(
         }
     }
     return status::invalid_arguments;
-}
-
-inline void get_optimal_lws(const size_t *gws, size_t *lws, size_t n) {
-    const size_t lws_max = 256;
-    const size_t optimal_lws_values[]
-            = {256, 224, 192, 160, 128, 96, 64, 32, 16, 8, 7, 6, 5, 4, 3, 2, 1};
-    size_t total_lws = 1;
-    for (size_t i = 0; i < n; ++i) {
-        auto rest_lws = lws_max / total_lws;
-        size_t lws_idx = 0;
-        while (rest_lws < optimal_lws_values[lws_idx])
-            lws_idx++;
-
-        while (gws[i] % optimal_lws_values[lws_idx])
-            lws_idx++;
-
-        lws[i] = optimal_lws_values[lws_idx];
-        total_lws *= optimal_lws_values[lws_idx];
-    }
 }
 
 status_t get_ocl_devices(

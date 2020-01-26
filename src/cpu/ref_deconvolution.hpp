@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -146,7 +146,7 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
             dnnl_primitive_desc_iterator it(
                     engine_, (op_desc_t *)&cd, &attr_, nullptr);
             while (++it != it.end()) {
-                conv_pd_ = *it;
+                conv_pd_ = it.fetch_once();
                 conv_supports_bias_
                         = static_cast<cpu_convolution_bwd_data_pd_t *>(conv_pd_)
                                   ->support_bias();
@@ -180,7 +180,7 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
                     && utils::one_of(desc()->alg_kind,
                             alg_kind::deconvolution_direct,
                             alg_kind::deconvolution_winograd)
-                    && attr()->post_ops_.has_default_values();
+                    && attr()->has_default_values();
 
             if (ok) {
                 CHECK(init_convolution());
@@ -303,7 +303,7 @@ struct ref_deconvolution_bwd_data_t : public primitive_impl_t {
             dnnl_primitive_desc_iterator it(
                     engine_, (op_desc_t *)&cd, &attr_, nullptr);
             while (++it != it.end()) {
-                conv_pd_ = *it;
+                conv_pd_ = it.fetch_once();
                 if (conv_pd_->weights_md()->extra.flags == 0)
                     return status::success;
                 delete conv_pd_;
@@ -324,7 +324,8 @@ struct ref_deconvolution_bwd_data_t : public primitive_impl_t {
                                             bf16, wei_type, ddst_type)))
                     && utils::one_of(desc()->alg_kind,
                             alg_kind::deconvolution_direct,
-                            alg_kind::deconvolution_winograd);
+                            alg_kind::deconvolution_winograd)
+                    && attr()->has_default_values();
 
             if (ok) {
                 CHECK(init_convolution());
@@ -414,7 +415,7 @@ struct ref_deconvolution_bwd_weights_t : public primitive_impl_t {
             dnnl_primitive_desc_iterator it(
                     engine_, (op_desc_t *)&cd, &attr_, nullptr);
             while (++it != it.end()) {
-                conv_pd_ = *it;
+                conv_pd_ = it.fetch_once();
                 bool bf16_ref_deconv_supports_bias = IMPLICATION(with_bias()
                                 && desc()->src_desc.data_type
                                         == data_type::bf16,

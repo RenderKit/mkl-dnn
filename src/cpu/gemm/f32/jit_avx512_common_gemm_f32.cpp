@@ -1615,7 +1615,7 @@ struct xbyak_gemm : public jit_generator {
         vmovss(xmm0, ptr[ARG_ALPHA]);
         vmovss(xmm1, ptr[r15]);
 
-#if _WIN32
+#ifdef _WIN32
         mov(A, ARG_A);
         mov(LDA, ARG_LDA);
 #endif
@@ -1913,6 +1913,8 @@ dnnl_status_t jit_avx512_common_gemm_f32(const char *transa, const char *transb,
     if (nthr_k > 1) {
         ompstatus_ = (unsigned char *)malloc(
                 nthr * CACHE_LINE_SIZE, CACHE_LINE_SIZE);
+        if (!ompstatus_) return dnnl_out_of_memory;
+
         ompstatus = (unsigned char volatile *)ompstatus_;
         assert(ompstatus);
 

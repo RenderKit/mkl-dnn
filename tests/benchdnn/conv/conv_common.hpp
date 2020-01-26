@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -53,17 +53,8 @@ struct desc_t {
     bool has_groups;
 
     const char *name;
+    int ndims;
 };
-
-inline bool is_problem_3d(const desc_t *p) {
-    const auto id_p = p->id + p->pd;
-    return id_p > 1 || p->kd > 1 || p->od > 1;
-}
-
-inline bool is_problem_1d(const desc_t *p) {
-    const auto ih_p = p->ih + p->ph;
-    return !is_problem_3d(p) && ih_p == 1 && p->kh == 1 && p->oh == 1;
-}
 
 int str2desc(desc_t *desc, const char *str, bool is_deconv);
 std::ostream &operator<<(std::ostream &s, const desc_t &d);
@@ -171,6 +162,10 @@ struct perf_report_t : public base_perf_report_t {
 
     virtual void dump_cfg(std::ostream &s) const override {
         s << cfg2str(p_->cfg);
+    }
+
+    virtual void dump_desc(std::ostream &s) const override {
+        s << static_cast<const desc_t &>(*p_);
     }
 
     virtual void dump_desc_csv(std::ostream &s) const override {
@@ -290,12 +285,13 @@ inline void inv_dst_off_f(const prb_t *p, int64_t off, int64_t &mb, int64_t &g,
 
 float oscale(const prb_t *p, int oc);
 
-void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &dst_m);
-void compute_ref_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &diff_dst_m);
-void compute_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &diff_wei_m,
-        dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m);
+void compute_ref_fwd(const prb_t *p, dnnl_primitive_t c_ref, dnn_mem_t &src_m,
+        dnn_mem_t &wei_m, dnn_mem_t &bia_m, dnn_mem_t &dst_m);
+void compute_ref_bwd_d(const prb_t *p, dnnl_primitive_t c_ref,
+        dnn_mem_t &diff_src_m, dnn_mem_t &wei_m, dnn_mem_t &bia_m,
+        dnn_mem_t &diff_dst_m);
+void compute_ref_bwd_w(const prb_t *p, dnnl_primitive_t c_ref, dnn_mem_t &src_m,
+        dnn_mem_t &diff_wei_m, dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m);
 
 void compute_ref_direct_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
         dnn_mem_t &bia_m, dnn_mem_t &dst_m);

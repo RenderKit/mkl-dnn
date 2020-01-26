@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 #include "gemm_convolution_utils.hpp"
 #include "jit_generator.hpp"
 #include "jit_primitive_conf.hpp"
-#include "jit_uni_eltwise.hpp"
+#include "jit_uni_eltwise_injector.hpp"
 #include "ref_eltwise.hpp"
 
 #include "gemm/gemm.hpp"
@@ -59,7 +59,10 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_impl_t {
                     && !has_zero_dim_memory()
                     && set_default_formats_common(
                             dat_tag(), format_tag::any, dat_tag())
-                    && post_ops_ok()
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::oscale
+                            | primitive_attr_t::skip_mask_t::post_ops)
+                    && output_scales_mask_ok() && post_ops_ok()
                     && memory_desc_matches_tag(*src_md(), dat_tag())
                     && memory_desc_matches_tag(*dst_md(), dat_tag())
                     && set_or_check_wei_format();
@@ -74,15 +77,21 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_impl_t {
         jit_gemm_conv_conf_t jcp_;
 
     protected:
-        format_tag_t dat_tag() const { return format_tag::nhwc; }
+        format_tag_t dat_tag() const {
+            int ndims = src_md()->ndims;
+            return utils::pick(ndims - 4, format_tag::nhwc, format_tag::ndhwc);
+        }
 
         bool set_or_check_wei_format() {
             using namespace format_tag;
+            int ndims = src_md()->ndims;
 
             const bool is_src_s8 = src_md_.data_type == data_type::s8;
 
             memory_desc_t want_wei_md = weights_md_;
-            memory_desc_init_by_tag(want_wei_md, with_groups() ? hwigo : hwio);
+            memory_desc_init_by_tag(want_wei_md,
+                    with_groups() ? utils::pick(ndims - 4, hwigo, dhwigo)
+                                  : utils::pick(ndims - 4, hwio, dhwio));
 
             if (is_src_s8) {
                 want_wei_md.extra.flags = 0
@@ -100,6 +109,11 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_impl_t {
             }
 
             return weights_md_ == want_wei_md;
+        }
+
+        bool output_scales_mask_ok() const {
+            const auto &mask = attr()->output_scales_.mask_;
+            return mask == 0 || mask == 1 << 1;
         }
 
         bool post_ops_ok() const {
@@ -224,7 +238,9 @@ struct _gemm_u8s8s32x_convolution_bwd_data_t : public primitive_impl_t {
                     && !has_zero_dim_memory()
                     && set_default_formats_common(
                             dat_tag(), wei_tag(), dat_tag())
-                    && attr()->post_ops_.has_default_values()
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::oscale)
+                    && output_scales_mask_ok()
                     && memory_desc_matches_tag(*diff_src_md(), dat_tag())
                     && memory_desc_matches_tag(*diff_dst_md(), dat_tag())
                     && memory_desc_matches_tag(*weights_md(), wei_tag());
@@ -241,10 +257,20 @@ struct _gemm_u8s8s32x_convolution_bwd_data_t : public primitive_impl_t {
         jit_gemm_conv_conf_t jcp_;
 
     protected:
-        format_tag_t dat_tag() const { return format_tag::nhwc; }
+        format_tag_t dat_tag() const {
+            int ndims = diff_src_md()->ndims;
+            return utils::pick(ndims - 4, format_tag::nhwc, format_tag::ndhwc);
+        }
 
         format_tag_t wei_tag() const {
-            return with_groups() ? format_tag::hwigo : format_tag::hwio;
+            using namespace format_tag;
+            int ndims = diff_src_md()->ndims;
+            return with_groups() ? utils::pick(ndims - 4, hwigo, dhwigo)
+                                 : utils::pick(ndims - 4, hwio, dhwio);
+        }
+        bool output_scales_mask_ok() const {
+            const auto &mask = attr()->output_scales_.mask_;
+            return mask == 0 || mask == 1 << 1;
         }
     };
 

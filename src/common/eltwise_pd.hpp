@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,7 +41,6 @@ struct eltwise_pd_t : public primitive_desc_t {
     virtual const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
-    virtual void init_info() override { impl::init_info(this, this->info_); }
 
     virtual status_t query(query_t what, int idx, void *result) const override {
         switch (what) {
@@ -101,6 +100,14 @@ struct eltwise_fwd_pd_t : public eltwise_pd_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_SRC: return src_md(0);
+            case DNNL_ARG_DST: return dst_md(0);
+            default: return eltwise_pd_t::arg_md(arg);
+        }
+    }
+
     virtual const memory_desc_t *src_md(int index = 0) const override {
         return index == 0 ? &data_md_ : &glob_zero_md;
     }
@@ -112,7 +119,8 @@ struct eltwise_fwd_pd_t : public eltwise_pd_t {
     virtual int n_outputs() const override { return 1; }
 
     bool is_zero_preserved() const {
-        return math::eltwise_fwd_preserves_zero(desc_.alg_kind);
+        return math::eltwise_fwd_preserves_zero(
+                desc_.alg_kind, desc_.alpha, desc_.beta);
     }
 };
 
@@ -132,6 +140,15 @@ struct eltwise_bwd_pd_t : public eltwise_pd_t {
         if (arg == DNNL_ARG_DIFF_SRC) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
+    }
+
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_SRC: return src_md(0);
+            case DNNL_ARG_DIFF_SRC: return diff_src_md(0);
+            case DNNL_ARG_DIFF_DST: return diff_dst_md(0);
+            default: return eltwise_pd_t::arg_md(arg);
+        }
     }
 
     virtual const memory_desc_t *src_md(int index = 0) const override {

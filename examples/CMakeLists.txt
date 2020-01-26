@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2018 Intel Corporation
+# Copyright 2016-2019 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,15 +31,24 @@ append(CMAKE_C_FLAGS "${CMAKE_CCXX_NOWARN_FLAGS}")
 append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_NOWARN_FLAGS}")
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_SOURCE_DIR}/examples)
 
 set_if(UNIX LIBM m)
 
-file(GLOB sources *.cpp *.c)
+file(GLOB_RECURSE sources *.cpp *.c)
 
 foreach(src ${sources})
-    get_filename_component(src_name ${src} NAME)
-    string(REGEX REPLACE "[_\\.]" "-" example_name ${src_name})
-    if(${example_name} MATCHES "^(cpu)")
+    file(RELATIVE_PATH src_rel_path ${CMAKE_CURRENT_SOURCE_DIR} ${src})
+    string(REGEX REPLACE "[/_\\.]" "-" example_name ${src_rel_path})
+
+    # Put hw-specific part of the name in front.
+    # It is important for examples in subdirectories.
+    foreach(pat "cpu-" "gpu-" "cross-engine-")
+        string(REGEX REPLACE "^(.*)${pat}" "${pat}\\1"
+            example_name ${example_name})
+    endforeach()
+
+    if(${example_name} MATCHES "(cpu-)")
         # Example name contains cpu-
         register_exe(${example_name} ${src} "test" ${LIBM})
     elseif(${example_name} MATCHES "^(cross-engine|gpu)")
@@ -69,6 +78,9 @@ if (DNNL_INSTALL_MODE STREQUAL "BUNDLE")
     install(FILES
         ${CMAKE_CURRENT_BINARY_DIR}/CMakeLists.txt
         ${example_sources}
+        DESTINATION examples)
+    install(DIRECTORY
+        tutorials
         DESTINATION examples)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         install(FILES

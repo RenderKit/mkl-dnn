@@ -52,7 +52,7 @@ private:
 // The following code is derived from Boost C++ library
 // Copyright 2005-2014 Daniel James.
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
-// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+// file LICENSE or copy at http://www.boost.org/LICENSE_1_0.txt)
 template <typename T>
 static size_t hash_combine(size_t seed, const T &v) {
     return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
@@ -82,14 +82,28 @@ static inline size_t get_attr_hash(const primitive_attr_t *attr) {
     size_t seed = 0;
     // scratchpad_mode
     seed = hash_combine(seed, static_cast<size_t>(attr->scratchpad_mode_));
-    // output_scales: mask
-    seed = hash_combine(seed, attr->output_scales_.mask_);
-    // output_scales: scales[:]
-    if (attr->output_scales_.scales_) {
-        for (int i = 0; i < attr->output_scales_.count_; i++) {
-            seed = hash_combine(seed, attr->output_scales_.scales_[i]);
+
+    if (!attr->output_scales_.has_default_values()) {
+        // output_scales: mask
+        seed = hash_combine(seed, attr->output_scales_.mask_);
+        // output_scales: scales[:]
+        if (attr->output_scales_.scales_) {
+            for (int i = 0; i < attr->output_scales_.count_; i++) {
+                seed = hash_combine(seed, attr->output_scales_.scales_[i]);
+            }
+        }
+    } else if (!attr->scales_.has_default_values()) {
+        // go through scales for all arguments
+        for (const auto &p : attr->scales_.scales_) {
+            seed = hash_combine(seed, p.second.mask_);
+            for (int i = 0; i < p.second.count_; i++) {
+                seed = hash_combine(seed, p.second.scales_[i]);
+            }
         }
     }
+    // zero_points
+    for (int arg : {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST})
+        seed = hash_combine(seed, *attr->zero_points_.get(arg));
     // post_ops: entry[:]
     for (int i = 0; i < attr->post_ops_.len_; i++) {
         const auto &entry = attr->post_ops_.entry_[i];
@@ -322,10 +336,11 @@ size_t get_desc_hash<gemm_desc_t>(const op_desc_t *op_desc) {
     // Alpha, beta
     seed = hash_combine(seed, desc->alpha);
     seed = hash_combine(seed, desc->beta);
-    // a_type, b_type, c_type
+    // a_type, b_type, c_type, acc_type
     seed = hash_combine(seed, static_cast<size_t>(desc->a_type));
     seed = hash_combine(seed, static_cast<size_t>(desc->b_type));
     seed = hash_combine(seed, static_cast<size_t>(desc->c_type));
+    seed = hash_combine(seed, static_cast<size_t>(desc->acc_type));
     // Combined hash for gemm desc
     return seed;
 }
@@ -398,6 +413,23 @@ size_t get_desc_hash<lrn_desc_t>(const op_desc_t *op_desc) {
 }
 
 template <>
+size_t get_desc_hash<matmul_desc_t>(const op_desc_t *op_desc) {
+    const auto *desc = reinterpret_cast<const matmul_desc_t *>(op_desc);
+    size_t seed = 0;
+    // Kinds
+    seed = hash_combine(seed, static_cast<size_t>(desc->primitive_kind));
+    // Memory descriptors
+    seed = hash_combine(seed, get_md_hash(desc->src_desc));
+    seed = hash_combine(seed, get_md_hash(desc->weights_desc));
+    seed = hash_combine(seed, get_md_hash(desc->bias_desc));
+    seed = hash_combine(seed, get_md_hash(desc->dst_desc));
+    // Accumulator type
+    seed = hash_combine(seed, static_cast<size_t>(desc->accum_data_type));
+    // Combined hash for matmul op desc
+    return seed;
+}
+
+template <>
 size_t get_desc_hash<pooling_desc_t>(const op_desc_t *op_desc) {
     const auto *desc = reinterpret_cast<const pooling_desc_t *>(op_desc);
     size_t seed = 0;
@@ -434,6 +466,24 @@ size_t get_desc_hash<reorder_desc_t>(const op_desc_t *op_desc) {
     seed = hash_combine(seed, static_cast<size_t>(desc->src_engine_kind));
     seed = hash_combine(seed, static_cast<size_t>(desc->dst_engine_kind));
     // Combined hash for reorder desc
+    return seed;
+}
+
+template <>
+size_t get_desc_hash<resampling_desc_t>(const op_desc_t *op_desc) {
+    const auto *desc = reinterpret_cast<const resampling_desc_t *>(op_desc);
+    size_t seed = 0;
+    // Kinds
+    seed = hash_combine(seed, static_cast<size_t>(desc->primitive_kind));
+    seed = hash_combine(seed, static_cast<size_t>(desc->alg_kind));
+    // Memory descriptors
+    seed = hash_combine(seed, get_md_hash(desc->src_desc));
+    seed = hash_combine(seed, get_md_hash(desc->diff_src_desc));
+    seed = hash_combine(seed, get_md_hash(desc->dst_desc));
+    seed = hash_combine(seed, get_md_hash(desc->diff_dst_desc));
+    // Factors
+    seed = get_array_hash(seed, desc->factors, DNNL_MAX_NDIMS);
+    // Combined hash for resampling op desc
     return seed;
 }
 
@@ -594,9 +644,17 @@ struct hash<dnnl::impl::primitive_hashing::key_t> {
                         get_desc_hash<layer_normalization_desc_t>(
                                 key.op_desc_));
                 break;
+            case primitive_kind::logsoftmax:
+                seed = hash_combine(
+                        seed, get_desc_hash<logsoftmax_desc_t>(key.op_desc_));
+                break;
             case primitive_kind::lrn:
                 seed = hash_combine(
                         seed, get_desc_hash<lrn_desc_t>(key.op_desc_));
+                break;
+            case primitive_kind::matmul:
+                seed = hash_combine(
+                        seed, get_desc_hash<matmul_desc_t>(key.op_desc_));
                 break;
             case primitive_kind::pooling:
                 seed = hash_combine(
@@ -605,6 +663,10 @@ struct hash<dnnl::impl::primitive_hashing::key_t> {
             case primitive_kind::reorder:
                 seed = hash_combine(
                         seed, get_desc_hash<reorder_desc_t>(key.op_desc_));
+                break;
+            case primitive_kind::resampling:
+                seed = hash_combine(
+                        seed, get_desc_hash<resampling_desc_t>(key.op_desc_));
                 break;
             case primitive_kind::rnn:
                 seed = hash_combine(

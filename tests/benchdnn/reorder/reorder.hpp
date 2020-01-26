@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -68,13 +68,14 @@ struct q10n_conf_t {
 struct prb_t {
     prb_t(const reorder_conf_t &r, const dt_conf_t &conf_in,
             const dt_conf_t &conf_out, const attr_t &attr, alg_t alg,
-            flag_t oflag, float scale = 0.f)
+            flag_t oflag, unsigned runtime_dim_mask, float scale = 0.f)
         : reorder(r)
         , conf_in(conf_in)
         , conf_out(conf_out)
         , attr(attr)
         , alg(alg)
         , oflag(oflag)
+        , runtime_dim_mask(runtime_dim_mask)
         , ops(0) {
         if (scale != 0.f) this->attr.oscale.scale = scale;
         count_ops();
@@ -86,6 +87,7 @@ struct prb_t {
     attr_t attr;
     alg_t alg;
     flag_t oflag;
+    unsigned runtime_dim_mask;
     double ops;
 
     void count_ops() {
@@ -107,6 +109,10 @@ struct perf_report_t : public base_perf_report_t {
         ddt_ = cfg2dt(p_->conf_out);
         stag_ = {p_->reorder.tag_in};
         base_report(r, prb_str);
+    }
+
+    virtual void dump_desc(std::ostream &s) const override {
+        s << p_->reorder.dims;
     }
 
     virtual void dump_desc_csv(std::ostream &s) const override {

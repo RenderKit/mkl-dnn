@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2018 Intel Corporation
+# Copyright 2018-2019 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,23 @@ elseif(UNIX)
     find_package(TBB REQUIRED tbb HINTS cmake/lnx)
 endif()
 
-include_directories(${TBB_INCLUDE_DIRS})
+# Locate TBB
+get_target_property(_tbb_include_dirs TBB::tbb INTERFACE_INCLUDE_DIRECTORIES)
+
+# Check for TBB version, required >= 2017
+file(READ "${_tbb_include_dirs}/tbb/tbb_stddef.h" _tbb_stddef)
+string(REGEX REPLACE ".*#define TBB_INTERFACE_VERSION ([0-9]+).*" "\\1" TBB_INTERFACE_VERSION "${_tbb_stddef}")
+if (${TBB_INTERFACE_VERSION} VERSION_LESS 9100)
+    message(FATAL_ERROR "DNNL requires TBB version 2017 or above")
+endif()
+
+include_directories(${_tbb_include_dirs})
 list(APPEND EXTRA_SHARED_LIBS ${TBB_IMPORTED_TARGETS})
 
-message(STATUS "Intel(R) TBB: ${TBBROOT}")
+# Print TBB location
+get_filename_component(_tbb_root "${_tbb_include_dirs}" PATH)
+get_filename_component(_tbb_root "${_tbb_root}" ABSOLUTE)
+message(STATUS "TBB: ${_tbb_root}")
+
+unset(_tbb_include_dirs)
+unset(_tbb_root)

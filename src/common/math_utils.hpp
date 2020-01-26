@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ namespace impl {
 namespace math {
 
 /** rounds @p f to an integer according to the mxcsr register */
-inline int mxcsr_round(float f) {
+inline int mxcsr_round(float f) ATTR_NO_MSAN {
 #if defined(DNNL_X86_64)
     return _mm_cvtss_si32(_mm_load_ss(&f));
 #else
@@ -230,12 +230,12 @@ inline U abs_bwd(T dd, T s) {
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U sqrt_fwd(T s) {
-    return s > 0 ? (U)(::sqrtf((float)(s))) : (U)0;
+    return (U)(::sqrtf((float)(s)));
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U sqrt_bwd(T dd, T s) {
-    return s > 0 ? (U)(dd / (2 * ::sqrtf((float)(s)))) : (U)0;
+    return (U)(dd / (2 * ::sqrtf((float)(s))));
 }
 
 template <typename T, typename A,
@@ -262,7 +262,7 @@ inline U bounded_relu_fwd(T s, A alpha) {
 template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
 inline U bounded_relu_bwd(T dd, T s, A alpha) {
-    return dd * (0 < s && s < alpha ? 1 : 0);
+    return dd * (0 < s && s <= alpha ? 1 : 0);
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
@@ -295,7 +295,7 @@ inline U exp_fwd(T s) {
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U exp_bwd(T dd, T s) {
-    return dd * (::expf((float)s));
+    return (U)(dd * (::expf((float)s)));
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
@@ -316,14 +316,38 @@ inline U gelu_bwd(T dd, T s) {
     return (U)(dd * 0.5 * (1. + v) * (1. + s * (1 - v) * dg));
 }
 
-inline bool eltwise_fwd_preserves_zero(alg_kind_t alg, bool jit_impl = false) {
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U log_fwd(T s) {
+    return (U)(::logf((float)s));
+}
+
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U log_bwd(T dd, T s) {
+    return (U)(dd * (1.f / (float)s));
+}
+
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U clip_fwd(T s, A alpha, A beta) {
+    s = s > alpha ? s : (U)alpha;
+    return s > beta ? (U)beta : s;
+}
+
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U clip_bwd(T dd, T s, A alpha, A beta) {
+    return dd * (alpha < s && s <= beta ? 1 : 0);
+}
+
+inline bool eltwise_fwd_preserves_zero(
+        alg_kind_t alg, float alpha, float beta) {
     using namespace alg_kind;
     using namespace utils;
-    const bool preserves_zero = true
-            && !one_of(alg, eltwise_linear, eltwise_soft_relu, eltwise_logistic,
-                    eltwise_exp)
-            && IMPLICATION(jit_impl, !one_of(alg, eltwise_elu, eltwise_tanh));
-    return preserves_zero;
+    return one_of(alg, eltwise_relu, eltwise_tanh, eltwise_elu, eltwise_square,
+                   eltwise_abs, eltwise_sqrt, eltwise_swish,
+                   eltwise_bounded_relu, eltwise_gelu)
+            || (alg == eltwise_clip && alpha <= 0 && beta >= 0)
+            || (alg == eltwise_linear && beta == 0);
 }
 
 inline float get_bias(const char *bias, size_t offset, data_type_t data_type) {

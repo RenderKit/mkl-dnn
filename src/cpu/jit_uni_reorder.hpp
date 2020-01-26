@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef _JIT_UNI_REORDER_HPP
-#define _JIT_UNI_REORDER_HPP
+#ifndef JIT_UNI_REORDER_HPP
+#define JIT_UNI_REORDER_HPP
 
 #include <assert.h>
 

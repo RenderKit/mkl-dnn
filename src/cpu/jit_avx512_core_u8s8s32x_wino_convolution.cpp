@@ -1,18 +1,18 @@
 /*******************************************************************************
- * Copyright 2018 Intel Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *******************************************************************************/
+* Copyright 2018-2019 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
 
 #include <assert.h>
 
@@ -925,7 +925,10 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t ::init_conf(
 
     const auto &oscales = attr.output_scales_;
     jcp.is_oc_scale = oscales.mask_ == 1 << 1;
-    assert(IMPLICATION(!jcp.is_oc_scale, oscales.mask_ == 0));
+
+    // only common and per-oc-channel scales are supported
+    const bool oscales_ok = one_of(oscales.mask_, 0, 1 << 1);
+    if (!oscales_ok) return status::unimplemented;
 
     /* re-create weights primitive descriptor
                                     and set weights wino_blocking */
@@ -1101,7 +1104,8 @@ void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<
                             v_x_masks[i] = uint16_t(
                                     i < v_xs || i >= v_xe ? 0 : 0xffff);
                         }
-                        auto local_s = src + mb * jcp.ih * jcp.iw * jcp.ic
+                        auto local_s = src
+                                + (dim_t)mb * jcp.ih * jcp.iw * jcp.ic
                                 + y * jcp.iw * jcp.ic + x * jcp.ic;
                         auto local_w = wino_src + m * jcp.ic;
 
@@ -1143,7 +1147,8 @@ void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<
                             v_y_masks[i]
                                     = uint16_t(y + i < jcp.oh ? 0xffff : 0);
                         }
-                        auto local_d = dst + mb * jcp.oh * jcp.ow * jcp.oc
+                        auto local_d = dst
+                                + (dim_t)mb * jcp.oh * jcp.ow * jcp.oc
                                 + y * jcp.ow * jcp.oc + x * jcp.oc;
                         auto local_w = wino_dst + m * jcp.oc;
 
@@ -1211,7 +1216,7 @@ void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<
                                 = uint16_t(i < v_xs || i >= v_xe ? 0 : 0xffff);
                     }
                     auto local_s = src
-                            + (mbb * jcp.mb_block + mb) * jcp.ih * jcp.iw
+                            + ((dim_t)mbb * jcp.mb_block + mb) * jcp.ih * jcp.iw
                                     * jcp.ic
                             + y * jcp.iw * jcp.ic + x * jcp.ic;
                     auto local_w = wino_src + m * jcp.ic;
@@ -1264,7 +1269,7 @@ void jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<
                         v_y_masks[i] = uint16_t(y + i < jcp.oh ? 0xffff : 0);
                     }
                     auto local_d = dst
-                            + (mbb * jcp.mb_block + mb) * jcp.oh * jcp.ow
+                            + ((dim_t)mbb * jcp.mb_block + mb) * jcp.oh * jcp.ow
                                     * jcp.oc
                             + y * jcp.ow * jcp.oc + x * jcp.oc;
                     auto local_w = wino_dst + m * jcp.oc;

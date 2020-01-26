@@ -19,6 +19,7 @@
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
 #include "ocl/gemm_inner_product.hpp"
+#include "ocl/gemm_x8s8s32x_inner_product.hpp"
 #include "ocl/jit_gen9_common_convolution.hpp"
 #include "ocl/jit_gen9_gemm.hpp"
 #include "ocl/jit_gen9_gemm_x8x8s32.hpp"
@@ -27,13 +28,16 @@
 #include "ocl/ocl_stream.hpp"
 #include "ocl/ocl_utils.hpp"
 #include "ocl/ref_batch_normalization.hpp"
+#include "ocl/ref_binary.hpp"
 #include "ocl/ref_convolution.hpp"
 #include "ocl/ref_deconvolution.hpp"
 #include "ocl/ref_eltwise.hpp"
 #include "ocl/ref_inner_product.hpp"
 #include "ocl/ref_layer_normalization.hpp"
 #include "ocl/ref_lrn.hpp"
+#include "ocl/ref_matmul.hpp"
 #include "ocl/ref_pooling.hpp"
+#include "ocl/ref_resampling.hpp"
 #include "ocl/ref_shuffle.hpp"
 #include "ocl/ref_softmax.hpp"
 #include "ocl/rnn/ref_rnn.hpp"
@@ -182,6 +186,7 @@ static const pd_create_f ocl_impl_list[] = {
         INSTANCE(ref_lrn_fwd_t),
         INSTANCE(ref_lrn_bwd_t),
         /*inner_product*/
+        INSTANCE(gemm_x8s8s32x_inner_product_fwd_t),
         INSTANCE(gemm_inner_product_fwd_t),
         INSTANCE(gemm_inner_product_bwd_data_t),
         INSTANCE(gemm_inner_product_bwd_weights_t),
@@ -197,6 +202,9 @@ static const pd_create_f ocl_impl_list[] = {
         INSTANCE(jit_gen9_gemm_x8x8s32_t<s8, u8, s32>),
         INSTANCE(jit_gen9_gemm_x8x8s32_t<u8, s8, s32>),
         INSTANCE(jit_gen9_gemm_x8x8s32_t<u8, u8, s32>),
+        INSTANCE(jit_gen9_gemm_t<bf16, bf16, bf16, f32>),
+        INSTANCE(jit_gen9_gemm_t<bf16, bf16, f32>),
+        INSTANCE(jit_gen9_gemm_t<f16, f16, f32>),
         INSTANCE(jit_gen9_gemm_t<f16>),
         INSTANCE(jit_gen9_gemm_t<f32>),
         /*rnn*/
@@ -204,11 +212,20 @@ static const pd_create_f ocl_impl_list[] = {
         INSTANCE(ref_rnn_fwd_f16_t),
         INSTANCE(ref_rnn_fwd_f32_t),
         INSTANCE(ref_rnn_bwd_f32_t),
+        INSTANCE(ref_rnn_fwd_bf16_t),
+        INSTANCE(ref_rnn_bwd_bf16_t),
         /* shuffle */
         INSTANCE(ref_shuffle_t),
         /*layer normalization */
         INSTANCE(ref_layer_normalization_fwd_t),
         INSTANCE(ref_layer_normalization_bwd_t),
+        /* binary */
+        INSTANCE(ref_binary_t),
+        /* matmul */
+        INSTANCE(ref_matmul_t),
+        /*resampling*/
+        INSTANCE(ref_resampling_fwd_t),
+        INSTANCE(ref_resampling_bwd_t),
         nullptr,
 };
 

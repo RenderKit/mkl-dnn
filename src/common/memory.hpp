@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@
 
 namespace dnnl {
 namespace impl {
-enum memory_flags_t { alloc = 0x1, use_runtime_ptr = 0x2 };
+enum memory_flags_t { alloc = 0x1, use_runtime_ptr = 0x2, omit_zero_pad = 0x4 };
 } // namespace impl
 } // namespace dnnl
 

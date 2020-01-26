@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ bool allow_unimpl = false;
 const char *perf_template_csv
         = "perf,%engine%,%dir%,%dt%,%tag%,%group%,%axis%,%DESC%,%-time%,%"
           "0time%";
-const char *perf_template_def = "perf,%engine%,%desc%,%-time%,%0time%";
+const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
 const char *perf_template = perf_template_def;
 
 void reset_parameters() {

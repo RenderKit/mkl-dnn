@@ -25,26 +25,26 @@ namespace dnnl {
 namespace impl {
 namespace ocl {
 
-ocl_memory_storage_t::ocl_memory_storage_t(engine_t *engine)
-    : memory_storage_t(engine) {}
-
 status_t ocl_memory_storage_t::init(unsigned flags, size_t size, void *handle) {
     // Do not allocate memory if one of these is true:
     // 1) size is 0
     // 2) handle is nullptr and 'alloc' flag is not set
-    if ((size == 0) || (!handle && (flags & memory_flags_t::alloc) == 0)) {
-        mem_object_ = nullptr;
+    if ((size == 0) || (!handle && !(flags & memory_flags_t::alloc))) {
+        if (handle != DNNL_MEMORY_ALLOCATE)
+            mem_object_ = ocl_utils::ocl_wrapper_t<cl_mem>(
+                    static_cast<cl_mem>(handle), true);
         return status::success;
     }
     auto *ocl_engine = utils::downcast<ocl_gpu_engine_t *>(engine());
     cl_int err;
     if (flags & memory_flags_t::alloc) {
-        mem_object_ = clCreateBuffer(
+        cl_mem mem_object_ptr = clCreateBuffer(
                 ocl_engine->context(), CL_MEM_READ_WRITE, size, nullptr, &err);
         OCL_CHECK(err);
+        mem_object_ = ocl_utils::ocl_wrapper_t<cl_mem>(mem_object_ptr, false);
     } else if (flags & memory_flags_t::use_runtime_ptr) {
-        mem_object_ = static_cast<cl_mem>(handle);
-        OCL_CHECK(clRetainMemObject(mem_object_));
+        mem_object_ = ocl_utils::ocl_wrapper_t<cl_mem>(
+                static_cast<cl_mem>(handle), true);
     }
     return status::success;
 }
@@ -95,6 +95,25 @@ status_t ocl_memory_storage_t::unmap_data(void *mapped_ptr) const {
     OCL_CHECK(clEnqueueUnmapMemObject(service_queue, mem_object_,
             const_cast<void *>(mapped_ptr), 0, nullptr, nullptr));
     return status::success;
+}
+
+std::unique_ptr<memory_storage_t> ocl_memory_storage_t::get_sub_storage(
+        size_t offset, size_t size) const {
+    cl_mem_flags mem_flags;
+    cl_int err;
+    err = clGetMemObjectInfo(
+            mem_object(), CL_MEM_FLAGS, sizeof(mem_flags), &mem_flags, nullptr);
+    assert(err == CL_SUCCESS);
+
+    cl_buffer_region buffer_region = {offset, size};
+    cl_mem sub_buffer = clCreateSubBuffer(mem_object(), mem_flags,
+            CL_BUFFER_CREATE_TYPE_REGION, &buffer_region, &err);
+    assert(err == CL_SUCCESS);
+
+    auto sub_storage = new ocl_memory_storage_t(this->engine());
+    if (sub_storage)
+        sub_storage->init(memory_flags_t::use_runtime_ptr, size, sub_buffer);
+    return std::unique_ptr<memory_storage_t>(sub_storage);
 }
 
 } // namespace ocl

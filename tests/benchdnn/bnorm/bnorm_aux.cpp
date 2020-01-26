@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,40 +46,27 @@ flags_t str2flags(const char *str) {
     return flags;
 }
 
-const char *flags2str(flags_t flags) {
-    if (flags & GLOB_STATS) {
-        if (flags & USE_SCALESHIFT)
-            return flags & FUSE_NORM_RELU ? "GSR" : "GS";
-        return flags & FUSE_NORM_RELU ? "GR" : "G";
-    }
-
-    if (flags & USE_SCALESHIFT) return flags & FUSE_NORM_RELU ? "SR" : "S";
-
-    return flags & FUSE_NORM_RELU ? "R" : "";
+std::string flags2str(flags_t flags) {
+    std::string str;
+    if (flags & GLOB_STATS) str += "G";
+    if (flags & USE_SCALESHIFT) str += "S";
+    if (flags & FUSE_NORM_RELU) str += "R";
+    return str;
 }
 
 int str2desc(desc_t *desc, const char *str) {
-    /* canonical form:
-     * mbXicXihXiwXidXepsYnS
-     *
-     * where:
-     *  X is number (integer)
-     *  Y is real (float)
-     *  S - string
-     * note: symbol `_` is ignored
-     *
-     * implicit rules:
-     *  eps = 1./16
-     *  S = "wip"
-     *  if iw is unset iw <-- ih
-     *  if ih is unset ih <-- iw
-     *  if id is unset id <-- 1
-     */
+    // Canonical form: mbXicXihXiwXidXepsYnS,
+    // where
+    //     X is integer
+    //     Y is float
+    //     S is string
+    // note: symbol `_` is ignored.
+    // Cubic/square shapes are supported by specifying just highest dimension.
 
     desc_t d {0};
     d.mb = 2;
     d.eps = 1.f / 16;
-    d.name = "\"wip\"";
+    d.ndims = 5;
 
     const char *s = str;
     assert(s);
@@ -119,11 +106,28 @@ int str2desc(desc_t *desc, const char *str) {
 #undef CASE_NN
 #undef CASE_N
 
-    if (d.ic == 0 || (d.id == 0 && d.ih == 0 && d.iw == 0)) return FAIL;
+    if (d.ic == 0) return FAIL;
 
+    if (d.id == 0) { d.ndims--; }
+    if (d.ih == 0) {
+        if (d.id == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.ih = d.id;
+        }
+    }
+    if (d.iw == 0) {
+        if (d.ih == 0) {
+            d.ndims--;
+        } else { // square shape
+            d.iw = d.ih;
+        }
+    }
+
+    // to keep logic when treating unspecified dimension as it's of length 1.
     if (d.id == 0) d.id = 1;
     if (d.ih == 0) d.ih = 1;
-    if (d.iw == 0) d.iw = d.ih;
+    if (d.iw == 0) d.iw = 1;
 
     *desc = d;
 
@@ -131,19 +135,26 @@ int str2desc(desc_t *desc, const char *str) {
 }
 
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
-    const bool canonical = s.flags() & std::ios_base::fixed;
+    const bool square_form = (d.ih == d.iw);
+    const bool cubic_form = square_form && (d.id == d.ih);
+
+    const bool print_d = d.ndims == 5;
+    const bool print_h
+            = d.ndims == 4 || (d.ndims > 4 && (!cubic_form || canonical));
+    const bool print_w
+            = d.ndims == 3 || (d.ndims > 3 && (!square_form || canonical));
 
     if (canonical || d.mb != 2) s << "mb" << d.mb;
 
     s << "ic" << d.ic;
 
-    if (d.id > 1) s << "id" << d.id;
-    s << "ih" << d.ih;
-    if (canonical || d.iw != d.ih || d.id > 1) s << "iw" << d.iw;
+    if (print_d) s << "id" << d.id;
+    if (print_h) s << "ih" << d.ih;
+    if (print_w) s << "iw" << d.iw;
 
     if (canonical || d.eps != 1.f / 16) s << "eps" << d.eps;
 
-    s << "n" << d.name;
+    if (d.name) s << "n" << d.name;
 
     return s;
 }
@@ -151,14 +162,17 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
     dump_global_params(s);
 
-    if (p.dir != FWD_D) s << "--dir=" << dir2str(p.dir) << " ";
-    if (p.dt != dnnl_f32) s << "--dt=" << dt2str(p.dt) << " ";
-    if (p.tag != dnnl_nchw) s << "--tag=" << fmt_tag2str(p.tag) << " ";
-    if (p.flags != (flags_t)0) s << "--flags=" << flags2str(p.flags) << " ";
-    if (p.check_alg != ALG_AUTO)
+    if (canonical || p.dir != FWD_D) s << "--dir=" << dir2str(p.dir) << " ";
+    if (canonical || p.dt != dnnl_f32) s << "--dt=" << dt2str(p.dt) << " ";
+    if (canonical || p.tag != dnnl_nchw)
+        s << "--tag=" << fmt_tag2str(p.tag) << " ";
+    if (canonical || p.flags != (flags_t)0)
+        s << "--flags=" << flags2str(p.flags) << " ";
+    if (canonical || p.check_alg != ALG_AUTO)
         s << "--check-alg=" << check_alg2str(p.check_alg) << " ";
-    if (!p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
-    if (p.inplace != true) s << "--inplace=" << bool2str(p.inplace) << " ";
+    if (canonical || !p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
+    if (canonical || p.inplace != true)
+        s << "--inplace=" << bool2str(p.inplace) << " ";
 
     s << static_cast<const desc_t &>(p);
 

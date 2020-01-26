@@ -15,9 +15,7 @@
 *******************************************************************************/
 
 /// @example memory_format_propagation.cpp
-/// This example demonstrates memory format propagation, which is critical for
-/// deep learning applications performance.
-///
+/// @copybrief memory_format_propagation_cpp
 /// > Annotated version: @ref memory_format_propagation_cpp
 
 #include <iostream>
@@ -25,6 +23,9 @@
 #include <string>
 
 /// @page memory_format_propagation_cpp Memory format propagation
+/// This example demonstrates memory format propagation, which is critical for
+/// deep learning applications performance.
+///
 /// > Example code: @ref memory_format_propagation.cpp
 ///
 /// Format propagation is one of the central notions that needs to be
@@ -91,7 +92,6 @@
 /// handling.
 
 #include "dnnl.hpp"
-#include "dnnl_debug.h"
 
 #include "example_utils.hpp"
 
@@ -99,7 +99,7 @@ using namespace dnnl;
 
 /// @page memory_format_propagation_cpp
 /// @section memory_format_propagation_tutorial memory_format_propagation() function
-/// @page memory_format_propagation_cpp
+///
 void memory_format_propagation_tutorial(engine::kind engine_kind) {
     /// @page memory_format_propagation_cpp
     /// @subsection memory_format_propagation_sub1 Initialization
@@ -292,7 +292,7 @@ void memory_format_propagation_tutorial(engine::kind engine_kind) {
     /// @subsection memory_format_propagation_sub7 Reorder destination data if necessary
     ///
     /// The only potentially remaining operation is a reorder from the pooling
-    /// destination memory object to the users's one.  Similarly to the
+    /// destination memory object to the user's one.  Similarly to the
     /// reorders for the source and weights memory objects, it is performed
     /// depending on the value of the previously computed flag.
     ///
@@ -308,25 +308,16 @@ void memory_format_propagation_tutorial(engine::kind engine_kind) {
 }
 
 int main(int argc, char **argv) {
-    try {
-        memory_format_propagation_tutorial(parse_engine_kind(argc, argv));
-    } catch (dnnl::error &e) {
-        std::cerr << "DNNL error: " << e.what() << std::endl
-                  << "Error status: " << dnnl_status2str(e.status) << std::endl;
-        return 1;
-    } catch (std::string &e) {
-        std::cerr << "Error in the example: " << e << std::endl;
-        return 2;
-    }
-
-    std::cout << "Example passes" << std::endl;
-    return 0;
+    return handle_example_errors(
+            memory_format_propagation_tutorial, parse_engine_kind(argc, argv));
 }
 
+/// @page memory_format_propagation_cpp
+///
 /// Upon compiling and run the example the output should be just:
 ///
 /// ~~~sh
-/// Example passes
+/// Example passed.
 /// ~~~
 ///
 /// It may be interesting to check what really happens during the run. We can
@@ -335,7 +326,7 @@ int main(int argc, char **argv) {
 /// AVX2-capable processor (line breaks added for readability):
 ///
 /// ~~~sh
-/// $ DNNL_VERBOSE=1 ./memory_format_propagation
+/// $ DNNL_VERBOSE=1 ./memory-format-propagation-cpp
 /// dnnl_verbose,info,DNNL <ver> (Git Hash <hash>),Intel(R) Advanced Vector Extensions 2 (Intel(R) AVX2)
 /// dnnl_verbose,exec,reorder,jit:uni,undef,
 ///     src_f32::blocked:abcd:f0 dst_f32::blocked:aBcd8b:f0,num:1,1x256x14x14,1.03101
@@ -349,7 +340,7 @@ int main(int argc, char **argv) {
 ///     alg:pooling_max,mb1ic256_ih14oh14kh3sh1ph1_iw14ow14kw3sw1pw1,0.322021
 /// dnnl_verbose,exec,reorder,jit:uni,
 ///     undef,src_f32::blocked:aBcd8b:f0 dst_f32::blocked:abcd:f0,num:1,1x256x14x14,0.333008
-/// Example passes
+/// Example passed.
 /// ~~~
 ///
 /// From this output we can deduce that:
@@ -364,5 +355,3 @@ int main(int argc, char **argv) {
 ///   dnnl::memory::format_tag::ABcd8b8a optimized memory format (output (A)
 ///   and input (B) channel dimensions blocked by 8) which we also had to
 ///   reorder the initial weights to since they are in the OIHW memory format.
-///
-/// @page memory_format_propagation_cpp

@@ -39,10 +39,7 @@
 #define USE_MKL_PACKED_GEMM 0
 
 // TODO just to debug
-#define EMULATED_SCRATCHPAD 1
 #define WS_NAN_FILLING 0
-
-extern const char *ref_rnn_kernel;
 
 namespace dnnl {
 namespace impl {
@@ -215,12 +212,10 @@ struct _ref_rnn_common_t : public primitive_impl_t {
             if (rnn_conf_.use_workspace) {
                 dims_t ws_dims = {(dim_t)ws_sz};
                 dnnl_memory_desc_init_by_tag(
-                        &this->ws_md_, 1, ws_dims, src_type, x);
+                        &this->ws_md_, 1, ws_dims, data_type::u8, x);
             }
 
-#if !EMULATED_SCRATCHPAD
             init_scratchpad(scratchpad_sz);
-#endif
 
             rnn_conf_.acc_data_type = data_traits<acc_data_t>::data_type;
             rnn_conf_.acc_data_type_elsz = sizeof(acc_data_t);
@@ -249,6 +244,7 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                 gemm_desc.a_type = a_dt;
                 gemm_desc.b_type = b_dt;
                 gemm_desc.c_type = c_dt;
+                gemm_desc.acc_type = c_dt;
 
                 gemm_desc.ao = 0;
                 gemm_desc.bo = 0;
@@ -267,6 +263,13 @@ struct _ref_rnn_common_t : public primitive_impl_t {
             int sic = rnn_conf_.sic;
             int dic = rnn_conf_.dic;
 
+            int layer_merged_size = rnn_conf_.merge_gemm_layer
+                    ? batch * rnn_conf_.n_iter
+                    : batch;
+            int iter_merged_size = rnn_conf_.merge_gemm_iter
+                    ? batch * rnn_conf_.n_iter
+                    : batch;
+
             bool gemm_ok = true;
 
             switch (aprop) {
@@ -274,8 +277,8 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                     gemm_ok = true
                             && utils::everyone_is(status::success,
                                     create_gemm_pd(&gemm_layer_pd_,
-                                            n_gates * dic, batch, slc,
-                                            rnn_conf_.weights_layer_ld,
+                                            n_gates * dic, layer_merged_size,
+                                            slc, rnn_conf_.weights_layer_ld,
                                             rnn_conf_.states_ws_ld,
                                             rnn_conf_.gates_ws_ld, weights_type,
                                             src_type, rnn_conf_.acc_data_type,
@@ -298,22 +301,24 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                                             rnn_conf_.states_ws_ld,
                                             weights_type, src_type, src_type,
                                             false, 0.0f),
-                                    create_gemm_pd(&gemm_layer_pd_, slc, batch,
-                                            n_gates * dic,
+                                    create_gemm_pd(&gemm_layer_pd_, slc,
+                                            layer_merged_size, n_gates * dic,
                                             rnn_conf_.weights_layer_ld,
                                             rnn_conf_.gates_ws_ld,
                                             rnn_conf_.states_ws_ld,
                                             weights_type, src_type, src_type,
                                             false, 0.0f),
                                     create_gemm_pd(&gemm_diff_wei_layer_pd_,
-                                            n_gates * dic, slc, batch,
+                                            n_gates * dic, slc,
+                                            layer_merged_size,
                                             rnn_conf_.gates_ws_ld,
                                             rnn_conf_.states_ws_ld,
                                             rnn_conf_.diff_weights_layer_ld,
                                             src_type, src_type, weights_type,
                                             true, 1.0f),
                                     create_gemm_pd(&gemm_diff_wei_iter_pd_,
-                                            n_gates * dic, sic, batch,
+                                            n_gates * dic, sic,
+                                            iter_merged_size,
                                             rnn_conf_.gates_ws_ld,
                                             rnn_conf_.states_ws_ld,
                                             rnn_conf_.diff_weights_iter_ld,
@@ -342,7 +347,7 @@ struct _ref_rnn_common_t : public primitive_impl_t {
         void init_scratchpad(size_t scratchpad_sz) {
             using namespace memory_tracking::names;
             auto scratchpad = this->scratchpad_registry().registrar();
-            scratchpad.book(key_rnn_space, sizeof(float) * scratchpad_sz, 4096);
+            scratchpad.book(key_rnn_space, scratchpad_sz, 4096);
         }
 
         void copy_from(const pd_t &other) {
@@ -380,18 +385,18 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                 kernel_ctx, pd()->jrnn_, pd()->jit_off_);
 
         std::vector<const char *> kernel_names
-                = { "ref_rnn_bias_prepare_kernel",
-                      "ref_rnn_copy_init_layer_kernel",
-                      "ref_rnn_copy_init_iter_kernel",
-                      "ref_rnn_copy_res_layer_kernel",
-                      "ref_rnn_copy_res_iter_kernel",
-                      "ref_rnn_ws_set_kernel",
-                      "ref_rnn_elemwise_fwd_kernel",
-                      "ref_rnn_elemwise_bwd_kernel",
-                      "ref_rnn_gates_reduction_kernel"
+                = { "ref_rnn_bias_prepare",
+                      "ref_rnn_copy_init_layer",
+                      "ref_rnn_copy_init_iter",
+                      "ref_rnn_copy_res_layer",
+                      "ref_rnn_copy_res_iter",
+                      "ref_rnn_ws_set",
+                      "ref_rnn_elemwise_fwd",
+                      "ref_rnn_elemwise_bwd",
+                      "ref_rnn_gates_reduction"
 #if DEBUGPRINT
                       ,
-                      "ref_rnn_ws_print_kernel"
+                      "ref_rnn_ws_print"
 #endif
                   };
 
@@ -474,14 +479,6 @@ struct _ref_rnn_common_t : public primitive_impl_t {
 
         if (!gemm_ok) return status::runtime_error;
 
-#if EMULATED_SCRATCHPAD
-        if (!pd()->rnn_conf_.use_workspace) {
-            size_t scratchpad_sz {0}, ws_sz {0};
-            get_scratchpad_and_workspace_sizes(
-                    pd()->rnn_conf_, scratchpad_sz, ws_sz);
-            engine()->create_memory_storage(&scratchpad_, scratchpad_sz);
-        }
-#endif
         return status::success;
     } // status_t init() override
 
@@ -549,9 +546,6 @@ struct _ref_rnn_common_t : public primitive_impl_t {
 
     ~_ref_rnn_common_t() {
         delete ker_;
-#if EMULATED_SCRATCHPAD
-        if (!pd()->rnn_conf_.use_workspace) { delete scratchpad_; }
-#endif
         free(offset_wei_input_);
         free(offset_wei_state_);
 
@@ -643,7 +637,6 @@ private:
     primitive_t *gemm_diff_wei_layer_ = nullptr;
     primitive_t *gemm_diff_wei_iter_ = nullptr;
 
-    memory_storage_t *scratchpad_;
     std::unique_ptr<memory_storage_t> scales_buf_;
     std::unique_ptr<memory_storage_t> tm_scales_buf_;
 
@@ -679,6 +672,10 @@ using ref_rnn_fwd_f32_t
         = _ref_rnn_common_t<prop_kind::forward, data_type::f32, data_type::f32>;
 using ref_rnn_bwd_f32_t = _ref_rnn_common_t<prop_kind::backward, data_type::f32,
         data_type::f32>;
+using ref_rnn_fwd_bf16_t = _ref_rnn_common_t<prop_kind::forward,
+        data_type::bf16, data_type::bf16>;
+using ref_rnn_bwd_bf16_t = _ref_rnn_common_t<prop_kind::backward,
+        data_type::bf16, data_type::bf16>;
 } // namespace ocl
 } // namespace impl
 } // namespace dnnl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -142,9 +142,9 @@ inline int digits_dt(dnnl_data_type_t dt) {
 
 template <dnnl_data_type_t dt>
 inline float saturate(float val) {
-    return MAX2(dnnl::impl::nstl::numeric_limits<
+    return MAX2((float)dnnl::impl::nstl::numeric_limits<
                         typename prec_traits<dt>::type>::lowest(),
-            MIN2(dnnl::impl::nstl::numeric_limits<
+            MIN2((float)dnnl::impl::nstl::numeric_limits<
                          typename prec_traits<dt>::type>::max(),
                     mxcsr_round(val)));
 }
@@ -173,11 +173,6 @@ extern dnnl_engine_kind_t engine_tgt_kind;
 extern dnnl_engine_t engine_tgt;
 extern dnnl_stream_t stream_tgt;
 
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-extern "C" dnnl_status_t DNNL_API dnnl_impl_gpu_reorder_set_engine_kind(
-        dnnl_engine_kind_t engine_kind);
-#endif
-
 inline int init() {
     if (!engine_tgt) {
         DNN_SAFE(dnnl_engine_create(&engine_tgt, engine_tgt_kind, 0), CRIT);
@@ -185,23 +180,6 @@ inline int init() {
                          &stream_tgt, engine_tgt, dnnl_stream_default_flags),
                 CRIT);
     }
-
-    // Optimization to reduce testing time for GPU.
-    //
-    // For CPU <-> GPU reorders, the library creates GPU-side kernels.
-    // Benchdnn heavily relies on reorders so this greatly increases execution
-    // time because of a big overhead on building OpenCL kernels.
-    //
-    // This moves all such reorders to CPU to reduce testing time. Reorder, sum
-    // and concat primitives are used to test GPU reorders so leave them
-    // without changes.
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    std::string driver = std::string(driver_name);
-    if (driver != std::string("reorder") && driver != std::string("sum")
-            && driver != std::string("concat")) {
-        dnnl_impl_gpu_reorder_set_engine_kind(dnnl_cpu);
-    }
-#endif
 
     return OK;
 }
@@ -219,6 +197,7 @@ inline const char *query_impl_info(const_dnnl_primitive_desc_t pd) {
 }
 
 struct dnn_mem_t;
+struct attr_bundle_t;
 
 struct args_t {
     args_t &set(int arg, const dnn_mem_t &mem);
@@ -237,5 +216,16 @@ dnnl_status_t execute_and_wait(
         dnnl_primitive_t prim, dnnl_stream_t stream, const args_t &args);
 
 int measure_perf(benchdnn_timer_t &t, dnnl_primitive_t prim, args_t &args);
+
+void maybe_prepare_runtime_scales(dnn_mem_t &scales_m, const attr_t &attr,
+        int64_t scale_cnt, const float *scales, dnnl_engine_t engine);
+void maybe_prepare_runtime_scales(dnn_mem_t &scales_m,
+        const attr_bundle_t &attr_bundle, dnnl_engine_t engine);
+
+void maybe_prepare_runtime_zero_points(dnn_mem_t &zero_points_m,
+        const attr_t &attr, int arg, dnnl_engine_t engine);
+
+bool check_md_consistency_with_tag(
+        const dnnl_memory_desc_t &md, dnnl_format_tag_t tag);
 
 #endif

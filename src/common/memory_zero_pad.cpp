@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include <assert.h>
+#include <cassert>
 
 #include "dnnl_thread.hpp"
 #include "dnnl_traits.hpp"
@@ -59,12 +59,14 @@ void typed_zero_pad_blk(const memory_desc_wrapper &m_d, void *data_handle) {
     const int c_tail_s = C_blocked ? dims[2] % blksize : 0;
     assert(a_tail_s || b_tail_s || c_tail_s);
 
+    const int ndims = m_d.ndims();
+    assert(1 <= ndims && ndims <= 6);
     const int A = A_blocked ? pdims[0] / blksize : dims[0];
-    const int B = B_blocked ? pdims[1] / blksize : dims[1];
-    const int C = C_blocked ? pdims[2] / blksize : dims[2];
-    const int D = m_d.ndims() > 3 ? dims[3] : 1;
-    const int E = m_d.ndims() > 4 ? dims[4] : 1;
-    const int F = m_d.ndims() > 5 ? dims[5] : 1;
+    const int B = ndims <= 1 ? 1 : B_blocked ? pdims[1] / blksize : dims[1];
+    const int C = ndims <= 2 ? 1 : C_blocked ? pdims[2] / blksize : dims[2];
+    const int D = ndims <= 3 ? 1 : dims[3];
+    const int E = ndims <= 4 ? 1 : dims[4];
+    const int F = ndims <= 5 ? 1 : dims[5];
     const int inner_blk = blk.inner_nblks == 3 ? blk.inner_blks[2] : 1;
 
     auto zeroize_tail = [&](data_t *d, const int tail_s) {
@@ -190,7 +192,7 @@ status_t memory_t::typed_zero_pad() const {
 
     if (mdw.nelems(false) == mdw.nelems(true)) return success;
 
-    void *mapped_ptr;
+    void *mapped_ptr = nullptr;
     status_t status = memory_storage()->map_data(&mapped_ptr);
     assert(status == status::success);
 
@@ -230,9 +232,9 @@ status_t memory_t::typed_zero_pad() const {
             break;
         case 2:
         case 3:
-            if (!IMPLICATION(blk.inner_nblks == 3,
-                        blk.inner_idxs[0] == blk.inner_idxs[2]))
+            if (blk.inner_nblks == 3 && blk.inner_idxs[0] != blk.inner_idxs[2])
                 break;
+            if (blksize != get_blksize(blk.inner_idxs[1])) break;
 
             if (blk.inner_idxs[0] == 0 && blk.inner_idxs[1] == 1) {
                 CASE(4, ab);

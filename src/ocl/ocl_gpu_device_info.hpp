@@ -64,43 +64,6 @@ public:
         CHECK(init_extensions());
         CHECK(init_attributes());
 
-        // OpenCL runtime version
-        size_t size_driver_version {0};
-        cl_int err = clGetDeviceInfo(
-                device_, CL_DRIVER_VERSION, 0, nullptr, &size_driver_version);
-        OCL_CHECK(err);
-        std::string driver_version;
-        driver_version.resize(size_driver_version);
-        err = clGetDeviceInfo(device_, CL_DRIVER_VERSION, size_driver_version,
-                &driver_version[0], nullptr);
-        OCL_CHECK(err);
-
-        driver_version[size_driver_version - 1] = '\0';
-        if (runtime_version_.set_from_string(&driver_version[0])
-                != status::success) {
-            runtime_version_.major = 0;
-            runtime_version_.minor = 0;
-            runtime_version_.build = 0;
-        }
-
-        return status::success;
-    }
-
-    virtual bool has(compute::device_ext_t ext) const override {
-        return has(extensions_, ext);
-    }
-
-    gpu_arch_t gpu_arch() const { return gpu_arch_; }
-
-    int eu_count() const { return eu_count_; }
-    int hw_threads() const { return hw_threads_; }
-
-    virtual const compute::runtime_version_t &runtime_version() const override {
-        return runtime_version_;
-    }
-
-private:
-    status_t init_arch() {
         // Device name
         size_t size_name {0};
         cl_int err = clGetDeviceInfo(
@@ -112,8 +75,44 @@ private:
         err = clGetDeviceInfo(
                 device_, CL_DEVICE_NAME, size_name, &dev_name[0], &size_name);
         OCL_CHECK(err);
+        set_name(dev_name);
 
-        if (dev_name.find("Gen9") != std::string::npos)
+        // OpenCL runtime version
+        size_t size_driver_version {0};
+        err = clGetDeviceInfo(
+                device_, CL_DRIVER_VERSION, 0, nullptr, &size_driver_version);
+        OCL_CHECK(err);
+        std::string driver_version;
+        driver_version.resize(size_driver_version);
+        err = clGetDeviceInfo(device_, CL_DRIVER_VERSION, size_driver_version,
+                &driver_version[0], nullptr);
+        OCL_CHECK(err);
+
+        driver_version[size_driver_version - 1] = '\0';
+        compute::runtime_version_t runtime_version;
+        if (runtime_version.set_from_string(&driver_version[0])
+                != status::success) {
+            runtime_version.major = 0;
+            runtime_version.minor = 0;
+            runtime_version.build = 0;
+        }
+        set_runtime_version(runtime_version);
+
+        return status::success;
+    }
+
+    virtual bool has(compute::device_ext_t ext) const override {
+        return has(extensions_, ext);
+    }
+
+    gpu_arch_t gpu_arch() const { return gpu_arch_; }
+
+    virtual int eu_count() const override { return eu_count_; }
+    virtual int hw_threads() const override { return hw_threads_; }
+
+private:
+    status_t init_arch() {
+        if (name().find("Gen9") != std::string::npos)
             gpu_arch_ = gpu_arch_t::gen9;
         else
             gpu_arch_ = gpu_arch_t::unknown;
@@ -177,8 +176,6 @@ private:
     // architecture.
     uint64_t extensions_ = 0;
     gpu_arch_t gpu_arch_ = gpu_arch_t::unknown;
-
-    compute::runtime_version_t runtime_version_;
 };
 
 } // namespace ocl

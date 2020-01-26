@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -59,21 +59,22 @@ status_t fill_blocked(memory_desc_t &md, std::initializer_list<int> perm,
     for (int d = 0; d < md.ndims; ++d)
         md.padded_dims[d] = utils::rnd_up(md.dims[d], blocks[d]);
 
-    dim_t stride = block_size;
-    // if only we use C++14, the initializer_list would have rbegin()/rend()...
-    for (int d = 0; d < md.ndims; ++d)
-        stride *= md.padded_dims[d] == 0 ? 1 : md.padded_dims[d] / blocks[d];
+    // setting the strides
+    {
+        dim_t stride = block_size;
+        auto iter_d = perm.end(); // reverse iterator over perm
+        do {
+            const int d = *(--iter_d);
+            blk.strides[d] = stride;
 
-    for (const auto &d : perm) {
-        if (md.padded_dims[d] == 0) {
-            blk.strides[d] = 1;
-            continue;
-        }
-        stride /= md.padded_dims[d] / blocks[d];
-        blk.strides[d] = stride;
+            const dim_t pdim = md.padded_dims[d];
+            if (utils::one_of(DNNL_RUNTIME_DIM_VAL, stride, pdim))
+                stride = DNNL_RUNTIME_DIM_VAL;
+            else if (pdim != 0)
+                stride *= pdim / blocks[d];
+
+        } while (iter_d != perm.begin());
     }
-
-    assert(stride == block_size);
 
     return status::success;
 }
@@ -141,6 +142,7 @@ status_t memory_desc_wrapper::compute_blocking(
         C(abdec, {0, 1, 3, 4, 2}, {}, {});
         C(acb, {0, 2, 1}, {}, {});
         C(acbde, {0, 2, 1, 3, 4}, {}, {});
+        C(acbdef, {0, 2, 1, 3, 4, 5}, {}, {});
         C(acdb, {0, 2, 3, 1}, {}, {});
         C(acdeb, {0, 2, 3, 4, 1}, {}, {});
         C(ba, {1, 0}, {}, {});
@@ -153,22 +155,29 @@ status_t memory_desc_wrapper::compute_blocking(
         C(cdba, {2, 3, 1, 0}, {}, {});
         C(cdeba, {2, 3, 4, 1, 0}, {}, {});
         C(decab, {3, 4, 2, 0, 1}, {}, {});
+        C(defcab, {3, 4, 5, 2, 0, 1}, {}, {});
 
         C(Abc4a, {0, 1, 2}, {4}, {0});
         C(aBc4b, {0, 1, 2}, {4}, {1});
         C(ABc4b16a4b, {0, 1, 2}, {4, 16, 4}, {1, 0, 1});
+        C(ABc2b8a4b, {0, 1, 2}, {2, 8, 4}, {1, 0, 1});
         C(ABc4b4a, {0, 1, 2}, {4, 4}, {1, 0});
         C(Abcd4a, {0, 1, 2, 3}, {4}, {0});
         C(aBcd4b, {0, 1, 2, 3}, {4}, {1});
         C(ABcd4b4a, {0, 1, 2, 3}, {4, 4}, {1, 0});
+        C(ABcd4a4b, {0, 1, 2, 3}, {4, 4}, {0, 1});
         C(aBCd4c16b4c, {0, 1, 2, 3}, {4, 16, 4}, {2, 1, 2});
+        C(aBCd2c8b4c, {0, 1, 2, 3}, {2, 8, 4}, {2, 1, 2});
         C(aBCd4c4b, {0, 1, 2, 3}, {4, 4}, {2, 1});
+        C(aBCd4b4c, {0, 1, 2, 3}, {4, 4}, {1, 2});
         C(Abcde4a, {0, 1, 2, 3, 4}, {4}, {0});
         C(aBcde4b, {0, 1, 2, 3, 4}, {4}, {1});
         C(ABcde4b4a, {0, 1, 2, 3, 4}, {4, 4}, {1, 0});
+        C(ABcde4a4b, {0, 1, 2, 3, 4}, {4, 4}, {0, 1});
         C(aBCde4c4b, {0, 1, 2, 3, 4}, {4, 4}, {2, 1});
         C(aBcdef4b, {0, 1, 2, 3, 4, 5}, {4}, {1});
         C(aBCdef4c4b, {0, 1, 2, 3, 4, 5}, {4, 4}, {2, 1});
+        C(aBCdef4b4c, {0, 1, 2, 3, 4, 5}, {4, 4}, {1, 2});
         C(aBdc4b, {0, 1, 3, 2}, {4}, {1});
         C(aBdec4b, {0, 1, 3, 4, 2}, {4}, {1});
         C(aBdefc4b, {0, 1, 3, 4, 5, 2}, {4}, {1});
@@ -178,6 +187,7 @@ status_t memory_desc_wrapper::compute_blocking(
 
         C(Abc16a, {0, 1, 2}, {16}, {0});
         C(ABc16a16b, {0, 1, 2}, {16, 16}, {0, 1});
+        C(ABc4a4b, {0, 1, 2}, {4, 4}, {0, 1});
         C(aBc16b, {0, 1, 2}, {16}, {1});
         C(ABc16b16a, {0, 1, 2}, {16, 16}, {1, 0});
         C(ABc8a16b2a, {0, 1, 2}, {8, 16, 2}, {0, 1, 0});
@@ -187,12 +197,14 @@ status_t memory_desc_wrapper::compute_blocking(
         C(ABc8b16a2b, {0, 1, 2}, {8, 16, 2}, {1, 0, 1});
         C(ABc8b8a, {0, 1, 2}, {8, 8}, {1, 0});
         C(Abcd16a, {0, 1, 2, 3}, {16}, {0});
+        C(Abcd8a, {0, 1, 2, 3}, {8}, {0});
         C(ABcd16a16b, {0, 1, 2, 3}, {16, 16}, {0, 1});
         C(aBcd16b, {0, 1, 2, 3}, {16}, {1});
         C(ABcd16b16a, {0, 1, 2, 3}, {16, 16}, {1, 0});
         C(aBCd16b16c, {0, 1, 2, 3}, {16, 16}, {1, 2});
         C(aBCd16c16b, {0, 1, 2, 3}, {16, 16}, {2, 1});
         C(ABcd4b16a4b, {0, 1, 2, 3}, {4, 16, 4}, {1, 0, 1});
+        C(ABcd2b8a4b, {0, 1, 2, 3}, {2, 8, 4}, {1, 0, 1});
         C(ABcd8a16b2a, {0, 1, 2, 3}, {8, 16, 2}, {0, 1, 0});
         C(BAcd8a16b2a, {1, 0, 2, 3}, {8, 16, 2}, {0, 1, 0});
         C(ABcd8a8b, {0, 1, 2, 3}, {8, 8}, {0, 1});
@@ -219,6 +231,8 @@ status_t memory_desc_wrapper::compute_blocking(
         C(ABcde8a16b2a, {0, 1, 2, 3, 4}, {8, 16, 2}, {0, 1, 0});
         C(ABcde8b16a2b, {0, 1, 2, 3, 4}, {8, 16, 2}, {1, 0, 1});
         C(BAcde8a16b2a, {1, 0, 2, 3, 4}, {8, 16, 2}, {0, 1, 0});
+        C(ABcde4b16a4b, {0, 1, 2, 3, 4}, {4, 16, 4}, {1, 0, 1});
+        C(ABcde2b8a4b, {0, 1, 2, 3, 4}, {2, 8, 4}, {1, 0, 1});
         C(aBCde8b16c2b, {0, 1, 2, 3, 4}, {8, 16, 2}, {1, 2, 1});
         C(aCBde8b16c2b, {0, 2, 1, 3, 4}, {8, 16, 2}, {1, 2, 1});
         C(ABcde8b8a, {0, 1, 2, 3, 4}, {8, 8}, {1, 0});
@@ -228,24 +242,32 @@ status_t memory_desc_wrapper::compute_blocking(
         C(aBcdef16b, {0, 1, 2, 3, 4, 5}, {16}, {1});
         C(aBCdef16b16c, {0, 1, 2, 3, 4, 5}, {16, 16}, {1, 2});
         C(aBCdef16c16b, {0, 1, 2, 3, 4, 5}, {16, 16}, {2, 1});
+        C(aBCdef4c16b4c, {0, 1, 2, 3, 4, 5}, {4, 16, 4}, {2, 1, 2});
+        C(aBCdef2c8b4c, {0, 1, 2, 3, 4, 5}, {2, 8, 4}, {2, 1, 2});
         C(aBCdef8b8c, {0, 1, 2, 3, 4, 5}, {8, 8}, {1, 2});
         C(aBCdef8b16c2b, {0, 1, 2, 3, 4, 5}, {8, 16, 2}, {1, 2, 1});
         C(aBCdef8c16b2c, {0, 1, 2, 3, 4, 5}, {8, 16, 2}, {2, 1, 2});
         C(aCBdef8b16c2b, {0, 2, 1, 3, 4, 5}, {8, 16, 2}, {1, 2, 1});
         C(aBCdef8c8b, {0, 1, 2, 3, 4, 5}, {8, 8}, {2, 1});
         C(aBdc16b, {0, 1, 3, 2}, {16}, {1});
+        C(aBdC16b2c, {0, 1, 3, 2}, {16, 2}, {1, 2});
         C(aBdc8b, {0, 1, 3, 2}, {8}, {1});
         C(aBdec16b, {0, 1, 3, 4, 2}, {16}, {1});
+        C(aBdeC16b2c, {0, 1, 3, 4, 2}, {16, 2}, {1, 2});
         C(aBdec8b, {0, 1, 3, 4, 2}, {8}, {1});
         C(aBdefc16b, {0, 1, 3, 4, 5, 2}, {16}, {1});
+        C(aBdefC16b2c, {0, 1, 3, 4, 5, 2}, {16, 2}, {1, 2});
         C(aBdefc8b, {0, 1, 3, 4, 5, 2}, {8}, {1});
         C(Acb16a, {0, 2, 1}, {16}, {0});
+        C(AcB16a2b, {0, 2, 1}, {16, 2}, {0, 1});
         C(Acb8a, {0, 2, 1}, {8}, {0});
         C(aCBd16b16c, {0, 2, 1, 3}, {16, 16}, {1, 2});
         C(aCBde16b16c, {0, 2, 1, 3, 4}, {16, 16}, {1, 2});
         C(Acdb16a, {0, 2, 3, 1}, {16}, {0});
+        C(AcdB16a2b, {0, 2, 3, 1}, {16, 2}, {0, 1});
         C(Acdb8a, {0, 2, 3, 1}, {8}, {0});
         C(Acdeb16a, {0, 2, 3, 4, 1}, {16}, {0});
+        C(AcdeB16a2b, {0, 2, 3, 4, 1}, {16, 2}, {0, 1});
         C(Acdeb8a, {0, 2, 3, 4, 1}, {8}, {0});
         C(BAc16a16b, {1, 0, 2}, {16, 16}, {0, 1});
         C(BAcd16a16b, {1, 0, 2, 3}, {16, 16}, {0, 1});

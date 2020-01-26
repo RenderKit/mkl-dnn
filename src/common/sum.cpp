@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,14 +36,17 @@ status_t dnnl_sum_primitive_desc_create(primitive_desc_t **sum_pd,
     bool args_ok = !any_null(sum_pd, src_mds, scales) && n > 0;
     if (!args_ok) return invalid_arguments;
 
-    const primitive_attr_t dummy_attr;
-    if (attr == NULL) attr = &dummy_attr;
+    if (attr == NULL) attr = &default_attr();
 
     const int ndims = src_mds[0].ndims;
     const dims_t &dims = src_mds[0].dims;
+    if (memory_desc_wrapper(src_mds[0]).has_runtime_dims_or_strides())
+        return unimplemented;
 
     for (int i = 1; i < n; ++i) {
         if (src_mds[i].ndims != ndims) return invalid_arguments;
+        if (memory_desc_wrapper(src_mds[i]).has_runtime_dims_or_strides())
+            return unimplemented;
         for (int d = 0; d < ndims; ++d) {
             if (src_mds[i].dims[d] != dims[d]) return invalid_arguments;
         }
@@ -52,6 +55,8 @@ status_t dnnl_sum_primitive_desc_create(primitive_desc_t **sum_pd,
     memory_desc_t dummy_dst_md;
     if (dst_md) {
         if (dst_md->ndims != ndims) return invalid_arguments;
+        if (memory_desc_wrapper(dst_md).has_runtime_dims_or_strides())
+            return unimplemented;
         for (int d = 0; d < ndims; ++d) {
             if (dst_md->dims[d] != dims[d]) return invalid_arguments;
         }

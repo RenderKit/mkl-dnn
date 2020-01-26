@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -42,13 +42,13 @@ struct cpu_convolution_fwd_pd_t : public convolution_fwd_pd_t {
         return has_padded_dst();
     }
 
-    bool wants_zero_pad_dst(bool jit_impl = true) const {
+    bool wants_zero_pad_dst() const {
         if (!has_padded_dst()) return false;
         const auto &po = attr()->post_ops_;
-        int idx;
-        if ((idx = po.find(primitive_kind::eltwise)) == -1) return false;
-        return !math::eltwise_fwd_preserves_zero(
-                po.entry_[idx].eltwise.alg, jit_impl);
+        int idx = po.find(primitive_kind::eltwise);
+        if (idx == -1) return false;
+        const auto &ee = po.entry_[idx].eltwise;
+        return !math::eltwise_fwd_preserves_zero(ee.alg, ee.alpha, ee.beta);
     }
 };
 

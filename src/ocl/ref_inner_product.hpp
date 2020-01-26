@@ -21,12 +21,10 @@
 
 #include "common/c_types_map.hpp"
 #include "compute/compute.hpp"
-#include "ocl/jit_ref_inner_product_common_kernel.hpp"
+#include "ocl/jit_ref_inner_product_kernel.hpp"
 #include "ocl/ocl_inner_product_pd.hpp"
 #include "ocl/ocl_stream.hpp"
 #include "ocl/ocl_utils.hpp"
-
-extern const char *ref_inner_product_kernel;
 
 namespace dnnl {
 namespace impl {
@@ -49,6 +47,9 @@ struct ref_inner_product_fwd_t : public primitive_impl_t {
             assert(engine()->kind() == engine_kind::gpu);
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine());
+
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::oscale
+                    | primitive_attr_t::skip_mask_t::post_ops;
 
             bool ok = true
                     && utils::one_of(desc()->prop_kind, forward_training,
@@ -76,16 +77,19 @@ struct ref_inner_product_fwd_t : public primitive_impl_t {
                     && IMPLICATION(with_bias(),
                             utils::one_of(desc()->bias_desc.data_type, u8, s8,
                                     bf16, f16, f32))
-                    && attr()->output_scales_.count_ == 1
+                    && attr()->has_default_values(attr_skip_mask)
+                    && post_ops_ok(attr())
+                    && IMPLICATION(!attr()->output_scales_.has_default_values(),
+                            utils::one_of(src_md_.data_type, s8, u8)
+                                    && attr()->output_scales_.mask_ == 0)
                     && dense_consitency_check(src_md(), weights_md(), dst_md())
                     && IMPLICATION(desc()->src_desc.data_type == f16,
                             compute_engine->mayiuse(
                                     compute::device_ext_t::khr_fp16));
             if (!ok) return status::unimplemented;
 
-            return jit_ref_inner_product_fwd_kernel::init_conf(jip_, desc_,
-                    src_md(), weights_md(), dst_md(), *this->attr(), jit_off_,
-                    desc()->accum_data_type);
+            return jit_ref_inner_product_kernel::init_conf(
+                    jip_, this, jit_off_);
         }
         bool with_eltwise() const {
             return attr()->post_ops_.find(primitive_kind::eltwise) != -1;
@@ -133,19 +137,19 @@ struct ref_inner_product_fwd_t : public primitive_impl_t {
         auto *compute_engine
                 = utils::downcast<compute::compute_engine_t *>(engine());
         compute::kernel_ctx_t kernel_ctx;
-        jit_ref_inner_product_fwd_kernel::init_const_def(kernel_ctx, pd()->jip_,
+        jit_ref_inner_product_kernel::init_const_def(kernel_ctx, pd()->jip_,
                 pd()->jit_off_, pd()->with_eltwise(), pd()->with_sum(),
                 pd()->eltwise_alg_kind());
 
         compute_engine->create_kernel(
-                &kernel_, "ref_inner_product_fwd_kernel", kernel_ctx);
+                &kernel_, "ref_inner_product_fwd", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 
         return status::success;
     }
 
     ref_inner_product_fwd_t(const pd_t *apd) : primitive_impl_t(apd) {
-        ker_ = new jit_ref_inner_product_fwd_kernel(pd()->jip_);
+        ker_ = new jit_ref_inner_product_kernel(pd()->jip_);
     }
     ~ref_inner_product_fwd_t() { delete ker_; }
 
@@ -156,7 +160,7 @@ struct ref_inner_product_fwd_t : public primitive_impl_t {
 private:
     status_t execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
-    jit_ref_inner_product_fwd_kernel *ker_;
+    jit_ref_inner_product_kernel *ker_;
     compute::kernel_t kernel_;
 };
 
@@ -189,9 +193,8 @@ struct ref_inner_product_bwd_data_t : public primitive_impl_t {
                     && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
-            return jit_ref_inner_product_fwd_kernel::init_conf(jip_, desc_,
-                    diff_src_md(), weights_md(), diff_dst_md(), *this->attr(),
-                    jit_off_, desc()->accum_data_type);
+            return jit_ref_inner_product_kernel::init_conf(
+                    jip_, this, jit_off_);
         }
         jit_inner_product_conf_t jip_;
         jit_offsets jit_off_;
@@ -201,18 +204,18 @@ struct ref_inner_product_bwd_data_t : public primitive_impl_t {
         auto *compute_engine
                 = utils::downcast<compute::compute_engine_t *>(engine());
         compute::kernel_ctx_t kernel_ctx;
-        jit_ref_inner_product_fwd_kernel::init_const_def(kernel_ctx, pd()->jip_,
+        jit_ref_inner_product_kernel::init_const_def(kernel_ctx, pd()->jip_,
                 pd()->jit_off_, false, false, dnnl_alg_kind_undef);
 
         compute_engine->create_kernel(
-                &kernel_, "ref_inner_product_bwd_data_kernel", kernel_ctx);
+                &kernel_, "ref_inner_product_bwd_data", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 
         return status::success;
     }
 
     ref_inner_product_bwd_data_t(const pd_t *apd) : primitive_impl_t(apd) {
-        ker_ = new jit_ref_inner_product_fwd_kernel(pd()->jip_);
+        ker_ = new jit_ref_inner_product_kernel(pd()->jip_);
     }
     ~ref_inner_product_bwd_data_t() { delete ker_; }
 
@@ -223,7 +226,7 @@ struct ref_inner_product_bwd_data_t : public primitive_impl_t {
 private:
     status_t execute_backward_data(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
-    jit_ref_inner_product_fwd_kernel *ker_;
+    jit_ref_inner_product_kernel *ker_;
     compute::kernel_t kernel_;
 };
 
@@ -253,9 +256,8 @@ struct ref_inner_product_bwd_weights_t : public primitive_impl_t {
                     && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
-            return jit_ref_inner_product_fwd_kernel::init_conf(jip_, desc_,
-                    src_md(), diff_weights_md(), diff_dst_md(), *this->attr(),
-                    jit_off_, desc()->accum_data_type);
+            return jit_ref_inner_product_kernel::init_conf(
+                    jip_, this, jit_off_);
         }
         jit_inner_product_conf_t jip_;
         jit_offsets jit_off_;
@@ -265,18 +267,18 @@ struct ref_inner_product_bwd_weights_t : public primitive_impl_t {
         auto *compute_engine
                 = utils::downcast<compute::compute_engine_t *>(engine());
         compute::kernel_ctx_t kernel_ctx;
-        jit_ref_inner_product_fwd_kernel::init_const_def(kernel_ctx, pd()->jip_,
+        jit_ref_inner_product_kernel::init_const_def(kernel_ctx, pd()->jip_,
                 pd()->jit_off_, false, false, dnnl_alg_kind_undef);
 
         compute_engine->create_kernel(
-                &kernel_, "ref_inner_product_bwd_weights_kernel", kernel_ctx);
+                &kernel_, "ref_inner_product_bwd_weights", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 
         return status::success;
     }
 
     ref_inner_product_bwd_weights_t(const pd_t *apd) : primitive_impl_t(apd) {
-        ker_ = new jit_ref_inner_product_fwd_kernel(pd()->jip_);
+        ker_ = new jit_ref_inner_product_kernel(pd()->jip_);
     }
     ~ref_inner_product_bwd_weights_t() { delete ker_; }
 
@@ -287,7 +289,7 @@ struct ref_inner_product_bwd_weights_t : public primitive_impl_t {
 private:
     status_t execute_backward_weights(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
-    jit_ref_inner_product_fwd_kernel *ker_;
+    jit_ref_inner_product_kernel *ker_;
     compute::kernel_t kernel_;
 };
 

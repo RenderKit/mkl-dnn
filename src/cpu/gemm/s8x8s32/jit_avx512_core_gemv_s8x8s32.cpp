@@ -1,18 +1,18 @@
 /*******************************************************************************
- * Copyright 2019 Intel Corporation
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- ******************************************************************************/
+* Copyright 2019 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
 
 #include <type_traits>
 
@@ -228,16 +228,17 @@ typename std::enable_if<std::is_same<b_type, uint8_t>::value
 jump_to_gemv_s8x8s32_impl(gemm_info_t<int8_t, b_type, int32_t> *arg) {
     gemm_info_t<int8_t, b_type, int32_t> arg_gemv = *arg;
 
+    bool supported = mayiuse(avx512_core);
     bool bo_ok
             = IMPLICATION((std::is_same<b_type, int8_t>::value), arg->bo == 128)
-            || IMPLICATION(
+            && IMPLICATION(
                     (std::is_same<b_type, uint8_t>::value), arg->bo == 0);
 
     bool applicable = (arg->offsetc == offset_type::fixed) && // Fix offset
             (arg->ao == 0) && bo_ok && (arg->co[0] == 0) && (arg->alpha == 1.0f)
             && (arg->beta == 1.0f || arg->beta == 0.0f);
 
-    if (!applicable) return 0;
+    if (!applicable || !supported) return 0;
 
     if (arg->n == 1) {
         if (arg->transa == do_trans) {

@@ -72,6 +72,9 @@ void rnn_utils::init_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
     if (everyone_is(f32, src_layer_d.data_type(), dst_layer_d.data_type(),
                 weights_layer_d.data_type()))
         rnn.dt_conf = all_f32;
+    else if (everyone_is(bf16, src_layer_d.data_type(), dst_layer_d.data_type(),
+                     weights_layer_d.data_type()))
+        rnn.dt_conf = all_bf16;
     else if (everyone_is(f16, src_layer_d.data_type(), dst_layer_d.data_type(),
                      weights_layer_d.data_type()))
         rnn.dt_conf = all_f16;
@@ -86,7 +89,7 @@ void rnn_utils::init_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
         else
             rnn.dt_conf = f32u8f32f32;
     }
-    rnn.is_int8 = !one_of(rnn.dt_conf, all_f32, all_f16);
+    rnn.is_int8 = !one_of(rnn.dt_conf, all_f32, all_f16, all_bf16);
 
     rnn.precise_data_type
             = rnn.dt_conf == all_f16 ? data_type::f16 : data_type::f32;
@@ -120,6 +123,10 @@ void rnn_utils::init_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
     rnn.n_parts_bias = 1;
     rnn.parts_bias[0] = rnn.n_bias;
     rnn.parts_bias[1] = 0;
+
+    // Decide if to merge gemm across iterations
+    rnn.merge_gemm_layer = true;
+    rnn.merge_gemm_iter = !rnn.is_fwd;
 
     // Decide to copy bias
     rnn.copy_bias = rnn.is_int8;
@@ -157,6 +164,11 @@ void rnn_utils::init_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
             rnn.input_data_type = f32;
             rnn.dst_data_type = u8;
             rnn.output_data_type = f32;
+            break;
+        case all_bf16:
+            rnn.input_data_type = bf16;
+            rnn.dst_data_type = bf16;
+            rnn.output_data_type = bf16;
             break;
         default: assert(!"unimplemented");
     }
@@ -213,7 +225,6 @@ void rnn_utils::set_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
     int precise_elsz = rnn.precise_data_type == data_type::f16 ? sizeof(cl_half)
                                                                : sizeof(float);
 
-    rnn.use_workspace = rnn.is_training;
     rnn.ws_states_size = (size_t)(rnn.n_layer + 1) * rnn.n_dir
             * (rnn.n_iter + 1) * rnn.mb * rnn.states_ws_ld * rnn.ws_states_elsz;
     bool is_lstm = rd.cell_kind == dnnl_vanilla_lstm;
@@ -224,7 +235,7 @@ void rnn_utils::set_rnn_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
             : 0;
     rnn.ws_diff_states_elsz = precise_elsz;
     rnn.ws_diff_states_size = rnn.is_training ? (size_t)(rnn.n_layer + 1)
-                    * rnn.n_dir * (rnn.n_iter + 1) * (rnn.n_states + 1) * rnn.mb
+                    * rnn.n_dir * (rnn.n_states + 1) * (rnn.n_iter + 1) * rnn.mb
                     * rnn.states_ws_ld * rnn.ws_diff_states_elsz
                                               : (size_t)0;
     rnn.ws_gates_elsz = precise_elsz;
@@ -343,7 +354,7 @@ status_t rnn_utils::set_expected_desc(
         // Adjust strides for good leading dimension in GEMM
         CHECK(set_good_strides(weights_md, rnn.is_fwd ? ldigo : ldgoi));
         // set we need extra memory
-        if (rnn.is_fwd && !one_of(rnn.dt_conf, all_f32, all_f16)) {
+        if (rnn.is_fwd && !one_of(rnn.dt_conf, all_f32, all_f16, all_bf16)) {
             weights_md.extra.flags
                     = memory_extra_flags::gpu_rnn_u8s8_compensation;
             weights_md.extra.compensation_mask = 27; // ldigo 11011;

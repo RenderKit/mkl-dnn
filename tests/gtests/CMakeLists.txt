@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2018 Intel Corporation
+# Copyright 2016-2019 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,17 +34,19 @@ endif()
 
 # TODO: enable me!
 file(GLOB PRIM_TEST_CASES_SRC
+                              test_iface_pd.cpp
                               test_iface_pd_iter.cpp
                               test_iface_attr.cpp
                               test_iface_handle.cpp
+                              test_iface_runtime_dims.cpp
+                              test_iface_runtime_attr.cpp
                               test_dnnl_threading.cpp
                               test_memory.cpp
                               test_sum.cpp
                               test_reorder.cpp
                               test_cross_engine_reorder.cpp
                               test_concat.cpp
-                              test_softmax_forward.cpp
-                              test_softmax_backward.cpp
+                              test_softmax.cpp
                               test_eltwise.cpp
                               test_lrn_forward.cpp
                               test_lrn_backward.cpp
@@ -67,14 +69,21 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_deconvolution.cpp
                               test_gemm_f16.cpp
                               test_gemm_f32.cpp
+                              test_gemm_f16f16f32.cpp
+                              test_gemm_bf16bf16f32.cpp
+                              test_gemm_bf16bf16bf16.cpp
                               test_gemm_u8s8s32.cpp
                               test_gemm_s8s8s32.cpp
                               test_gemm_s8u8s32.cpp
                               test_gemm_u8u8s32.cpp
-                              test_gemm_bf16bf16f32.cpp
                               test_rnn_forward.cpp
                               test_layer_normalization.cpp
                               test_binary.cpp
+                              test_logsoftmax.cpp
+                              test_matmul.cpp
+                              test_resampling.cpp
+                              test_isa_mask.cpp
+                              test_isa_iface.cpp
                               )
 
 # Workaround for an Intel compiler bug: stack unwinding does not restore
@@ -93,6 +102,7 @@ foreach(TEST_FILE ${PRIM_TEST_CASES_SRC})
     get_filename_component(exe ${TEST_FILE} NAME_WE)
 
     add_executable(${exe} ${MAIN_SRC_GTEST} ${TEST_FILE})
+    maybe_configure_windows_test(${exe} TARGET)
     add_definitions(-DNOMINMAX) # to allow std::max on Windows with parentheses
     target_link_libraries(${exe} ${LIB_NAME} dnnl_gtest ${EXTRA_SHARED_LIBS})
 

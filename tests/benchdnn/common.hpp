@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -95,6 +95,7 @@ enum { CRIT = 1, WARN = 2 };
     } while (0)
 
 extern int verbose;
+extern bool canonical;
 
 #define print(v, fmt, ...) \
     do { \
@@ -126,6 +127,8 @@ enum prim_t {
     CONCAT,
     LRN,
     BINARY,
+    MATMUL,
+    RESAMPLING,
     DEF = CONV,
 };
 
@@ -144,6 +147,8 @@ extern const char *driver_name;
 extern double max_ms_per_prb; /** maximum time spends per prb in ms */
 extern int min_times_per_prb; /** minimal amount of runs per prb */
 extern int fix_times_per_prb; /** if non-zero run prb that many times */
+
+extern bool fast_ref_gpu;
 
 struct benchdnn_timer_t {
     enum mode_t { min = 0, avg = 1, max = 2, n_modes };

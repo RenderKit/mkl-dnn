@@ -67,8 +67,6 @@ protected:
     }
 
     void Test() {
-        p = ::testing::TestWithParam<decltype(p)>::GetParam();
-
         eng = engine(get_test_engine_kind(), 0);
         strm = stream(eng);
 
@@ -106,6 +104,8 @@ protected:
 
     void Forward(
             prop_kind pk, normalization_flags flags = (normalization_flags)0u) {
+        fwd_iface_test_stat_any(pk, flags);
+
         bool useScaleShift
                 = (bool)(flags & normalization_flags::use_scale_shift);
         bool useGlobalStats
@@ -119,6 +119,18 @@ protected:
                 = layer_normalization_forward::primitive_desc(lnorm_fwd_d, eng);
         lnorm_fwd_pd = layer_normalization_forward::primitive_desc(
                 lnorm_fwd_pd.get()); // test construction from a C pd
+
+        ASSERT_TRUE(lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_SRC)
+                == lnorm_fwd_pd.src_desc());
+        ASSERT_TRUE(lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_DST)
+                == lnorm_fwd_pd.dst_desc());
+        ASSERT_TRUE(lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_MEAN)
+                == lnorm_fwd_pd.mean_desc());
+        ASSERT_TRUE(lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_VARIANCE)
+                == lnorm_fwd_pd.variance_desc());
+        ASSERT_TRUE(
+                lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_SCALE_SHIFT)
+                == lnorm_fwd_pd.weights_desc());
 
         weights = memory(lnorm_fwd_pd.weights_desc(), eng);
         if (isTraining || useGlobalStats) {
@@ -141,6 +153,8 @@ protected:
 
     void Backward(
             prop_kind pk, normalization_flags flags = (normalization_flags)0u) {
+        bwd_iface_test_stat_any(pk, flags);
+
         bool useScaleShift
                 = (bool)(flags & normalization_flags::use_scale_shift);
 
@@ -156,6 +170,23 @@ protected:
                 lnorm_bwd_d, eng, lnorm_fwd_pd);
         lnorm_bwd_pd = layer_normalization_backward::primitive_desc(
                 lnorm_bwd_pd.get()); // test construction from a C pd
+
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_SRC)
+                == lnorm_bwd_pd.src_desc());
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_DIFF_SRC)
+                == lnorm_bwd_pd.diff_src_desc());
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_DIFF_DST)
+                == lnorm_bwd_pd.diff_dst_desc());
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_MEAN)
+                == lnorm_bwd_pd.mean_desc());
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_VARIANCE)
+                == lnorm_bwd_pd.variance_desc());
+        ASSERT_TRUE(
+                lnorm_bwd_pd.query_md(query::exec_arg_md, DNNL_ARG_SCALE_SHIFT)
+                == lnorm_bwd_pd.weights_desc());
+        ASSERT_TRUE(lnorm_bwd_pd.query_md(
+                            query::exec_arg_md, DNNL_ARG_DIFF_SCALE_SHIFT)
+                == lnorm_bwd_pd.diff_weights_desc());
 
         if (useScaleShift) weights = memory(lnorm_bwd_pd.weights_desc(), eng);
         diff_weights = memory(lnorm_bwd_pd.diff_weights_desc(), eng);
@@ -379,8 +410,6 @@ protected:
 
             float ref_diff_gamma = float(0);
             float ref_diff_beta = float(0);
-            auto gamma = use_weights ? weights_data[weights_mdw.off_l(c)] : 1;
-
             for (memory::dim n = 0; n < nelems / C; n++) {
                 size_t stat_off = stat_mdw.off_l(n);
                 const float sqrt_variance
@@ -407,20 +436,44 @@ protected:
                 if (norm_max < 1e-2) norm_max = float(1);
                 ASSERT_NEAR((diff_beta - ref_diff_beta) / norm_max, 0., eps);
             }
+        });
 
-            for (memory::dim n = 0; n < nelems / C; n++) {
-                size_t stat_off = stat_mdw.off_l(n);
-                const float sqrt_variance
-                        = 1.0f / sqrt(variance_data[stat_off] + p.epsilon);
+        dnnl::impl::parallel_nd(nelems / C, [&](memory::dim n) {
+            if (is_current_test_failed()) return;
+
+            size_t stat_off = stat_mdw.off_l(n);
+            const float sqrt_variance
+                    = 1.0f / sqrt(variance_data[stat_off] + p.epsilon);
+
+            float ref_dd_gamma = float(0);
+            float ref_dd_gamma_x = float(0);
+            if (calculate_diff_stats) {
+                for (memory::dim c = 0; c < C; c++) {
+                    auto gamma = use_weights
+                            ? weights_data[weights_mdw.off_l(c)]
+                            : 1;
+                    ref_dd_gamma += diff_dst_data[diff_dst_mdw.off_l(n * C + c)]
+                            * gamma;
+                    ref_dd_gamma_x
+                            += diff_dst_data[diff_dst_mdw.off_l(n * C + c)]
+                            * gamma
+                            * (src_data[src_mdw.off_l(n * C + c)]
+                                    - mean_data[stat_off]);
+                }
+                ref_dd_gamma_x *= sqrt_variance;
+            }
+            for (memory::dim c = 0; c < C; c++) {
+                auto gamma
+                        = use_weights ? weights_data[weights_mdw.off_l(c)] : 1;
                 float ref_diff_src
-                        = diff_dst_data[diff_dst_mdw.off_l(n * C + c)];
+                        = diff_dst_data[diff_dst_mdw.off_l(n * C + c)] * gamma;
                 if (calculate_diff_stats) {
-                    ref_diff_src -= ref_diff_beta / C
+                    ref_diff_src -= ref_dd_gamma / C
                             + (src_data[src_mdw.off_l(n * C + c)]
                                       - mean_data[stat_off])
-                                    * ref_diff_gamma * sqrt_variance / C;
+                                    * ref_dd_gamma_x * sqrt_variance / C;
                 }
-                ref_diff_src *= gamma * sqrt_variance;
+                ref_diff_src *= sqrt_variance;
                 float out_diff_src
                         = diff_src_data[diff_src_mdw.off_l(n * C + c)];
                 float norm_max = std::max(
@@ -429,6 +482,94 @@ protected:
                 ASSERT_NEAR((out_diff_src - ref_diff_src) / norm_max, 0., eps);
             }
         });
+    }
+
+    void fwd_iface_test_stat_any(prop_kind pk, normalization_flags flags) {
+        // non stats if inference w/o use global stats
+        if (pk == prop_kind::forward_inference
+                && !(bool)(flags & normalization_flags::use_global_stats))
+            return;
+
+        using tag = memory::format_tag;
+
+        tag expect_stat_tag = derive_stat_tag();
+        if (expect_stat_tag == tag::undef) return; // optimism
+
+        memory::dims stat_dims(p.dims.begin(), p.dims.end() - 1);
+        memory::desc expect_stat_md(
+                stat_dims, memory::data_type::f32, expect_stat_tag);
+
+        // no stat_md provided at all
+        {
+            layer_normalization_forward::primitive_desc fwd_pd(
+                    {pk, *data_d, p.epsilon, flags}, eng);
+
+            EXPECT_EQ(fwd_pd.mean_desc(), expect_stat_md);
+            EXPECT_EQ(fwd_pd.variance_desc(), expect_stat_md);
+        }
+
+        // stat_md with format_tag::any
+        {
+            memory::desc any_stat_md(
+                    stat_dims, memory::data_type::f32, tag::any);
+            layer_normalization_forward::primitive_desc fwd_pd(
+                    {pk, *data_d, any_stat_md, p.epsilon, flags}, eng);
+
+            EXPECT_EQ(fwd_pd.mean_desc(), expect_stat_md);
+            EXPECT_EQ(fwd_pd.variance_desc(), expect_stat_md);
+        }
+    }
+
+    void bwd_iface_test_stat_any(prop_kind pk, normalization_flags flags) {
+        using tag = memory::format_tag;
+
+        tag expect_stat_tag = derive_stat_tag();
+        if (expect_stat_tag == tag::undef) return; // optimism
+
+        memory::dims stat_dims(p.dims.begin(), p.dims.end() - 1);
+        memory::desc expect_stat_md(
+                stat_dims, memory::data_type::f32, expect_stat_tag);
+
+        layer_normalization_forward::primitive_desc fwd_pd(
+                {prop_kind::forward_training, *data_d, p.epsilon, flags}, eng);
+
+        // no stat_md provided at all
+        {
+            layer_normalization_backward::primitive_desc bwd_pd(
+                    {pk, *diff_d, *data_d, p.epsilon, flags}, eng, fwd_pd);
+
+            EXPECT_EQ(bwd_pd.mean_desc(), expect_stat_md);
+            EXPECT_EQ(bwd_pd.variance_desc(), expect_stat_md);
+        }
+
+        // stat_md with format_tag::any
+        {
+            memory::desc any_stat_md(
+                    stat_dims, memory::data_type::f32, tag::any);
+            layer_normalization_backward::primitive_desc bwd_pd(
+                    {pk, *diff_d, *data_d, any_stat_md, p.epsilon, flags}, eng,
+                    fwd_pd);
+
+            EXPECT_EQ(bwd_pd.mean_desc(), expect_stat_md);
+            EXPECT_EQ(bwd_pd.variance_desc(), expect_stat_md);
+        }
+    }
+
+private:
+    memory::format_tag derive_stat_tag() const {
+        using tag = memory::format_tag;
+        tag expect_stat_tag = tag::undef;
+
+        // TODO: add more cases and test cases
+        // XXX: currently test only simple cases like `abc`, `acb`. Extend,
+        //      if possible, to blocked formats too.
+        switch (p.data_tag) {
+            case tag::abc: expect_stat_tag = tag::ab; break;
+            case tag::bac: expect_stat_tag = tag::ba; break;
+            default: break;
+        }
+
+        return expect_stat_tag;
     }
 };
 

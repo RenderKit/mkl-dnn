@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -54,14 +54,20 @@ struct reorder_pd_t : public primitive_desc_t {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual void init_info() override { impl::init_info(this, this->info_); }
-
     virtual arg_usage_t arg_usage(int arg) const override {
         if (arg == DNNL_ARG_FROM) return arg_usage_t::input;
 
         if (arg == DNNL_ARG_TO) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
+    }
+
+    virtual const memory_desc_t *arg_md(int arg) const override {
+        switch (arg) {
+            case DNNL_ARG_FROM: return src_md(0);
+            case DNNL_ARG_TO: return dst_md(0);
+            default: return primitive_desc_t::arg_md(arg);
+        }
     }
 
     virtual const memory_desc_t *src_md(int index = 0) const override {

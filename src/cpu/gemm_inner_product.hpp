@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,7 +46,8 @@ struct gemm_inner_product_fwd_t : public primitive_impl_t {
                     && everyone_is(data_type, src_md()->data_type,
                             weights_md()->data_type, dst_md()->data_type,
                             with_bias() ? weights_md(1)->data_type : data_type)
-                    && attr()->output_scales_.has_default_values()
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops)
                     && post_ops_ok() && set_default_params() == status::success
                     && dense_gemm_consitency_check(
                             src_md(), weights_md(), dst_md());

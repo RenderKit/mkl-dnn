@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -103,7 +103,8 @@ struct dnnl_engine : public dnnl::impl::c_compatible {
     /** return the list of reorder implementations. engine guarantees to return
      * a NULL-terminated list */
     virtual const reorder_primitive_desc_create_f *
-    get_reorder_implementation_list() const = 0;
+    get_reorder_implementation_list(const dnnl::impl::memory_desc_t *src_md,
+            const dnnl::impl::memory_desc_t *dst_md) const = 0;
 
     /** return the list of concat implementations. engine guarantees to return
      * a NULL-terminated list */
@@ -115,9 +116,10 @@ struct dnnl_engine : public dnnl::impl::c_compatible {
     virtual const sum_primitive_desc_create_f *
     get_sum_implementation_list() const = 0;
 
-    /** return the list of implementations. engine guarantees to return a
-     * NULL-terminated list */
-    virtual const primitive_desc_create_f *get_implementation_list() const = 0;
+    /** return the list of implementations for a given descriptor.
+     * engine guarantees to return a NULL-terminated list */
+    virtual const primitive_desc_create_f *get_implementation_list(
+            const dnnl::impl::op_desc_t *desc) const = 0;
 
     template <typename F>
     dnnl::impl::status_t get_primitive(dnnl::impl::primitive_t **primitive,
@@ -161,7 +163,7 @@ struct dnnl_engine : public dnnl::impl::c_compatible {
             if (status != dnnl::impl::status::success) return status;
 
             ms = dnnl::impl::get_msec() - ms;
-            print_verbose(dnnl::impl::dnnl_verbose()->level, true, p, ms);
+            print_verbose(dnnl::impl::get_verbose(), true, p, ms);
             (*primitive) = p;
             return status;
         }
@@ -194,7 +196,7 @@ struct dnnl_engine : public dnnl::impl::c_compatible {
         recursive_mutex_.unlock();
 
         ms = dnnl::impl::get_msec() - ms;
-        print_verbose(dnnl::impl::dnnl_verbose()->level, false, p, ms);
+        print_verbose(dnnl::impl::get_verbose(), false, p, ms);
         (*primitive) = p;
         return status;
     }

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <assert.h>
+
 #ifdef __INTEL_COMPILER
 #include <immintrin.h>
 #endif
@@ -26,6 +28,9 @@
 #include "utils.hpp"
 
 #include "jit_avx512_common_convolution_winograd.hpp"
+
+#define _64byte_align ((1 << 6) - 1)
+#define IS_ALIGNED(byte_blk, byte_align) ((byte_blk & byte_align) == 0)
 
 #ifndef _MSC_VER
 #define pragma_unroll _Pragma("unroll")
@@ -45,8 +50,9 @@ unsigned int LLC_cache_size = get_cache_size(3, false);
 
 void inline load_ps(float *dest, const float *src_mem) {
 #ifdef __INTEL_COMPILER
+    assert(IS_ALIGNED(reinterpret_cast<ptrdiff_t>(dest), _64byte_align));
     __m512 *Iv512 = (__m512 *)dest;
-    Iv512[0] = _mm512_load_ps(src_mem);
+    Iv512[0] = _mm512_loadu_ps(src_mem);
 #else
     PRAGMA_OMP_SIMD()
     for (int v = 0; v < simd_w; v++)
@@ -56,10 +62,11 @@ void inline load_ps(float *dest, const float *src_mem) {
 
 void inline store_output(float *dest, const float *data, bool streamout) {
 #ifdef __INTEL_COMPILER
-    if (streamout)
+    if (streamout) {
+        assert(IS_ALIGNED(reinterpret_cast<ptrdiff_t>(dest), _64byte_align));
         _mm512_stream_ps(dest, *((__m512 *)data));
-    else
-        _mm512_store_ps(dest, *((__m512 *)data));
+    } else
+        _mm512_storeu_ps(dest, *((__m512 *)data));
 #else
     PRAGMA_OMP_SIMD()
     for (int v = 0; v < simd_w; v++)
@@ -74,10 +81,11 @@ void inline accum_output(
     __m512 _dest = _mm512_loadu_ps(dest);
     _data = _mm512_add_ps(_data, _dest);
     if (with_relu_postsum) _data = _mm512_max_ps(_data, _mm512_setzero_ps());
-    if (streamout)
+    if (streamout) {
+        assert(IS_ALIGNED(reinterpret_cast<ptrdiff_t>(dest), _64byte_align));
         _mm512_stream_ps(dest, _data);
-    else
-        _mm512_store_ps(dest, _data);
+    } else
+        _mm512_storeu_ps(dest, _data);
 #else
     PRAGMA_OMP_SIMD()
     for (int v = 0; v < simd_w; v++)
@@ -439,6 +447,12 @@ void input_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
     int tile_block
             = (tile_base_index / jcp.tile_block_ur) / jcp.nb_tile_block_ur;
 
+    bool is_access_aligned
+            = IS_ALIGNED(reinterpret_cast<ptrdiff_t>(tinp), _64byte_align)
+            // check if the inner-most dimension size matches the alignment
+            // stride.
+            && IS_ALIGNED(jcp.dimK_reg_block * sizeof(float), _64byte_align);
+
     for (int tj = 0; tj < jcp.jtiles; tj++) {
         for (int ti = 0; ti < jcp.itiles; ti++) {
             for (int j = 0; j < alpha; j++) {
@@ -473,7 +487,7 @@ void input_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
                 for (int i = 0; i < alpha; i++) {
                     store_output(&(output(tile_block, j, i, nb_tile_block_ur, 0,
                                          0, tile_block_ur, 0)),
-                            Iw[j][i], streamout);
+                            Iw[j][i], is_access_aligned && streamout);
                 }
             }
             tile_block_ur++;
@@ -571,11 +585,16 @@ void output_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
             for (int j = 0; j < tile_size; j++) {
                 int ydim = tj * tile_size + j;
                 if (ydim < outh) {
-                    float *pout_j = pout_b + ydim * outw * simd_w;
+                    dim_t stride_j = ydim * outw * simd_w;
+                    float *pout_j = pout_b + stride_j;
                     for (int i = 0; i < tile_size; i++) {
                         int xdim = ti * tile_size + i;
                         if (xdim < outw) {
-                            float *pout_i = pout_j + xdim * simd_w;
+                            dim_t stride_i = xdim * simd_w;
+                            float *pout_i = pout_j + stride_i;
+                            bool is_stride_aligned = IS_ALIGNED(
+                                    (stride_j + stride_i) * sizeof(float),
+                                    _64byte_align);
                             if (is_fwd) {
                                 PRAGMA_OMP_SIMD()
                                 for (int v = 0; v < simd_w; v++) {
@@ -586,11 +605,14 @@ void output_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
                                             : O[j][i][v];
                                 }
                             }
+                            const bool is_access_aligned
+                                    = streamout && is_stride_aligned;
                             if (with_sum)
-                                accum_output(pout_i, O[j][i], streamout,
+                                accum_output(pout_i, O[j][i], is_access_aligned,
                                         with_relu_postsum);
                             else
-                                store_output(pout_i, O[j][i], streamout);
+                                store_output(
+                                        pout_i, O[j][i], is_access_aligned);
                         }
                     }
                 }
@@ -609,9 +631,9 @@ void output_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
 }
 
 template <bool ver_4fma>
-void diff_src_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
-        float *inp, float *tinp, float *Iw_temp,
-        void (*transpose_4fma_ker)(float *, float *)) {
+void diff_src_transform_bwd_weights(int image,
+        const jit_conv_winograd_conf_t &conv, float *inp, float *tinp,
+        float *Iw_temp, void (*transpose_4fma_ker)(float *, float *)) {
 
     const int ifwp = conv.iw + conv.l_pad;
     const int ifhp = conv.ih + conv.t_pad;
@@ -635,6 +657,13 @@ void diff_src_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
             % conv.nb_tile_block_ur;
     int tile_block = (tile_base_index / conv.tile_4fma / conv.tile_block_ur)
             / conv.nb_tile_block_ur;
+
+    bool is_access_aligned
+            = IS_ALIGNED(reinterpret_cast<ptrdiff_t>(tinp), _64byte_align)
+            // check if the inner-most dimension size matches the alignment
+            // stride.
+            && IS_ALIGNED(conv.ic_simd_block * conv.tile_4fma * sizeof(float),
+                    _64byte_align);
 
     for (int tj = 0; tj < conv.jtiles; tj++) {
         for (int ti = 0; ti < conv.itiles; ti++) {
@@ -692,7 +721,7 @@ void diff_src_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
                         store_output(
                                 &(output(0, j, i, tile_block, 0,
                                         nb_tile_block_ur, tile_block_ur, 0)),
-                                Iw[j][i], true);
+                                Iw[j][i], is_access_aligned);
                     }
                 }
                 tile_block_ur++;
@@ -729,8 +758,9 @@ void diff_src_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
 }
 
 template <bool with_bias>
-void diff_dst_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
-        float *inp, float *tinp, float *dbias) {
+void diff_dst_transform_bwd_weights(int image,
+        const jit_conv_winograd_conf_t &conv, float *inp, float *tinp,
+        float *dbias) {
 
     const int total_tiles = conv.itiles * conv.jtiles + conv.tile_4fma_padding;
     alignas(64) float I[alpha][alpha][simd_w];
@@ -749,6 +779,12 @@ void diff_dst_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
             % conv.nb_tile_block_ur;
     int tile_block = (tile_base_index / conv.tile_block_ur / conv.tile_4fma)
             / conv.nb_tile_block_ur;
+
+    bool is_access_aligned
+            = IS_ALIGNED(reinterpret_cast<ptrdiff_t>(tinp), _64byte_align)
+            // check if the inner-most dimension size matches the alignment
+            // stride.
+            && IS_ALIGNED(conv.oc_simd_block * sizeof(float), _64byte_align);
 
     for (int tj = 0; tj < conv.jtiles; tj++) {
         for (int ti = 0; ti < conv.itiles; ti++) {
@@ -793,7 +829,7 @@ void diff_dst_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
                 for (int i = 0; i < alpha; i++) {
                     store_output(&(output(0, j, i, tile_block, 0,
                                          nb_tile_block_ur, tile_block_ur, 0)),
-                            Iw[j][i], true);
+                            Iw[j][i], is_access_aligned);
                 }
             }
             tile_block_ur++;
@@ -810,7 +846,7 @@ void diff_dst_transform_bwd_weights(int image, jit_conv_winograd_conf_t conv,
 }
 
 void diff_weights_transform_bwd_weights(
-        jit_conv_winograd_conf_t conv, float *wp, float *twp) {
+        const jit_conv_winograd_conf_t &conv, float *wp, float *twp) {
     const int kh = 3;
     const int kw = 3;
     alignas(64) float Fw[alpha][alpha][simd_w][simd_w];
@@ -822,6 +858,12 @@ void diff_weights_transform_bwd_weights(
     array_offset_calculator<float, 6> output(wp, conv.oc / simd_w,
             conv.ic / simd_w, conv.kh, conv.kw, conv.ic_simd_block,
             conv.oc_simd_block);
+
+    bool is_access_aligned
+            = IS_ALIGNED(reinterpret_cast<ptrdiff_t>(wp), _64byte_align)
+            // check if the inner-most dimension size matches the alignment
+            // stride.
+            && IS_ALIGNED(conv.oc_simd_block * sizeof(float), _64byte_align);
 
     for (int j = 0; j < alpha; j++) {
         for (int i = 0; i < alpha; i++) {
@@ -839,7 +881,8 @@ void diff_weights_transform_bwd_weights(
     for (int j = 0; j < kh; j++) {
         for (int i = 0; i < kw; i++) {
             for (int v = 0; v < conv.ic_simd_block; v++) {
-                store_output(&(output(0, 0, j, i, v, 0)), F[j][i][v], true);
+                store_output(&(output(0, 0, j, i, v, 0)), F[j][i][v],
+                        is_access_aligned);
             }
         }
     }
@@ -908,11 +951,10 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             jcp.dimK_block, jcp.dimN_reg_block, jcp.dimK_reg_block);
 
     bool V_streamout = jcp.dimN * jcp.dimK * alpha * alpha * sizeof(float)
-                    > 2 * LLC_cache_size
-            ? true
-            : false;
+            > 2 * LLC_cache_size;
 
-    const bool output_is_aligned = ((size_t)out_ptr & (64 - 1)) == 0;
+    const bool output_is_aligned
+            = IS_ALIGNED(reinterpret_cast<ptrdiff_t>(out_ptr), _64byte_align);
 
     const bool wants_padded_bias
             = jcp.with_bias && jcp.oc_without_padding != jcp.oc;
@@ -922,63 +964,57 @@ void _jit_avx512_common_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             last_slice_bias[oc] = bias(jcp.dimM / jcp.dimM_simd_block - 1, oc);
     }
 
-    {
-        parallel_nd(jcp.mb, jcp.dimK_nb_block, jcp.dimK_block,
-                [&](int img, int K_blk1, int K_blk2) {
-                    input_transform_data<is_fwd>(img, jcp,
-                            &(input(img, K_blk1 * jcp.dimK_block + K_blk2, 0, 0,
-                                    0)),
-                            &(V(0, 0, 0, 0, K_blk1, K_blk2, 0, 0)),
-                            V_streamout);
-                });
+    parallel_nd(jcp.mb, jcp.dimK_nb_block, jcp.dimK_block,
+            [&](int img, int K_blk1, int K_blk2) {
+                input_transform_data<is_fwd>(img, jcp,
+                        &(input(img, K_blk1 * jcp.dimK_block + K_blk2, 0, 0,
+                                0)),
+                        &(V(0, 0, 0, 0, K_blk1, K_blk2, 0, 0)), V_streamout);
+            });
 
-        parallel_nd(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
-                [&](int ofm1, int ifm1, int ofm2, int ifm2) {
-                    float *U_base_ptr = is_fwd
-                            ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
-                            : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
-                    weight_transform_data<is_fwd>(jcp,
-                            &(weights(ofm1 * jcp.oc_block + ofm2,
-                                    ifm1 * jcp.ic_block + ifm2, 0, 0, 0, 0)),
-                            U_base_ptr);
-                });
+    parallel_nd(jcp.nb_oc, jcp.nb_ic, jcp.oc_block, jcp.ic_block,
+            [&](int ofm1, int ifm1, int ofm2, int ifm2) {
+                float *U_base_ptr = is_fwd
+                        ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
+                        : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
+                weight_transform_data<is_fwd>(jcp,
+                        &(weights(ofm1 * jcp.oc_block + ofm2,
+                                ifm1 * jcp.ic_block + ifm2, 0, 0, 0, 0)),
+                        U_base_ptr);
+            });
 
-        parallel_nd(jcp.dimN_nb_block, alpha, alpha, jcp.dimM_nb_block,
-                jcp.dimN_block,
-                [&](int N_blk1, int oj, int oi, int M_blk1, int N_blk2) {
-                    kernel_->gemm_loop_ker_first_iter(
-                            (float *)&(
-                                    M(N_blk1, M_blk1, oj, oi, N_blk2, 0, 0, 0)),
-                            (const float *)&(U(M_blk1, oj, oi, 0, 0, 0, 0, 0)),
+    parallel_nd(jcp.dimN_nb_block, alpha, alpha, jcp.dimM_nb_block,
+            jcp.dimN_block,
+            [&](int N_blk1, int oj, int oi, int M_blk1, int N_blk2) {
+                kernel_->gemm_loop_ker_first_iter(
+                        (float *)&(M(N_blk1, M_blk1, oj, oi, N_blk2, 0, 0, 0)),
+                        (const float *)&(U(M_blk1, oj, oi, 0, 0, 0, 0, 0)),
+                        (const float *)&(
+                                V(N_blk1, oj, oi, N_blk2, 0, 0, 0, 0)));
+                for (int K_blk1 = 1; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
+                    kernel_->gemm_loop_ker((float *)&(M(N_blk1, M_blk1, oj, oi,
+                                                   N_blk2, 0, 0, 0)),
                             (const float *)&(
-                                    V(N_blk1, oj, oi, N_blk2, 0, 0, 0, 0)));
-                    for (int K_blk1 = 1; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
-                        kernel_->gemm_loop_ker((float *)&(M(N_blk1, M_blk1, oj,
-                                                       oi, N_blk2, 0, 0, 0)),
-                                (const float *)&(
-                                        U(M_blk1, oj, oi, K_blk1, 0, 0, 0, 0)),
-                                (const float *)&(V(N_blk1, oj, oi, N_blk2,
-                                        K_blk1, 0, 0, 0)));
-                    }
-                });
+                                    U(M_blk1, oj, oi, K_blk1, 0, 0, 0, 0)),
+                            (const float *)&(V(
+                                    N_blk1, oj, oi, N_blk2, K_blk1, 0, 0, 0)));
+                }
+            });
 
-        parallel_nd(jcp.mb, jcp.dimM_nb_block, jcp.dimM_block,
-                [&](int img, int M_blk1, int M_blk2) {
-                    const int M_blk = M_blk1 * jcp.dimM_block + M_blk2;
+    parallel_nd(jcp.mb, jcp.dimM_nb_block, jcp.dimM_block,
+            [&](int img, int M_blk1, int M_blk2) {
+                const int M_blk = M_blk1 * jcp.dimM_block + M_blk2;
 
-                    float *bias_ptr = wants_padded_bias
-                                    && M_blk
-                                            == jcp.dimM / jcp.dimM_simd_block
-                                                    - 1
-                            ? last_slice_bias
-                            : &bias(M_blk, 0);
+                float *bias_ptr = wants_padded_bias
+                                && M_blk == jcp.dimM / jcp.dimM_simd_block - 1
+                        ? last_slice_bias
+                        : &bias(M_blk, 0);
 
-                    output_transform(img, jcp,
-                            &(M(0, M_blk1, 0, 0, 0, M_blk2, 0, 0)),
-                            &(output(img, M_blk, 0, 0, 0)), bias_ptr,
-                            output_is_aligned);
-                });
-    }
+                output_transform(img, jcp,
+                        &(M(0, M_blk1, 0, 0, 0, M_blk2, 0, 0)),
+                        &(output(img, M_blk, 0, 0, 0)), bias_ptr,
+                        output_is_aligned);
+            });
 }
 
 template struct _jit_avx512_common_convolution_winograd_t<true>;
@@ -1045,18 +1081,19 @@ void jit_avx512_common_convolution_winograd_bwd_weights_t::
     array_offset_calculator<float, 2> diff_bias_prv(
             scratchpad.get<float>(key_conv_bia_reduction), nthreads, jcp.oc);
 
-    PRAGMA_OMP(parallel num_threads(nthreads)) {
+    PRAGMA_OMP(parallel num_threads(nthreads))
+    {
         if (jcp.with_bias) {
             parallel_nd_in_omp(nthreads, jcp.oc, [&](int ithr, int ofm) {
                 diff_bias_prv(ithr, ofm) = 0.0f;
             });
 
-PRAGMA_OMP(for nowait)
-for (int bofm = 0; bofm < jcp.oc / simd_w; bofm++) {
-    PRAGMA_OMP_SIMD()
-    for (int v = 0; v < simd_w; v++)
-        diff_bias(bofm, v) = 0.0f;
-}
+            PRAGMA_OMP(for nowait)
+            for (int bofm = 0; bofm < jcp.oc / simd_w; bofm++) {
+                PRAGMA_OMP_SIMD()
+                for (int v = 0; v < simd_w; v++)
+                    diff_bias(bofm, v) = 0.0f;
+            }
         }
 
         const int ithread = dnnl_get_thread_num();
@@ -1118,18 +1155,18 @@ for (int bofm = 0; bofm < jcp.oc / simd_w; bofm++) {
                 });
 
         if (jcp.with_bias) {
-PRAGMA_OMP(for)
-for (int ofm1 = 0; ofm1 < jcp.oc / simd_w; ofm1++) {
-    for (int ithr = 0; ithr < nthreads; ithr++) {
-        float *base_bias_ptr = &(diff_bias(ofm1, 0));
-        float *base_bias_prv_ptr
-                = &(diff_bias_prv(ithr * jcp.oc + ofm1 * simd_w));
-        PRAGMA_OMP_SIMD()
-        for (int ofm2 = 0; ofm2 < simd_w; ofm2++) {
-            base_bias_ptr[ofm2] += base_bias_prv_ptr[ofm2];
-        }
-    }
-}
+            PRAGMA_OMP(for)
+            for (int ofm1 = 0; ofm1 < jcp.oc / simd_w; ofm1++) {
+                for (int ithr = 0; ithr < nthreads; ithr++) {
+                    float *base_bias_ptr = &(diff_bias(ofm1, 0));
+                    float *base_bias_prv_ptr
+                            = &(diff_bias_prv(ithr * jcp.oc + ofm1 * simd_w));
+                    PRAGMA_OMP_SIMD()
+                    for (int ofm2 = 0; ofm2 < simd_w; ofm2++) {
+                        base_bias_ptr[ofm2] += base_bias_prv_ptr[ofm2];
+                    }
+                }
+            }
         }
     }
 

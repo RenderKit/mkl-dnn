@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -42,6 +42,7 @@ struct desc_t {
     int64_t ls;
     float alpha, beta, k;
     const char *name;
+    int ndims;
 };
 int str2desc(desc_t *desc, const char *str);
 std::ostream &operator<<(std::ostream &s, const desc_t &d);
@@ -75,6 +76,10 @@ struct perf_report_t : public base_perf_report_t {
         s << alg2str(p_->alg);
     }
 
+    virtual void dump_desc(std::ostream &s) const override {
+        s << static_cast<const desc_t &>(*p_);
+    }
+
     virtual void dump_desc_csv(std::ostream &s) const override {
         s << p_->mb << ',' << p_->ic << ',' << p_->id << ',' << p_->ih << ','
           << p_->iw << ',' << p_->ls << ',' << p_->alpha << ',' << p_->beta
@@ -93,8 +98,18 @@ private:
 /* some extra control parameters which shouldn't be placed in prb_t */
 extern const char *skip_impl; /* NULL or "" means do not skip anything */
 
-inline int get_summands(const prb_t *p) {
-    return p->ls * (p->alg == ACROSS ? 1 : p->ls * (p->id > 1 ? p->ls : 1));
+inline int compute_n_summands(const prb_t *p) {
+    if (p->alg == ACROSS) {
+        return p->ls;
+    } else if (p->alg == WITHIN) {
+        int n_summands = 1;
+        for (int64_t d = p->ndims - 2; d > 0; --d)
+            n_summands *= p->ls;
+        return n_summands;
+    } else {
+        assert(!"unknown algorithm");
+        return 1;
+    }
 }
 
 inline size_t data_off(const prb_t *p, int64_t mb, int64_t c, int64_t d,

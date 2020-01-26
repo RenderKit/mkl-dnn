@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -43,6 +43,8 @@ void gemm_inner_product_fwd_t<data_type>::execute_forward(
     const int IC = pd()->IC_total_padded();
 
     const auto &wmd = *pd()->weights_md();
+
+    // check if OC is NOT the leading dimension
     bool wei_tr = wmd.format_desc.blocking.strides[0] != 1;
 
     const float *scales = pd()->attr()->output_scales_.scales_;
@@ -53,7 +55,8 @@ void gemm_inner_product_fwd_t<data_type>::execute_forward(
             postops_in_ip_ ? nullptr : bias);
 
     if (postops_in_ip_) {
-        parallel(0, [&](int ithr, int nthr) {
+        const bool force_sequential = pp_kernel_->sequential_kernel();
+        parallel(force_sequential ? 1 : 0, [&](int ithr, int nthr) {
             size_t start, end;
             balance211((size_t)OC * MB, nthr, ithr, start, end);
             (*pp_kernel_)(dst, dst, (char *)bias, scales, start, end);

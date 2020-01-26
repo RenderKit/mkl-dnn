@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ struct layout_desc_t {
 };
 
 status_t cvt_mem_desc_to_layout_desc(
-        const memory_desc_t &md_, layout_desc_t &ld) {
+        const memory_desc_t &md_, layout_desc_t &ld, const dims_t &blocks) {
     const auto md = memory_desc_wrapper(md_);
 
     bool ok = true && md.is_blocking_desc() && md.extra().flags == 0;
@@ -62,9 +62,6 @@ status_t cvt_mem_desc_to_layout_desc(
         ld.strides[ld.ndims] = stride;
         ++ld.ndims;
     };
-
-    dims_t blocks;
-    md.compute_blocks(blocks);
 
     for (int d = 0; d < md.ndims(); ++d) {
         const int ld_ndims_start = ld.ndims;
@@ -96,8 +93,19 @@ status_t prb_init(prb_t &p, const memory_desc_t &imd, const memory_desc_t &omd,
     auto im_d = memory_desc_wrapper(imd);
     auto om_d = memory_desc_wrapper(omd);
 
-    bool ok = true && im_d.is_blocking_desc() && om_d.is_blocking_desc()
-            && !im_d.has_zero_dim() && !om_d.has_zero_dim();
+    auto check_post_ops = [](const primitive_attr_t *attr) {
+        const auto &po = attr->post_ops_;
+        return po.len_ == 0
+                || (po.len_ == 1 && po.contain(primitive_kind::sum, 0));
+    };
+
+    bool ok = im_d.is_blocking_desc() && om_d.is_blocking_desc()
+            && !im_d.has_runtime_dims_or_strides() && !im_d.has_zero_dim()
+            && !om_d.has_runtime_dims_or_strides() && !om_d.has_zero_dim()
+            && attr->has_default_values(
+                    primitive_attr_t::skip_mask_t::oscale_runtime
+                    | primitive_attr_t::skip_mask_t::post_ops)
+            && check_post_ops(attr);
     if (!ok) return unimplemented;
 
     dims_t iblocks, oblocks;
@@ -113,9 +121,9 @@ status_t prb_init(prb_t &p, const memory_desc_t &imd, const memory_desc_t &omd,
     }
 
     layout_desc_t ild, old;
-    status_t status = cvt_mem_desc_to_layout_desc(imd, ild);
+    status_t status = cvt_mem_desc_to_layout_desc(imd, ild, iblocks);
     if (status != success) return status;
-    status = cvt_mem_desc_to_layout_desc(omd, old);
+    status = cvt_mem_desc_to_layout_desc(omd, old, oblocks);
     if (status != success) return status;
 
     p.itype = ild.dt;
@@ -183,9 +191,8 @@ status_t prb_init(prb_t &p, const memory_desc_t &imd, const memory_desc_t &omd,
     }
     p.ndims = ndims;
 
-    dims_t zero_pos = {0};
-    p.ioff = memory_desc_wrapper(imd).off_v(zero_pos);
-    p.ooff = memory_desc_wrapper(omd).off_v(zero_pos);
+    p.ioff = memory_desc_wrapper(imd).offset0();
+    p.ooff = memory_desc_wrapper(omd).offset0();
 
     const int sum_idx = attr->post_ops_.find(primitive_kind::sum);
     p.beta = sum_idx == -1 ? 0.f : attr->post_ops_.entry_[sum_idx].sum.scale;

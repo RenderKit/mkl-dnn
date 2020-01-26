@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_JIT_TRANSPOSE_SRC_HPP
-#define CPU_JIT_TRANSPOSE_SRC_HPP
+#ifndef CPU_JIT_TRANSPOSE_SRC_UTILS_HPP
+#define CPU_JIT_TRANSPOSE_SRC_UTILS_HPP
 
 #include "cpu_barrier.hpp"
 #include "jit_primitive_conf.hpp"

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2018 Intel Corporation
+* Copyright 2016-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,23 +17,28 @@
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include <memory>
+#include <string>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #define DNNL_X86_64
 #endif
 
 #define MSAN_ENABLED 0
+#define ATTR_NO_MSAN
 #if defined(__has_feature)
 #if __has_feature(memory_sanitizer)
 #undef MSAN_ENABLED
 #define MSAN_ENABLED 1
+#undef ATTR_NO_MSAN
+#define ATTR_NO_MSAN __attribute__((no_sanitize("memory")))
 #include <sanitizer/msan_interface.h>
 #endif
 #endif
@@ -236,23 +241,29 @@ inline R array_product(const T *arr, size_t size) {
     return prod;
 }
 
-/** sorts an array of values using @p comparator. While sorting the array
- * of value, the function permutes an array of @p keys accordingly.
- *
- * @note The arrays of @p keys can be omitted. In this case the function
- *       sorts the array of @vals only.
+/* Sorts an array of @p vals using @p comparator. Uses @p vals_2nd_level as a
+ * second level comparing criteria in case comparator returns 0 (equal values)
+ * for @p vals elements.
+ * While sorting the array of @p vals, the function permutes an array of
+ * @p vals_2nd_level and @p keys accordingly.
  */
 template <typename T, typename U, typename F>
-inline void simultaneous_sort(T *vals, U *keys, size_t size, F comparator) {
+inline void simultaneous_sort(
+        T *vals, T *vals_2nd_level, U *keys, size_t size, F comparator) {
     if (size == 0) return;
 
     for (size_t i = 0; i < size - 1; ++i) {
         bool swapped = false;
 
         for (size_t j = 0; j < size - i - 1; j++) {
-            if (comparator(vals[j], vals[j + 1]) > 0) {
+            auto res = comparator(vals[j], vals[j + 1]);
+            if (res == 0)
+                res = comparator(vals_2nd_level[j], vals_2nd_level[j + 1]);
+
+            if (res > 0) {
                 nstl::swap(vals[j], vals[j + 1]);
-                if (keys) nstl::swap(keys[j], keys[j + 1]);
+                nstl::swap(vals_2nd_level[j], vals_2nd_level[j + 1]);
+                nstl::swap(keys[j], keys[j + 1]);
                 swapped = true;
             }
         }
@@ -293,7 +304,8 @@ T *align_ptr(T *ptr, uintptr_t alignment) {
 }
 
 template <typename T, typename U, typename V>
-inline U this_block_size(const T offset, const U max, const V block_size) {
+inline typename remove_reference<U>::type this_block_size(
+        const T offset, const U max, const V block_size) {
     assert(offset < max);
     // TODO (Roma): can't use nstl::max() due to circular dependency... we
     // need to fix this
@@ -419,6 +431,34 @@ inline derived_type downcast(base_type *base) {
     return static_cast<derived_type>(base);
 }
 
+template <typename T,
+        typename std::enable_if<!std::is_same<typename std::decay<T>::type,
+                std::string>::value>::type * = nullptr>
+auto format_cvt_impl(T &&t) -> decltype(std::forward<T>(t)) {
+    return std::forward<T>(t);
+}
+
+template <typename T,
+        typename std::enable_if<std::is_same<typename std::decay<T>::type,
+                std::string>::value>::type * = nullptr>
+const char *format_cvt_impl(T &&t) {
+    return std::forward<T>(t).c_str();
+}
+
+template <typename... Args>
+std::string format_impl(const char *fmt, Args... args) {
+    size_t sz = snprintf(nullptr, 0, fmt, args...);
+    std::string buf(sz + 1, '\0');
+    snprintf(&buf[0], sz + 1, fmt, args...);
+    buf.resize(sz);
+    return buf;
+}
+
+template <typename... Args>
+std::string format(const char *fmt, Args &&... args) {
+    return format_impl(fmt, format_cvt_impl(std::forward<Args>(args))...);
+}
+
 } // namespace utils
 
 int32_t fetch_and_add(int32_t *dst, int32_t val);
@@ -450,7 +490,9 @@ inline void yield_thread() {}
 int getenv(const char *name, char *buffer, int buffer_size);
 // Reads an integer from the environment
 int getenv_int(const char *name, int default_value = 0);
-bool jit_dump_enabled();
+bool get_jit_dump();
+unsigned get_jit_profiling_flags();
+std::string get_jit_profiling_jitdumpdir();
 FILE *fopen(const char *filename, const char *mode);
 
 constexpr int msan_enabled = MSAN_ENABLED;
@@ -459,6 +501,25 @@ inline void msan_unpoison(void *ptr, size_t size) {
     __msan_unpoison(ptr, size);
 #endif
 }
+
+// std::optional? std::maybe? std::whatever
+template <typename T>
+struct setting_t {
+private:
+    T value_;
+    bool initialized_;
+
+public:
+    setting_t() : initialized_ {false} {}
+    setting_t(const T init) : value_ {init}, initialized_ {false} {}
+    bool initialized() { return initialized_; }
+    T get() { return value_; }
+    void set(T new_value) {
+        value_ = new_value;
+        initialized_ = true;
+    }
+    DNNL_DISALLOW_COPY_AND_ASSIGN(setting_t);
+};
 
 } // namespace impl
 } // namespace dnnl

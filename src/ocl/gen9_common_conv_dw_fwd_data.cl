@@ -1,17 +1,17 @@
 /*******************************************************************************
-* copyright 2019 intel corporation
+* Copyright 2019 Intel Corporation
 *
-* licensed under the apache license, version 2.0 (the "license");
-* you may not use this file except in compliance with the license.
-* you may obtain a copy of the license at
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
 *
-*     http://www.apache.org/licenses/license-2.0
+*     http://www.apache.org/licenses/LICENSE-2.0
 *
-* unless required by applicable law or agreed to in writing, software
-* distributed under the license is distributed on an "as is" basis,
-* without warranties or conditions of any kind, either express or implied.
-* see the license for the specific language governing permissions and
-* limitations under the license.
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
 *******************************************************************************/
 
 #if WITH_ELTWISE == 1
@@ -34,10 +34,9 @@ __attribute__((reqd_work_group_size(LWS_0, LWS_1, LWS_2))) // attr:no-format
 __attribute__((intel_reqd_sub_group_size(SUB_GROUP_SIZE))) // attr:no-format
 #endif
 __kernel void
-gen9_common_conv_dw_fwd_kernel(const __global DATA_T *src,
-        const __global DATA_T *wei, const __global DATA_T *bias,
-        __global DATA_T *dst, float eltwise_alpha, float eltwise_beta,
-        float sum_scale) {
+gen9_common_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
+        const __global DATA_T *bias, __global DATA_T *dst, float eltwise_alpha,
+        float eltwise_beta, float sum_scale) {
 
 #ifdef VER_8OW16C
     const int osp = get_global_id(1);

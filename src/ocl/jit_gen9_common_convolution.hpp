@@ -26,13 +26,6 @@
 #include "ocl/ocl_stream.hpp"
 #include "ocl/ocl_utils.hpp"
 
-extern const char *gen9_common_conv_fwd_data_f32_kernel;
-extern const char *gen9_common_conv_bwd_data_kernel;
-extern const char *gen9_common_conv_bwd_wht_f32_kernel;
-extern const char *gen9_common_conv_fwd_data_f16_kernel;
-
-extern const char *gen9_common_conv_dw_fwd_data_kernel;
-
 namespace dnnl {
 namespace impl {
 namespace ocl {
@@ -57,6 +50,8 @@ struct jit_gen9_common_convolution_fwd_t : public primitive_impl_t {
 
             auto src_data_t = this->desc()->src_desc.data_type;
 
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::post_ops;
+
             bool ok = set_default_alg_kind(alg_kind::convolution_direct)
                     && utils::one_of(this->desc()->prop_kind, forward_training,
                             forward_inference)
@@ -73,12 +68,13 @@ struct jit_gen9_common_convolution_fwd_t : public primitive_impl_t {
                                     && compute_engine->mayiuse(
                                             compute::device_ext_t::
                                                     intel_subgroups_short))
-                    && !has_zero_dim_memory();
+                    && !has_zero_dim_memory()
+                    && attr()->has_default_values(attr_skip_mask)
+                    && post_ops_ok(attr());
             if (!ok) return status::unimplemented;
 
-            status_t status = jit_gen9_common_conv_fwd_kernel::init_conf(jcp_,
-                    *this->desc(), *this->src_md(), *this->weights_md(),
-                    *this->dst_md(), *this->weights_md(1), *this->attr());
+            status_t status
+                    = jit_gen9_common_conv_fwd_kernel::init_conf(jcp_, this);
             if (status != status::success) return status;
 
             ok = set_default_formats_common(
@@ -91,11 +87,11 @@ struct jit_gen9_common_convolution_fwd_t : public primitive_impl_t {
     status_t init() override {
         const char *kernel_name = nullptr;
         if (pd()->jcp_.is_depthwise)
-            kernel_name = "gen9_common_conv_dw_fwd_kernel";
+            kernel_name = "gen9_common_conv_dw_fwd";
         else if (pd()->desc()->src_desc.data_type == data_type::f16)
-            kernel_name = "gen9_common_conv_fwd_f16_kernel";
+            kernel_name = "gen9_common_conv_fwd_f16";
         else if (pd()->desc()->src_desc.data_type == data_type::f32)
-            kernel_name = "gen9_common_conv_fwd_f32_kernel";
+            kernel_name = "gen9_common_conv_fwd_f32";
         else
             assert(!"not expected");
 
@@ -166,13 +162,11 @@ struct jit_gen9_common_convolution_bwd_data_t : public primitive_impl_t {
                                     this->desc()->bias_desc.data_type == f16))
                     && compute_engine->mayiuse(
                             compute::device_ext_t::intel_subgroups)
-                    && !has_zero_dim_memory();
+                    && !has_zero_dim_memory() && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
             status_t status = jit_gen9_common_conv_bwd_data_kernel::init_conf(
-                    jcp_, *this->desc(), *this->diff_src_md(),
-                    *this->weights_md(), *this->diff_dst_md(),
-                    *this->weights_md(1), *this->attr());
+                    jcp_, this);
             if (status != status::success) return status;
 
             ok = set_default_formats_common(
@@ -183,6 +177,12 @@ struct jit_gen9_common_convolution_bwd_data_t : public primitive_impl_t {
     };
 
     status_t init() override {
+        const char *kernel_name = nullptr;
+        if (pd()->jcp_.is_depthwise)
+            kernel_name = "gen9_common_conv_dw_bwd_data";
+        else
+            kernel_name = "gen9_common_conv_bwd_data";
+
         auto *compute_engine
                 = utils::downcast<compute::compute_engine_t *>(engine());
 
@@ -191,8 +191,7 @@ struct jit_gen9_common_convolution_bwd_data_t : public primitive_impl_t {
                 kernel_ctx, pd()->jcp_);
         if (status != status::success) return status;
 
-        compute_engine->create_kernel(
-                &kernel_, "gen9_common_conv_bwd_data_kernel", kernel_ctx);
+        compute_engine->create_kernel(&kernel_, kernel_name, kernel_ctx);
         if (!kernel_) return status::runtime_error;
 
         return status::success;
@@ -240,19 +239,22 @@ struct jit_gen9_common_convolution_bwd_weights_t : public primitive_impl_t {
                     && expect_data_types(f32, f32, f32, f32, f32)
                     && compute_engine->mayiuse(
                             compute::device_ext_t::intel_subgroups)
-                    && !has_zero_dim_memory();
+                    && !has_zero_dim_memory() && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
             status_t status
-                    = jit_gen9_common_conv_bwd_weights_kernel::init_conf(jcp_,
-                            *this->desc(), *this->src_md(),
-                            *this->diff_weights_md(), *this->diff_weights_md(1),
-                            *this->diff_dst_md(), *this->attr());
+                    = jit_gen9_common_conv_bwd_weights_kernel::init_conf(
+                            jcp_, this);
 
             if (status != status::success) return status;
 
             ok = set_default_formats_common(
                     jcp_.src_tag, jcp_.wei_tag, jcp_.dst_tag);
+
+            auto scratchpad = scratchpad_registry().registrar();
+            jit_gen9_common_conv_bwd_weights_kernel::init_scratchpad(
+                    scratchpad, jcp_);
+
             return ok ? status::success : status::unimplemented;
         }
         jit_conv_conf_t jcp_;
@@ -269,14 +271,14 @@ struct jit_gen9_common_convolution_bwd_weights_t : public primitive_impl_t {
 
         std::vector<const char *> kernel_names(3);
 
-        kernel_names[0] = "gen9_common_conv_bwd_weights_kernel";
+        kernel_names[0] = "gen9_common_conv_bwd_weights";
 
         if (pd()->jcp_.ver == ver_16mb16c || pd()->jcp_.ver == ver_8ow16c
                 || pd()->jcp_.ver == ver_1stconv) {
-            kernel_names[1] = "gen9_reduce_bwd_weights_kernel";
+            kernel_names[1] = "gen9_reduce_bwd_weights";
         }
         if (pd()->jcp_.ver == ver_8ow16c) {
-            kernel_names[2] = "gen9_load_tails_bwd_weights_kernel";
+            kernel_names[2] = "gen9_load_tails_bwd_weights";
         }
 
         std::vector<compute::kernel_t> kernels;
@@ -287,33 +289,6 @@ struct jit_gen9_common_convolution_bwd_weights_t : public primitive_impl_t {
         kernel_ = kernels[0];
         reduce_kernel_ = kernels[1];
         load_tails_ = kernels[2];
-
-        if (pd()->jcp_.ver == ver_16mb16c || pd()->jcp_.ver == ver_8ow16c
-                || pd()->jcp_.ver == ver_1stconv) {
-            size_t size = pd()->jcp_.ngroups * pd()->jcp_.nchunk * pd()->jcp_.oc
-                    * pd()->jcp_.ic * pd()->jcp_.kh * pd()->jcp_.kw
-                    * pd()->jcp_.kd * sizeof(float);
-            memory_storage_t *wht_work_ptr;
-            engine()->create_memory_storage(&wht_work_ptr, size);
-            wht_work.reset(wht_work_ptr);
-            if (!wht_work) return status::runtime_error;
-
-            size = pd()->jcp_.ngroups * pd()->jcp_.nchunk * pd()->jcp_.oc
-                    * sizeof(float);
-            memory_storage_t *bias_work_ptr;
-            engine()->create_memory_storage(&bias_work_ptr, size);
-            bias_work.reset(bias_work_ptr);
-            if (!bias_work) return status::runtime_error;
-        }
-        if (pd()->jcp_.ver == ver_8ow16c) {
-            size_t size = 2 * 16
-                    * (2 * pd()->jcp_.l_pad + pd()->jcp_.iw + pd()->jcp_.kw + 8)
-                    * sizeof(float);
-            memory_storage_t *tails_ptr;
-            engine()->create_memory_storage(&tails_ptr, size);
-            tails.reset(tails_ptr);
-            if (!tails) return status::runtime_error;
-        }
 
         return status::success;
     }
@@ -336,9 +311,6 @@ private:
     compute::kernel_t kernel_;
     compute::kernel_t reduce_kernel_;
     compute::kernel_t load_tails_;
-    std::unique_ptr<memory_storage_t> wht_work;
-    std::unique_ptr<memory_storage_t> bias_work;
-    std::unique_ptr<memory_storage_t> tails;
 };
 
 } // namespace ocl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -109,6 +109,8 @@ void benchdnn_timer_t::start() {
 }
 
 void benchdnn_timer_t::stop(int add_times) {
+    if (add_times == 0) return;
+
     long long d_ticks = ticks_now() - ticks_start_; /* FIXME: overflow? */
     double d_ms = ms_now() - ms_start_;
 
@@ -291,6 +293,11 @@ void *zmalloc(size_t size, size_t align) {
     ptr = _aligned_malloc(size, align);
     int rc = ((ptr) ? 0 : errno);
 #else
+    // posix_memalign requires alignment to be
+    // a power of 2 and a multiple of sizeof(void *)
+    if (align < sizeof(void *)) align = sizeof(void *);
+    assert(((align & (align - 1)) == 0) && "align must be a power of 2");
+
     // TODO. Heuristics: Increasing the size to alignment increases
     // the stability of performance results.
     if ((bench_mode & PERF) && (size < align)) size = align;

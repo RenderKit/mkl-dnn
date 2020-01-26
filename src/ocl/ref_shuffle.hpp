@@ -24,8 +24,6 @@
 #include "ocl/ocl_shuffle_pd.hpp"
 #include "ocl/ocl_stream.hpp"
 
-extern const char *ref_shuffle_kernel;
-
 namespace dnnl {
 namespace impl {
 namespace ocl {
@@ -45,6 +43,7 @@ struct ref_shuffle_t : public primitive_impl_t {
                     && utils::one_of(
                             (int)types::data_type_size(data_md()->data_type), 1,
                             2, 4)
+                    && attr()->has_default_values()
                     && IMPLICATION(
                             desc()->data_desc.data_type == data_type::f16,
                             compute_engine->mayiuse(
@@ -53,8 +52,7 @@ struct ref_shuffle_t : public primitive_impl_t {
             if (!ok) return status::unimplemented;
 
             dat_tag_ = any;
-            return jit_ref_shuffle_kernel::init_conf(this, jshfl_, jit_off_,
-                    src_md(), dst_md(), diff_src_md(), diff_dst_md());
+            return jit_ref_shuffle_kernel::init_conf(jshfl_, this, jit_off_);
         }
 
         jit_shuffle_conf_t jshfl_;

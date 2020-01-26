@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018 Intel Corporation
+* Copyright 2018-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -56,12 +56,15 @@ bool rnn_utils::is_ldgoi(const memory_desc_wrapper &md) {
             && str[0] == str[1] * dims[1];
 };
 
-void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
+bool rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
         const memory_desc_wrapper &src_layer_d,
         const memory_desc_wrapper &src_iter_d,
+        const memory_desc_wrapper &src_iter_c_d,
         const memory_desc_wrapper &weights_layer_d,
         const memory_desc_wrapper &weights_iter_d,
-        const memory_desc_wrapper &dst_layer_d) {
+        const memory_desc_wrapper &dst_layer_d,
+        const memory_desc_wrapper &dst_iter_d,
+        const memory_desc_wrapper &dst_iter_c_d) {
     rnn.is_fwd = utils::one_of(rd.prop_kind, prop_kind::forward_training,
             prop_kind::forward_inference);
     rnn.is_training = utils::one_of(
@@ -80,9 +83,10 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
                 weights_layer_d.data_type()))
         rnn.dt_conf = all_f32;
     else if (everyone_is(bf16, src_layer_d.data_type(), dst_layer_d.data_type(),
-                     weights_layer_d.data_type()))
+                     weights_layer_d.data_type())) {
+        if (!mayiuse(avx512_core)) return false;
         rnn.dt_conf = all_bf16;
-    else if (dst_layer_d.data_type() == u8) {
+    } else if (dst_layer_d.data_type() == u8) {
         if (IMPLICATION(src_iter_d.md_, src_iter_d.data_type() == u8))
             rnn.dt_conf = u8u8u8u8;
         else
@@ -94,6 +98,7 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
             rnn.dt_conf = f32u8f32f32;
     }
 
+    // Set problem members defining problem sizes
     rnn.n_layer = weights_layer_d.dims()[0];
     rnn.n_iter = src_layer_d.dims()[0];
     rnn.n_dir = weights_layer_d.dims()[1];
@@ -106,9 +111,31 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
     rnn.dic = weights_layer_d.dims()[4];
     rnn.dlc = dst_layer_d.dims()[2];
 
+    // set workspace (not)leading dimensions
     rnn.gates_ld = rnn.dic * rnn.n_gates;
     rnn.gates_nld = rnn.mb;
     rnn.states_nld = rnn.mb;
+
+    // set members with user memories leading dimensions
+    // Assumption: weights datatype size is the same as state datatype size
+    int sizeof_states_dt = types::data_type_size(weights_layer_d.data_type());
+    rnn.states_ws_ld = get_good_ld(
+            nstl::max(rnn.slc, nstl::max(rnn.sic, rnn.dic)), sizeof_states_dt);
+    // Assumption: {src,dst}_layer has tnc layout, {src,dst}_iter has ldnc,
+    rnn.src_layer_ld_ = src_layer_d.blocking_desc().strides[1];
+    rnn.dst_layer_ld_ = dst_layer_d.blocking_desc().strides[1];
+    rnn.src_iter_ld_ = types::is_zero_md(src_iter_d.md_)
+            ? 0
+            : src_iter_d.blocking_desc().strides[2];
+    rnn.dst_iter_ld_ = types::is_zero_md(dst_iter_d.md_)
+            ? 0
+            : dst_iter_d.blocking_desc().strides[2];
+    rnn.src_iter_c_ld_ = types::is_zero_md(src_iter_c_d.md_)
+            ? 0
+            : src_iter_c_d.blocking_desc().strides[2];
+    rnn.dst_iter_c_ld_ = types::is_zero_md(dst_iter_c_d.md_)
+            ? 0
+            : dst_iter_c_d.blocking_desc().strides[2];
 
     /* Set the correct number of weights parts */
     bool is_orig_gru = rd.cell_kind == alg_kind::vanilla_gru;
@@ -126,14 +153,24 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
 
     /* Decide wich gemm implementation to use: packed/nonpacked jit/cblas
      * and if to mergre gemm across iterations */
-    bool is_f32 = rnn.dt_conf == all_f32;
+    bool is_f32 = rnn.dt_conf == all_f32, is_bf16 = rnn.dt_conf == all_bf16;
     bool is_gru = utils::one_of(
             rd.cell_kind, alg_kind::vanilla_gru, alg_kind::lbr_gru);
     bool is_inference = !rnn.is_training;
 
-    rnn.merge_gemm_layer
-            = ((rnn.is_fwd && rnn.mb < 128) || !rnn.is_fwd) || rnn.is_int8();
-    rnn.merge_gemm_iter = !(rnn.is_fwd || is_gru);
+    // To be able to merge the GEMM on the layer input when not
+    // copying, we need to have a trivial stride for the T dimension
+    auto src_layer_is_trivial_stride = src_layer_d.blocking_desc().strides[0]
+            == (rnn.src_layer_ld_ * rnn.mb);
+    auto dst_layer_is_trivial_stride = dst_layer_d.blocking_desc().strides[0]
+            == (rnn.dst_layer_ld_ * rnn.mb);
+
+    rnn.merge_gemm_layer = ((rnn.is_fwd && src_layer_is_trivial_stride)
+                                   || ((rd.prop_kind == prop_kind::backward)
+                                           && dst_layer_is_trivial_stride))
+            && (((rnn.is_fwd && rnn.mb < 128) || !rnn.is_fwd) || rnn.is_int8());
+    rnn.merge_gemm_iter
+            = dst_layer_is_trivial_stride && !(rnn.is_fwd || is_gru);
     rnn.force_nocopy = !mayiuse(avx512_mic) && mayiuse(avx)
             && ((is_inference && (rnn.n_layer > 1 || rnn.mb < 100))
                     || (rnn.is_training && rnn.dic < 500));
@@ -142,29 +179,24 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
     rnn.copy_bias = rnn.is_int8();
 
     rnn.use_layer_packed_gemm
-            = (is_f32 && pack_sgemm_supported()
-                      && (utils::one_of(weights_layer_d.format_kind(),
-                                  format_kind::any, format_kind::rnn_packed)
-                              && is_inference && rnn.n_iter == 1))
-            || rnn.is_int8();
+            = utils::one_of(weights_layer_d.format_kind(), format_kind::any,
+                      format_kind::rnn_packed)
+            && is_inference
+            && ((is_f32 && pack_sgemm_supported() && rnn.n_iter == 1)
+                    || rnn.is_int8() || is_bf16);
     rnn.use_iter_packed_gemm
-            = (is_f32 && pack_sgemm_supported()
-                      && (utils::one_of(weights_iter_d.format_kind(),
-                                  format_kind::any, format_kind::rnn_packed)
-                              && is_inference && rnn.mb >= 16))
-            || rnn.is_int8();
-
-    // Assumption: weights datatype size is the same as state datatype size
-    int sizeof_states_dt = types::data_type_size(weights_layer_d.data_type());
-    rnn.states_ws_ld = get_good_ld(
-            nstl::max(rnn.slc, nstl::max(rnn.sic, rnn.dic)), sizeof_states_dt);
+            = utils::one_of(weights_iter_d.format_kind(), format_kind::any,
+                      format_kind::rnn_packed)
+            && is_inference
+            && ((is_f32 && pack_sgemm_supported() && rnn.mb >= 16)
+                    || rnn.is_int8() || is_bf16);
 
     /* Set packed gemm sizes */
     /* TODO: investigate the benefit of mixing packed and non-packed weights parts */
-    auto set_pack_sizes = [&](bool merge, bool &do_pack,
-                                  size_t &weights_pack_size, int &n_parts,
-                                  int *parts, size_t *parts_pack_size,
-                                  size_t &comp_offset, int feature_size) {
+    auto set_pack_sizes
+            = [&](bool merge, bool &do_pack, size_t &weights_pack_size,
+                      int &n_parts, int *parts, size_t *parts_pack_size,
+                      size_t &comp_offset, int feature_size) -> bool {
         bool pack = true;
         weights_pack_size = 0;
         for (int p = 0; p < n_parts; p++) {
@@ -173,21 +205,30 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
             int n_p = merge ? rnn.mb * rnn.n_iter : rnn.mb;
             bool pack_part = true;
 
+            dnnl_status_t st = dnnl_success;
             switch (rnn.dt_conf) {
                 case all_f32:
-                    sgemm_pack_get_size("A", "N", "N", &m_p, &n_p, &k_p, &m_p,
-                            &rnn.states_ws_ld, &parts_pack_size[p], &pack_part);
+                    st = sgemm_pack_get_size("A", "N", "N", &m_p, &n_p, &k_p,
+                            &m_p, &rnn.states_ws_ld, &parts_pack_size[p],
+                            &pack_part);
                     break;
                 case u8u8u8f32:
                 case f32u8f32f32:
                 case u8u8u8u8:
                 case f32u8f32u8:
-                    gemm_s8u8s32_pack_get_size("A", "N", "N", &m_p, &n_p, &k_p,
-                            &m_p, &rnn.states_ws_ld, &parts_pack_size[p],
+                    st = gemm_s8u8s32_pack_get_size("A", "N", "N", &m_p, &n_p,
+                            &k_p, &m_p, &rnn.states_ws_ld, &parts_pack_size[p],
                             &pack_part);
+                    break;
+                case all_bf16:
+                    st = gemm_bf16bf16f32_pack_get_size("A", "N", "N", &m_p,
+                            &n_p, &k_p, &m_p, &rnn.states_ws_ld,
+                            &parts_pack_size[p], &pack_part);
                     break;
                 default: assert(!"Unsupported configuration");
             }
+            if (st != dnnl_success) return false;
+
             pack = pack && pack_part;
             weights_pack_size += rnn.n_layer * rnn.n_dir * parts_pack_size[p];
         }
@@ -198,17 +239,28 @@ void rnn_utils::init_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,
         const bool need_compensation = rnn.is_int8();
         weights_pack_size += (need_compensation ? rnn.n_layer * rnn.n_dir : 0)
                 * rnn.n_gates * rnn.dlc * sizeof(float);
+
+        return true;
     };
-    if (rnn.use_layer_packed_gemm)
-        set_pack_sizes(rnn.merge_gemm_layer, rnn.use_layer_packed_gemm,
-                rnn.weights_layer_pack_size, rnn.n_parts_weights_layer,
-                rnn.parts_weights_layer, rnn.part_weights_layer_pack_size,
-                rnn.weights_layer_comp_offset, rnn.slc);
-    if (rnn.use_iter_packed_gemm)
-        set_pack_sizes(rnn.merge_gemm_iter, rnn.use_iter_packed_gemm,
+
+    if (rnn.use_layer_packed_gemm) {
+        bool ok = set_pack_sizes(rnn.merge_gemm_layer,
+                rnn.use_layer_packed_gemm, rnn.weights_layer_pack_size,
+                rnn.n_parts_weights_layer, rnn.parts_weights_layer,
+                rnn.part_weights_layer_pack_size, rnn.weights_layer_comp_offset,
+                rnn.slc);
+        if (!ok) return false;
+    }
+
+    if (rnn.use_iter_packed_gemm) {
+        bool ok = set_pack_sizes(rnn.merge_gemm_iter, rnn.use_iter_packed_gemm,
                 rnn.weights_iter_pack_size, rnn.n_parts_weights_iter,
                 rnn.parts_weights_iter, rnn.part_weights_iter_pack_size,
                 rnn.weights_iter_comp_offset, rnn.sic);
+        if (!ok) return false;
+    }
+
+    return true;
 }
 
 void rnn_utils::set_conf(rnn_conf_t &rnn, const rnn_desc_t &rd,

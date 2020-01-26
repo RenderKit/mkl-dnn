@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2018 Intel Corporation
+* Copyright 2017-2019 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ constexpr int simd_w = 16;
 struct _jit_avx512_common_conv_winograd_data_kernel_f32 : public jit_generator {
     _jit_avx512_common_conv_winograd_data_kernel_f32(
             jit_conv_winograd_conf_t ajcp)
-        : jcp(ajcp) {
+        : jit_generator(nullptr, MAX_CODE_SIZE, false), jcp(ajcp) {
         //******************* First iter kernel ********************//
         this->gemm_loop_generate(true);
         gemm_loop_ker_first_iter
@@ -112,7 +112,7 @@ struct jit_avx512_common_conv_winograd_bwd_weights_kernel_f32
 
     jit_avx512_common_conv_winograd_bwd_weights_kernel_f32(
             jit_conv_winograd_conf_t ajcp)
-        : jcp(ajcp) {
+        : jit_generator(nullptr, MAX_CODE_SIZE, false), jcp(ajcp) {
 
         //******************* First iter kernel ********************//
         {
