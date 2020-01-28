@@ -43,7 +43,7 @@ DECLARE_IMPL_LIST(convolution);
 //DECLARE_IMPL_LIST(logsoftmax);
 //DECLARE_IMPL_LIST(matmul);
 DECLARE_IMPL_LIST(pooling);
-//DECLARE_IMPL_LIST(resampling);
+DECLARE_IMPL_LIST(resampling);
 //DECLARE_IMPL_LIST(rnn);
 //DECLARE_IMPL_LIST(shuffle);
 //DECLARE_IMPL_LIST(softmax);
@@ -88,7 +88,7 @@ public:
             //CASE(logsoftmax);
             //CASE(matmul);
             CASE(pooling);
-            //CASE(resampling);
+            CASE(resampling);
             //CASE(rnn);
             //CASE(shuffle);
             //CASE(softmax);

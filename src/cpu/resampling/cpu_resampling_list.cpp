@@ -16,7 +16,7 @@
 
 #include "cpu_engine.hpp"
 
-#include "cpu/resampling/ref_resampling.hpp"
+//#include "cpu/resampling/ref_resampling.hpp"
 #include "cpu/resampling/simple_resampling.hpp"
 
 namespace dnnl {
@@ -31,11 +31,13 @@ using namespace dnnl::impl::data_type;
 #define INSTANCE(...) &primitive_desc_t::create<__VA_ARGS__::pd_t>
 static const pd_create_f impl_list[] = {
         INSTANCE(simple_resampling_fwd_t<f32>),
+        /*
         INSTANCE(simple_resampling_bwd_t<f32>),
         INSTANCE(ref_resampling_fwd_t<f32>),
         INSTANCE(ref_resampling_fwd_t<bf16>),
         INSTANCE(ref_resampling_bwd_t<f32>),
         INSTANCE(ref_resampling_bwd_t<bf16>),
+        */
         /* eol */
         nullptr,
 };
