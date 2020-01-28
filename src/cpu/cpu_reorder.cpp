@@ -166,7 +166,6 @@ static const impl_list_map_t regular_impl_list_map {
 
         jit_uni_reorder_create,
 
-        /*
         REG_SR_BIDIR(f32, any, f32, nChw16c),
         REG_SR_BIDIR(f32, any, f32, nChw8c),
         REG_SR_BIDIR(f32, any, f32, nChw4c),
@@ -199,7 +198,6 @@ static const impl_list_map_t regular_impl_list_map {
         REG_SR_BIDIR(f32, any, f32, IOhw16o16i),
 
         REG_SR_BIDIR(f32, any, f32, OIhw4i16o4i),
-        */
 
         REG_SR(f32, any, f32, any, fmt_order::any, spec::reference),
 
