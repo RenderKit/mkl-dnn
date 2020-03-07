@@ -520,6 +520,7 @@ void gemm_kernel(const dim_t m, const dim_t n, const dim_t k, const float alpha,
      */
     arg->kernel[isBeta0][col_req][row_req](
             &m, &n, &k, &alpha, a, b, c, ldc, col_offset, row_offset);
+    msan_unpoison_matrix(c, m, n, ldc, sizeof(*c));
 
     // sgemm kernels don't support bias yet.
     if (data_traits<a_type>::data_type == data_type::f32) {
@@ -719,8 +720,6 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                                 bufferB, 0.0f, bufferC + Um, ldc_buf,
                                 a_row_sum_eff, b_col_sum, (c_type *)NULL,
                                 offset_type::none, arg);
-                        msan_unpoison_matrix(bufferC + Um, sizeUM, sizeN,
-                                ldc_buf, sizeof(c_type));
 
                         /* Finish the block adding the necessary alpha, beta
                          * and offsets.
@@ -732,8 +731,6 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                         gemm_kernel(sizeUM, sizeN, sizeK, alpha, bufferA_eff,
                                 bufferB, beta_eff, c_block, ldc, a_row_sum_eff,
                                 b_col_sum, co + co_stride, offsetc_eff, arg);
-                        msan_unpoison_matrix(
-                                c_block, sizeUM, sizeN, ldc, sizeof(c_type));
                     }
                 }
                 a_block_copied = 1;
@@ -904,6 +901,7 @@ static inline bool nocopy_checker_avx512(int nthr, const int transa,
     static const double FORCE_NOCOPY_THRESH = 0.00196;
 
     bool is_NT_case = transa == no_trans && transb == do_trans;
+    bool is_TN_case = transa == do_trans && transb == no_trans;
 
     bool is_lda_bad = lda % BAD_LD_MULT == 0;
     bool is_ldb_bad = ldb % BAD_LD_MULT == 0;
@@ -912,11 +910,16 @@ static inline bool nocopy_checker_avx512(int nthr, const int transa,
 
     bool is_lda_verybad = lda % VERYBAD_LD_MULT == 0;
 
-    // Crude threshold to nocopy kernels if copy overhead is significant.
-    if (1.0 / m + 1.0 / n >= FORCE_NOCOPY_THRESH
+    // Crude threshold to nocopy kernels if copy overhead is significant
+    // and nthr greater than 1.
+    if (nthr > 1 && 1.0 / m + 1.0 / n >= FORCE_NOCOPY_THRESH
             && !(is_lda_verybad && is_NT_case)) {
         return true;
     }
+
+    // Copy-based performs better for TN case with small N in sequential case.
+    if (nthr == 1 && is_TN_case && m > 100 && m < 1200 && n < 200 && k < 1200)
+        return false;
 
     // Copy strategy usually performs better than nocopy on "bad" leading
     // dimensions.

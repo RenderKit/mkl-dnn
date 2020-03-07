@@ -179,6 +179,7 @@ else()
 endif()
 
 # Install custom find modules for transitive dependencies
+set(LIB_CONFIG_INSTALL_DIR_COMPAT "${CMAKE_INSTALL_LIBDIR}/cmake/mkldnn")
 if(DNNL_CPU_RUNTIME STREQUAL "TBB")
     if(WIN32)
         install(FILES "../cmake/win/TBBConfig.cmake" RENAME "FindTBB.cmake"
@@ -190,12 +191,16 @@ if(DNNL_CPU_RUNTIME STREQUAL "TBB")
         install(FILES "../cmake/lnx/TBBConfig.cmake" RENAME "FindTBB.cmake"
             DESTINATION ${LIB_CONFIG_INSTALL_DIR})
     endif()
+    install(FILES "${CMAKE_INSTALL_PREFIX}/${LIB_CONFIG_INSTALL_DIR}/FindTBB.cmake"
+            DESTINATION ${LIB_CONFIG_INSTALL_DIR_COMPAT})
 endif()
 
 if(DNNL_GPU_RUNTIME STREQUAL "OCL")
     install(FILES
         "../cmake/FindOpenCL.cmake"
         DESTINATION ${LIB_CONFIG_INSTALL_DIR})
+    install(FILES "${CMAKE_INSTALL_PREFIX}/${LIB_CONFIG_INSTALL_DIR}/FindOpenCL.cmake"
+            DESTINATION ${LIB_CONFIG_INSTALL_DIR_COMPAT})
 endif()
 
 # On Windows we need to add dnnl.dll path to CTESTCONFIG_PATH which is later
