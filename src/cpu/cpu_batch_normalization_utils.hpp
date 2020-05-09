@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ namespace impl {
 namespace cpu {
 namespace bnorm_utils {
 
-void cache_balance(size_t working_set_size, dim_t C_blks,
+void cache_balance(size_t working_set_size, dim_t C_blks, dim_t N, int nthr,
         dim_t &C_blks_per_iter, int64_t &iters);
 
 bool thread_balance(bool do_blocking, bool spatial_thr_allowed, int ithr,

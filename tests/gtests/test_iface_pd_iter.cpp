@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ TEST_F(pd_iter_test, TestReLUImpls) {
 }
 
 TEST(pd_next_impl, TestEltwiseImpl) {
-    auto eng = engine(get_test_engine_kind(), 0);
+    auto eng = get_test_engine();
     memory::desc md(
             {8, 32, 4, 4}, memory::data_type::f32, memory::format_tag::nChw8c);
 

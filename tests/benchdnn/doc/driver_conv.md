@@ -22,13 +22,14 @@ where *conv-knobs* are:
             Winograd-based convolution. `AUTO` will pick one of `DIRECT` or
             `WINO` automatically, library-based decision.
  - `--attr="attr_str"` -- primitive attributes. The default is `""` (no
-            attributes). Refer to knobs_attr.md for details.
+            attributes). Refer to [attributes](knobs_attr.md) for details.
  - `--mb=INT` -- override minibatch size specified in the problem description.
              When set to `0`, use minibatch size as defined by the individual
              problem descriptor. The default is `0`.
- - `--match=regex` -- run only problems that match the regex. The default is
-            `".*"` (everything). Note: Windows may interpret only string
-            arguments surrounded by double quotation marks.
+ - `--match=REGEXP` -- run only problems that match the regular expression
+            `REGEXP`. By default there is no pattern applied. Note: Windows may
+            interpret only string arguments surrounded by double quotation
+            marks.
 
 and *conv-desc* is a problem descriptor. The canonical form is:
 ```
@@ -79,10 +80,10 @@ The table below shows supported name configurations for this driver:
 
 ## Essence of Testing
 
-DNNL supports different data types, such as single-precision floating
+oneDNN supports different data types, such as single-precision floating
 point (`dnnl_f32`) and signed/unsigned integer of different lengths
 (`dnnl_{s,u}{8,16,32}`). We need to cover all those cases with tests. It is
-essential to test real convolution sizes, because DNNL provides
+essential to test real convolution sizes, because oneDNN provides
 different optimizations depending on the convolution parameters. There is no
 single unified approach inside, so it would not be enough to test only a few
 convolutions (also known as unit tests).

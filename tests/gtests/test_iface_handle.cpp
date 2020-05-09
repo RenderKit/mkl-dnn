@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ public:
     engine e;
 
 protected:
-    virtual void SetUp() { e = engine(get_test_engine_kind(), 0); }
+    virtual void SetUp() { e = get_test_engine(); }
 };
 
 TEST_F(handle_test, TestHandleConstructorsAndOperators) {

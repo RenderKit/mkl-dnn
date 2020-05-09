@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -228,8 +228,8 @@ protected:
     void Test() {
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
 
-        eng = engine(get_test_engine_kind(), 0);
-        strm = stream(eng);
+        eng = get_test_engine();
+        strm = make_stream(eng);
 
         test_resampling_desc_t pd = p.test_pd;
 

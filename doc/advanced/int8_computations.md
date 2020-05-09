@@ -19,12 +19,12 @@ divides the result by the window size, and then stores the result back to the
 int8 destination:
 
 - \f$
-    dst_{s8}(...) =
+    \dst_{s8}(...) =
         (s8)
         \Biggl(
             \Biggl(
                 \sum\limits_{kh,kw}
-                (s32)src_{s8}(...)
+                (s32)\src_{s8}(...)
             \Biggr)
             \div
             (kh \cdot kw)
@@ -60,8 +60,8 @@ systems and the reasons behind them.
 @anchor dg_i8_comp_s11
 ### 1. Inputs of mixed type: u8 and s8
 
-The Intel(R) Instruction Set Architecture has special instructions that enable
-multiplying and adding the vectors of u8 and s8 very efficiently. DNNL
+Instruction Set Architecture (ISA) has special instructions that enable
+multiplying and adding the vectors of u8 and s8 very efficiently. oneDNN
 enables int8 support using these particular instructions.
 
 Unfortunately, these instructions do not have the counterparts that work with
@@ -69,13 +69,14 @@ vectors of the same type (either s8/s8 or u8/u8). The details for the s8/s8
 case are covered in the
 [2. Inputs of the same type: s8](@ref dg_i8_comp_s12) section below.
 
-#### 1.1. Processors with the Intel AVX512 Instruction Set
+#### 1.1. Processors with the Intel AVX2 or Intel AVX-512 Support
 
-*System examples: Intel Xeon Scalable processor x1xx series (formerly Skylake).*
+*System examples: Intel Xeon processor E7 v3 Family (formerly Haswell),
+Intel Xeon Scalable processor x1xx series (formerly Skylake).*
 
-DNNL implements matrix multiplication such as operations with u8 and s8
-operands on the Intel AVX512 Instruction Set by using a sequence of
-`VPMADDUBSW, VPMADDWD, VPADDD` instructions [[1]](@ref dg_i8_ref_sdm):
+oneDNN implements matrix multiplication such as operations with u8 and s8
+operands on the Intel AVX2 and Intel AVX512 Instruction Set by using a sequence
+of `VPMADDUBSW, VPMADDWD, VPADDD` instructions [[1]](@ref dg_i8_ref_sdm):
 
 1. `VPMADDUBSW` multiplies two pairs of u8/s8 values and accumulates the
    result into s16 (`int16_t`) with potential saturation.
@@ -129,12 +130,12 @@ precise result is concerned, one of the possible instruction sequences would be
 where the first ones casts the s8/u8 values to s16. Unfortunately, using them
 would lead to 2x lower performance.
 
-When one input is of type u8 and the other one is of type s8, DNNL
+When one input is of type u8 and the other one is of type s8, oneDNN
 assumes that it is the user's responsibility to choose the quantization
 parameters so that no overflow/saturation occurs. For instance, a user can use
 u7 `[0, 127]` instead of u8 for the unsigned input, or s7 `[-64, 63]` instead
 of the s8 one. It is worth mentioning that this is required only when the Intel
-AVX512 Instruction Set is used.
+AVX2 or Intel AVX512 Instruction Set is used.
 
 The **LSTM** primitive behaves slightly differently than the convolution and
 inner product primitives, or u8/s8 GEMM. Even though its hidden state is
@@ -153,7 +154,7 @@ The recommended ones are:
    where `W_max` is \f$\max | W_{f32}(:)| {}_{} \f$.
 
 
-#### 1.2. Processors with the Intel(R) DL Boost Instruction Set
+#### 1.2. Processors with the Intel DL Boost Support
 
 *System examples: Intel Xeon Scalable processor x2xx series
 (formerly Cascade Lake).*
@@ -193,9 +194,9 @@ multiply and add two vectors of the s8 data type as efficiently as it is
 for the mixed case. However, in real-world applications the inputs are
 typically signed.
 
-To overcome this issue, DNNL employs a trick: at run-time, it adds 128
+To overcome this issue, oneDNN employs a trick: at run-time, it adds 128
 to one of the s8 input to make it of type u8 instead. Once the result is
-computed, DNNL subtracts the extra value it added by replacing the s8
+computed, oneDNN subtracts the extra value it added by replacing the s8
 with u8. This subtracted value sometimes referred as a **compensation**.
 
 Conceptually the formula is:
@@ -214,9 +215,9 @@ depending on the problem sizes, hardware, and environment, but is expected to be
 in a range from 0% to 15% in most cases.
 
 Since s8/s8 implementations are based on u8/s8 ones, they have the same
-potential issue with overflow/saturation when the Intel AVX512 Instruction Set
-is used. The difference between the expected and actual results might be much
-greater though in this case. Consider the following example:
+potential issue with overflow/saturation when the Intel AVX2 or Intel AVX512
+Instruction Set is used. The difference between the expected and actual results
+might be much greater though in this case. Consider the following example:
 
 ~~~cpp
     int8_t  a_s8[4] = {127, 127, 0, 0};
@@ -244,9 +245,9 @@ greater though in this case. Consider the following example:
     // While one might expect 32258 !!!
 ~~~
 
-Note that processors with no support of the Intel AVX512 Instruction Set or
-with support of the Intel DL Boost Instruction Set are not affected by
-these issues due to the reasons described in
+Note that processors with no support of the Intel AVX2 and Intel AVX512
+Instruction Set or with support of the Intel DL Boost Instruction Set are not
+affected by these issues due to the reasons described in
 [1. Inputs of mixed type: u8 and s8](@ref dg_i8_comp_s11) section above.
 
 Different primitives solve the potential overflow differently. The overview of
@@ -255,9 +256,9 @@ the implementations are given below:
 1. **Convolution** primitive. The source is treated as `X_s8`, which would be
   shifted during the execution. The compensation is precomputed by a reorder
   during quantization of the weights, and embedded into them. Finally, when the
-  Intel AVX512 Instruction Set is used the reorder additionally scales the
-  weights by 0.5 to overcome the potential overflow issue. During the
-  convolution execution, the result would be re-scaled back. This rescaling
+  Intel AVX2 or Intel AVX512 Instruction Set is used the reorder additionally
+  scales the weights by 0.5 to overcome the potential overflow issue. During
+  the convolution execution, the result would be re-scaled back. This rescaling
   introduces an error that might insignificantly affect the inference accuracy
   (compared to a platform with the Intel DL Boost Instruction Set).
 

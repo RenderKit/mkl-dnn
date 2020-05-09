@@ -1,29 +1,29 @@
 Naming Conventions {#dev_guide_conventions}
 ===========================================
 
-The DNNL documentation relies on a set of standard naming
+oneDNN documentation relies on a set of standard naming
 conventions for variables. This section describes these conventions.
 
 ## Variable (Tensor) Names
 
 Neural network models consist of operations of the following form:
-\f[ dst = f(src, weights), \f]
-where \f$dst\f$ and \f$src\f$ are activation tensors, and \f$weights\f$ are
+\f[ \dst = f(\src, \weights), \f]
+where \dst and \src are activation tensors, and \weights are
 learnable tensors.
 
 The backward propagation consists then in computing the gradients with respect
-to the \f$src\f$ and \f$weights\f$ respectively:
-\f[ diff\_src = df_{src}(diff\_dst, src, weights, dst), \f] and
-\f[ diff\_weights = df_{weights}(diff\_dst, src, weights, dst). \f]
+to the \src and \weights respectively:
+\f[ \diffsrc = df_{\src}(\diffdst, \src, \weights, \dst), \f] and
+\f[ \diffweights = df_{\weights}(\diffdst, \src, \weights, \dst). \f]
 
-While DNNL uses _src_, _dst_, and _weights_ as generic names for the
+While oneDNN uses _src_, _dst_, and _weights_ as generic names for the
 activations and learnable tensors, for a specific operation there might be
 commonly used and widely known specific names for these tensors.
 For instance, the [convolution](@ref dev_guide_convolution) operation has a
-learnable tensor called bias. For usability reasons, DNNL primitives
+learnable tensor called bias. For usability reasons, oneDNN primitives
 use such names in initialization or other functions to simplify the coding.
 
-To summarize, DNNL uses the following commonly used notations for
+To summarize, oneDNN uses the following commonly used notations for
 tensors:
 
 | Name                  | Meaning
@@ -46,22 +46,21 @@ tensors:
 
 ## Formulas and Verbose Output
 
-DNNL uses the following notations in the documentation formulas and
-verbose output.
+oneDNN uses the following notations in the documentation formulas and verbose
+output. Here, lower-case letters are used to denote indices in a particular
+spatial dimension, the sizes of which are denoted by corresponding upper-case
+letters.
 
 | Name                                     | Semantics
-| :--------------------------------------- | :-
-| n                                        | number of image in a batch
-| g                                        | number of a group
-| oc, od, oh, ow                           | number of output channels, depth, height, and width
-| ic, id, ih, iw                           | input channels, depth, height, and width
-| kd, kh, kw                               | kernel (filter) depth, height, and width
-| sd, sh, sw                               | stride by depth, height, and width
-| dd, dh, dw                               | kernel (filter) height, width and depth
-| pd, ph, pw                               | padding by depth, height, and width
-| \f$pd_0\f$, \f$ph_0\f$, \f$pw_0\f$       | padding by depth, height, and width on the lower index side
-| \f$pd_1\f$, \f$ph_1\f$, \f$pw_1\f$       | padding by depth, height, and width on the higher index side
-
+| :--------------------------------------- | :----------------------------------------
+| `n` (or `mb`)                            | batch
+| `g`                                      | groups
+| `oc`, `od`, `oh`, `ow`                   | output channels, depth, height, and width
+| `ic`, `id`, `ih`, `iw`                   | input channels, depth, height, and width
+| `kd`, `kh`, `kw`                         | kernel (filter) depth, height, and width
+| `sd`, `sh`, `sw`                         | stride by depth, height, and width
+| `dd`, `dh`, `dw`                         | dilation by depth, height, and width
+| `pd`, `ph`, `pw`                         | padding by depth, height, and width
 
 ## RNN-Specific Notation
 
@@ -92,7 +91,7 @@ The following notations are used when describing RNN primitives.
 
 ## Memory Formats Tags
 
-When describing tensor memory formats, which is the DNNL term for the
+When describing tensor memory formats, which is the oneDNN term for the
 way that the data is laid out in memory, documentation uses letters of the
 English alphabet to describe an order of dimensions and their semantics.
 
@@ -119,7 +118,7 @@ last block in the in-memory representation will contain padding zeroes.
 @todo Picture here
 
 Since there are many widely used names for specific deep learning domains like
-convolutional neural networks (CNNs), DNNL also supports memory
+convolutional neural networks (CNNs), oneDNN also supports memory
 format tags in which dimensions have specifically assigned meaning like 'image
 width', 'image height', etc. The following table summarizes notations used in
 such memory format tags.

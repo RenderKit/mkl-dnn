@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include "c_types_map.hpp"
 #include "dnnl_debug.h"
+#include "dnnl_thread.hpp"
 #include "memory_desc_wrapper.hpp"
 #include "nstl.hpp"
 #include "type_helpers.hpp"

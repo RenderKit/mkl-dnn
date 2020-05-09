@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2019 Intel Corporation
+# Copyright 2016-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,6 +37,10 @@ if(DOXYGEN_FOUND)
     file(COPY
         ${CMAKE_CURRENT_SOURCE_DIR}/doc/footer.html
         DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
+        )
+    file(COPY
+        ${CMAKE_CURRENT_SOURCE_DIR}/doc/dnnl.js
+        DESTINATION ${DOXYGEN_OUTPUT_DIR}/html/assets/mathjax/config/
         )
     file(GLOB_RECURSE HEADERS
         ${PROJECT_SOURCE_DIR}/include/*.h

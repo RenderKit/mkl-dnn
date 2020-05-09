@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define TEST_GEMM_COMMON_H
 
 #include "dnnl_test_common.hpp"
+#include "dnnl_thread.hpp"
 #include "gtest/gtest.h"
 
 #include "cpu_isa_traits.hpp"
@@ -119,66 +120,66 @@ namespace cpu {
 
 // Get pack-size functions.
 extern dnnl_status_t sgemm_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, size_t *size,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
         bool *pack = nullptr);
 
 extern dnnl_status_t gemm_bf16bf16f32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, size_t *size,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
         bool *pack = nullptr);
 
 extern dnnl_status_t gemm_s8u8s32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, size_t *size,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
         bool *pack = nullptr);
 
 extern dnnl_status_t gemm_s8s8s32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, size_t *size,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
         bool *pack = nullptr);
 
 // Pack functions.
 extern dnnl_status_t sgemm_pack(const char *identifier, const char *transa,
-        const char *transb, const int *M, const int *N, const int *K,
-        const int *lda, const int *ldb, const float *src, float *dst);
+        const char *transb, const dim_t *M, const dim_t *N, const dim_t *K,
+        const dim_t *lda, const dim_t *ldb, const float *src, float *dst);
 
 extern dnnl_status_t gemm_bf16bf16f32_pack(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, const bfloat16_t *src,
-        bfloat16_t *dst);
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb,
+        const bfloat16_t *src, bfloat16_t *dst);
 
 extern dnnl_status_t gemm_s8u8s32_pack(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, const void *src,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, const void *src,
         void *dst);
 
 extern dnnl_status_t gemm_s8s8s32_pack(const char *identifier,
-        const char *transa, const char *transb, const int *M, const int *N,
-        const int *K, const int *lda, const int *ldb, const void *src,
+        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
+        const dim_t *K, const dim_t *lda, const dim_t *ldb, const void *src,
         void *dst);
 
 // Compute functions.
 extern dnnl_status_t sgemm_compute(const char *transa, const char *transb,
-        const int *M, const int *N, const int *K, const float *A,
-        const int *lda, const float *B, const int *ldb, const float *beta,
-        float *C, const int *ldc);
+        const dim_t *M, const dim_t *N, const dim_t *K, const float *A,
+        const dim_t *lda, const float *B, const dim_t *ldb, const float *beta,
+        float *C, const dim_t *ldc);
 
 extern dnnl_status_t gemm_bf16bf16f32_compute(const char *transa,
-        const char *transb, const int *M, const int *N, const int *K,
-        const bfloat16_t *A, const int *lda, const bfloat16_t *B,
-        const int *ldb, const float *beta, float *C, const int *ldc);
+        const char *transb, const dim_t *M, const dim_t *N, const dim_t *K,
+        const bfloat16_t *A, const dim_t *lda, const bfloat16_t *B,
+        const dim_t *ldb, const float *beta, float *C, const dim_t *ldc);
 
 extern dnnl_status_t gemm_s8u8s32_compute(const char *transa,
-        const char *transb, const char *offsetc, const int *M, const int *N,
-        const int *K, const int8_t *A, const int *lda, const uint8_t *B,
-        const int *ldb, const float *beta, int32_t *C, const int *ldc,
+        const char *transb, const char *offsetc, const dim_t *M, const dim_t *N,
+        const dim_t *K, const int8_t *A, const dim_t *lda, const uint8_t *B,
+        const dim_t *ldb, const float *beta, int32_t *C, const dim_t *ldc,
         const int32_t *co);
 
 extern dnnl_status_t gemm_s8s8s32_compute(const char *transa,
-        const char *transb, const char *offsetc, const int *M, const int *N,
-        const int *K, const int8_t *A, const int *lda, const int8_t *B,
-        const int *ldb, const float *beta, int32_t *C, const int *ldc,
+        const char *transb, const char *offsetc, const dim_t *M, const dim_t *N,
+        const dim_t *K, const int8_t *A, const dim_t *lda, const int8_t *B,
+        const dim_t *ldb, const float *beta, int32_t *C, const dim_t *ldc,
         const int32_t *co);
 
 } // namespace cpu
@@ -608,7 +609,7 @@ struct dnnl_gemm<float16_t, float16_t, float16_t> {
             const test_memory &) {
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         if (get_test_engine_kind() == engine::kind::gpu) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             stream s(eng);
             cl_command_queue q = s.get_ocl_command_queue();
             auto status = dnnl_ocl_hgemm(q, p.transA, p.transB, p.M, p.N, p.K,
@@ -639,8 +640,8 @@ struct dnnl_gemm<float, float, float> {
         /* Prepare for Fortran style, hence A <-> B */
         char trans_a = p.transB, trans_b = p.transA;
 
-        int m = p.N, n = p.M, k = p.K;
-        int lda = p.ldb, ldb = p.lda, ldc = p.ldc;
+        int64_t m = p.N, n = p.M, k = p.K;
+        int64_t lda = p.ldb, ldb = p.lda, ldc = p.ldc;
 
         std::vector<float> a_pack_buf, b_pack_buf;
         float *A = map_memory<float>(b_mem), *a_eff = A;
@@ -739,8 +740,8 @@ struct dnnl_gemm<int8_t, int8_t, int32_t> {
         /* Prepare for Fortran style, hence A <-> B */
         char trans_a = p.transB, trans_b = p.transA;
 
-        int m = p.N, n = p.M, k = p.K;
-        int lda = p.ldb, ldb = p.lda, ldc = p.ldc;
+        int64_t m = p.N, n = p.M, k = p.K;
+        int64_t lda = p.ldb, ldb = p.lda, ldc = p.ldc;
 
         int8_t *A = map_memory<int8_t>(b_mem), *a_eff = A;
         int8_t *B = map_memory<int8_t>(a_mem), *b_eff = B;
@@ -812,7 +813,7 @@ struct dnnl_gemm<int8_t, int8_t, int32_t> {
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         if (get_test_engine_kind() == engine::kind::gpu) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             stream s(eng);
             cl_command_queue q = s.get_ocl_command_queue();
             auto status = dnnl_ocl_gemm_s8s8s32(q, p.transA, p.transB,
@@ -848,7 +849,7 @@ struct dnnl_gemm<int8_t, uint8_t, int32_t> {
             const test_memory &oc_mem) {
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         if (get_test_engine_kind() == engine::kind::gpu) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             stream s(eng);
             cl_command_queue q2 = s.get_ocl_command_queue();
             auto status = dnnl_ocl_gemm_s8u8s32(q2, p.transA, p.transB,
@@ -874,7 +875,7 @@ struct dnnl_gemm<uint8_t, uint8_t, int32_t> {
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         if (get_test_engine_kind() == engine::kind::gpu) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             stream s(eng);
             cl_command_queue q = s.get_ocl_command_queue();
             auto status = dnnl_ocl_gemm_u8u8s32(q, p.transA, p.transB,
@@ -911,8 +912,8 @@ struct dnnl_gemm<uint8_t, int8_t, int32_t> {
         /* Prepare for Fortran style, hence A <-> B */
         char trans_a = p.transB, trans_b = p.transA;
 
-        int m = p.N, n = p.M, k = p.K;
-        int lda = p.ldb, ldb = p.lda, ldc = p.ldc;
+        int64_t m = p.N, n = p.M, k = p.K;
+        int64_t lda = p.ldb, ldb = p.lda, ldc = p.ldc;
 
         int8_t *A = map_memory<int8_t>(b_mem), *a_eff = A;
         uint8_t *B = map_memory<uint8_t>(a_mem), *b_eff = B;
@@ -985,7 +986,7 @@ struct dnnl_gemm<uint8_t, int8_t, int32_t> {
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         if (get_test_engine_kind() == engine::kind::gpu) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             stream s(eng);
             cl_command_queue q = s.get_ocl_command_queue();
             auto status = dnnl_ocl_gemm_u8s8s32(q, p.transA, p.transB,
@@ -1055,8 +1056,8 @@ struct dnnl_gemm<bfloat16_t, bfloat16_t, float> {
         /* Prepare for Fortran style, hence A <-> B */
         char trans_a = p.transB, trans_b = p.transA;
 
-        int m = p.N, n = p.M, k = p.K;
-        int lda = p.ldb, ldb = p.lda, ldc = p.ldc;
+        int64_t m = p.N, n = p.M, k = p.K;
+        int64_t lda = p.ldb, ldb = p.lda, ldc = p.ldc;
 
         std::vector<bfloat16_t> a_pack_buf, b_pack_buf;
         bfloat16_t *A = map_memory<bfloat16_t>(b_mem), *a_eff = A;
@@ -1164,19 +1165,19 @@ template <typename a_dt, typename b_dt, typename c_dt>
 struct run_test_gemm {
     static void call(const test_params &p) {
         if (p.expect_to_fail) {
-            engine eng(get_test_engine_kind(), 0);
+            engine eng = get_test_engine();
             test_memory zero_mem({}, eng);
             auto status = dnnl_gemm<a_dt, b_dt, c_dt>::call(
                     p, zero_mem, zero_mem, zero_mem, zero_mem);
             if (status != dnnl_success)
-                throw error(status, "dnnl gemm returned error");
+                throw error(status, "oneDNN gemm returned error");
             return;
         }
 
         size_t sizeA, sizeB, sizeC;
         get_matrix_size(p, sizeA, sizeB, sizeC);
 
-        engine eng(get_test_engine_kind(), 0);
+        engine eng = get_test_engine();
         test_memory a_mem = get_matrix_memory<a_dt>(sizeA, p.off.a, eng);
         test_memory b_mem = get_matrix_memory<b_dt>(sizeB, p.off.b, eng);
         test_memory c_mem = get_matrix_memory<c_dt>(sizeC, p.off.c, eng);
@@ -1203,7 +1204,7 @@ struct run_test_gemm {
         }
 
         if (status != dnnl_success)
-            throw error(status, "dnnl gemm returned error");
+            throw error(status, "oneDNN gemm returned error");
     }
 };
 
@@ -1248,6 +1249,18 @@ protected:
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
     void Test() {
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+        struct scoped_threadpool {
+            scoped_threadpool() {
+                impl::threadpool_utils::activate_threadpool(
+                        impl::threadpool_utils::get_active_threadpool());
+            }
+            ~scoped_threadpool() {
+                impl::threadpool_utils::deactivate_threadpool();
+            }
+        };
+        scoped_threadpool stp;
+#endif
         const auto &p = ::testing::TestWithParam<test_params>::GetParam();
         run_test_gemm<a_dt, b_dt, c_dt>::call(p);
     }

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -95,7 +95,7 @@ typedef enum {
 
 /// Memory format tag specification.
 ///
-/// DNNL formats describe physical data layout. The physical layout
+/// oneDNN formats describe physical data layout. The physical layout
 /// is described as a sequence of the dimensions as they are laid out in the
 /// memory (from the outer-most to the inner-most). Note that this order
 /// doesn't affect the logical order of the dimensions that is kept in the
@@ -138,7 +138,7 @@ typedef enum {
 ///    For example, #dnnl_nc is used to denote 2D CNN activations tensor
 ///    memory format, where channels are the innermost dimension and batch is an
 ///    outermost one. Moreover, #dnnl_nc is just an alias to #dnnl_ab,
-///    since for DNNL CNN primitives the logical dimensions of
+///    since for oneDNN CNN primitives the logical dimensions of
 ///    activations tensors come in order: batch, channels, spatial.
 ///    In other words, batch corresponds to the first logical dimension (`a`),
 ///    channels correspond to the second one (`b`).
@@ -183,6 +183,7 @@ typedef enum {
 
     // Permuted plain formats
 
+    dnnl_abdc, ///< permuted 4D tensor
     dnnl_abdec, ///< permuted 5D tensor
     dnnl_acb, ///< permuted 3D tensor
     dnnl_acbde, ///< permuted 5D tensor
@@ -197,6 +198,7 @@ typedef enum {
     dnnl_bcdea, ///< permuted 5D tensor
     dnnl_cba, ///< permuted 3D tensor
     dnnl_cdba, ///< permuted 4D tensor
+    dnnl_dcab, ///< permuted 4D tensor
     dnnl_cdeba, ///< permuted 5D tensor
     dnnl_decab, ///< permuted 5D tensor
     dnnl_defcab, ///< permuted 6D tensor
@@ -237,6 +239,8 @@ typedef enum {
     dnnl_ABcd4b16a4b,
     dnnl_ABcd4b4a,
     dnnl_ABcd4a4b,
+    dnnl_aBCd2c4b2c,
+    dnnl_aBCd4b8c2b,
     dnnl_aBCd4c16b4c,
     dnnl_aBCd2c8b4c,
     dnnl_aBCd4c4b,
@@ -246,6 +250,7 @@ typedef enum {
     dnnl_ABcd8a8b,
     /// 4D tensor blocked by 2nd dimension with block size 8
     dnnl_aBcd8b,
+    dnnl_aBCd4c8b2c,
     dnnl_ABcd8b16a2b,
     dnnl_aBCd8b16c2b,
     dnnl_BAcd8a16b2a,
@@ -259,6 +264,8 @@ typedef enum {
     dnnl_Abcde16a,
     dnnl_ABcde16a16b,
     dnnl_BAcde8a16b2a,
+    /// 4D tensor blocked by 3rd dimension with block size 4
+    dnnl_aBCd2b4c2b,
     /// 5D tensor blocked by 1st dimension with block size 16
     dnnl_ABcde4b16a4b,
     /// 5D tensor blocked by 1st dimension with block size 8
@@ -275,6 +282,8 @@ typedef enum {
     dnnl_ABcde4b4a,
     dnnl_ABcde4a4b,
     dnnl_aBCde4b4c,
+    dnnl_aBCde2c4b2c,
+    dnnl_aBCde4b8c2b,
     dnnl_aBCde4c16b4c,
     dnnl_aBCde4c4b,
     dnnl_Abcde8a,
@@ -284,6 +293,7 @@ typedef enum {
     dnnl_aBcde8b,
     dnnl_ABcde8b16a2b,
     dnnl_aBCde8b16c2b,
+    dnnl_aBCde4c8b2c,
     dnnl_aCBde8b16c2b,
     dnnl_ABcde8b8a,
     dnnl_aBCde8b8c,
@@ -293,6 +303,8 @@ typedef enum {
     dnnl_aBCde2b8c8b2c,
     dnnl_aBCde8c16b2c,
     dnnl_aBCde8c8b,
+    /// 5D tensor blocked by 3rd dimension with block size 4
+    dnnl_aBCde2b4c2b,
     /// 6D tensor blocked by 2nd dimension with block size 16
     dnnl_aBcdef16b,
     dnnl_aBCdef16b16c,
@@ -300,10 +312,15 @@ typedef enum {
     dnnl_aBCdef4c16b4c,
     /// 6D tensor blocked by 2nd dimension with block size 8
     dnnl_aBCdef2c8b4c,
+    dnnl_aBCdef4c8b2c,
+    /// 6D tensor blocked by 3rd dimension with block size 4
+    dnnl_aBCdef2b4c2b,
     /// 6D tensor blocked by 2nd dimension with block size 4
     dnnl_aBcdef4b,
     dnnl_aBCdef4c4b,
     dnnl_aBCdef4b4c,
+    dnnl_aBCdef2c4b2c,
+    dnnl_aBCdef4b8c2b,
     dnnl_aBCdef8b8c,
     dnnl_aBCdef8c16b2c,
     dnnl_aBCdef8b16c2b,
@@ -345,6 +362,8 @@ typedef enum {
     dnnl_BAc16b16a,
     dnnl_BAcd16a16b,
     dnnl_BAcd16b16a,
+    dnnl_BAcde16a16b,
+    dnnl_aCBdef16b16c,
 
     /// Just a sentinel, not real memory format tag. Must be changed after new
     /// format tag is added.
@@ -410,6 +429,8 @@ typedef enum {
 
     /// 4D CNN weights tensor (incl. groups), an alias to #dnnl_abcd
     dnnl_goiw = dnnl_abcd,
+    /// 4D CNN weights tensor (incl. groups), an alias to #dnnl_dcab
+    dnnl_wigo = dnnl_dcab,
     /// 5D CNN weights tensor (incl. groups), an alias to #dnnl_abcde
     dnnl_goihw = dnnl_abcde,
     /// 5D CNN weights tensor (incl. groups), an alias to #dnnl_decab
@@ -444,6 +465,12 @@ typedef enum {
     ///    and output gate.
     ///  - For GRU cells, the gates order is update, reset and output gate.
     dnnl_ldgoi = dnnl_abdec,
+    /// 4D LSTM projection tensor in the format (num_layers, num_directions,
+    /// num_channels_in_hidden_state, num_channels_in_recurrent_projection).
+    dnnl_ldio = dnnl_abcd,
+    /// 4D LSTM projection tensor in the format (num_layers, num_directions,
+    /// num_channels_in_recurrent_projection, num_channels_in_hidden_state).
+    dnnl_ldoi = dnnl_abdc,
     /// 4D RNN bias tensor in the format (num_layers, num_directions,
     /// num_gates, output_channels).
     ///
@@ -550,6 +577,7 @@ typedef enum {
     dnnl_OIdhw2i8o4i = dnnl_ABcde2b8a4b,
     dnnl_OIdhw8o8i = dnnl_ABcde8a8b,
     dnnl_IOdhw16i16o = dnnl_BAcde16b16a,
+    dnnl_IOdhw16o16i = dnnl_BAcde16a16b,
 
     // weights w/ groups, 3D
     dnnl_Goiw16g = dnnl_Abcd16a,
@@ -573,6 +601,10 @@ typedef enum {
     dnnl_gOwI16o2i = dnnl_aBdC16b2c,
     dnnl_gOwi4o = dnnl_aBdc4b,
     dnnl_gOwi8o = dnnl_aBdc8b,
+    dnnl_gOIw2i4o2i = dnnl_aBCd2c4b2c,
+    dnnl_gOIw2o4i2o = dnnl_aBCd2b4c2b,
+    dnnl_gOIw4i8o2i = dnnl_aBCd4c8b2c,
+    dnnl_gOIw4o8i2o = dnnl_aBCd4b8c2b,
 
     // weights w/ groups, 4D
     dnnl_gIOhw16i16o = dnnl_aCBde16c16b,
@@ -602,9 +634,14 @@ typedef enum {
     dnnl_OIhw2o8i8o2i = dnnl_ABcd2a8b8a2b,
     dnnl_gOIhw4o8i8o4i = dnnl_aBCde4b8c8b4c,
     dnnl_gOIhw2o8i8o2i = dnnl_aBCde2b8c8b2c,
+    dnnl_gOIhw2i4o2i = dnnl_aBCde2c4b2c,
+    dnnl_gOIhw2o4i2o = dnnl_aBCde2b4c2b,
+    dnnl_gOIhw4i8o2i = dnnl_aBCde4c8b2c,
+    dnnl_gOIhw4o8i2o = dnnl_aBCde4b8c2b,
 
     // weights w/ groups, 6D
     dnnl_gIOdhw16i16o = dnnl_aCBdef16c16b,
+    dnnl_gIOdhw16o16i = dnnl_aCBdef16b16c,
     dnnl_gOdhwi16o = dnnl_aBdefc16b,
     dnnl_gOdhwI16o2i = dnnl_aBdefC16b2c,
     dnnl_gOdhwi4o = dnnl_aBdefc4b,
@@ -623,6 +660,10 @@ typedef enum {
     dnnl_gIOdhw8o16i2o = dnnl_aCBdef8b16c2b,
     dnnl_gOIdhw8o8i = dnnl_aBCdef8b8c,
     dnnl_Goidhw16g = dnnl_Abcdef16a,
+    dnnl_gOIdhw2i4o2i = dnnl_aBCdef2c4b2c,
+    dnnl_gOIdhw4i8o2i = dnnl_aBCdef4c8b2c,
+    dnnl_gOIdhw2o4i2o = dnnl_aBCdef2b4c2b,
+    dnnl_gOIdhw4o8i2o = dnnl_aBCdef4b8c2b,
 } dnnl_format_tag_t;
 
 /// @} dnnl_api_memory
@@ -720,7 +761,7 @@ typedef enum {
     dnnl_eltwise_relu = 0x1f,
     /// Eltwise: hyperbolic tangent non-linearity (tanh)
     dnnl_eltwise_tanh = 0x2f,
-    /// Eltwise: parametric exponential linear unit (elu)
+    /// Eltwise: exponential linear unit (elu)
     dnnl_eltwise_elu = 0x3f,
     /// Eltwise: square
     dnnl_eltwise_square = 0x4f,
@@ -741,14 +782,32 @@ typedef enum {
     /// Eltwise: gelu
     ///
     /// @note Tanh approximation formula is used to approximate
-    /// cumulative distribution function of a Gaussian
-    dnnl_eltwise_gelu = 0xcf,
+    /// the cumulative distribution function of a Gaussian here
+    dnnl_eltwise_gelu_tanh = 0xcf,
+    /// Eltwise: tanh-based gelu (alias for dnnl_eltwise_gelu_tanh)
+    dnnl_eltwise_gelu = dnnl_eltwise_gelu_tanh,
     /// Eltwise: swish
     dnnl_eltwise_swish = 0xdf,
     /// Eltwise: natural logarithm
     dnnl_eltwise_log = 0xef,
     /// Eltwise: clip
     dnnl_eltwise_clip = 0xff,
+    /// Eltwise: pow
+    dnnl_eltwise_pow = 0x20,
+    /// Eltwise: erf-based gelu
+    dnnl_eltwise_gelu_erf = 0x30,
+    /// Eltwise: ReLU (dst for backward)
+    dnnl_eltwise_relu_use_dst_for_bwd = 0x100,
+    /// Eltwise: hyperbolic tangent non-linearity (tanh) (dst for backward)
+    dnnl_eltwise_tanh_use_dst_for_bwd = 0x101,
+    /// Eltwise: exponential linear unit (elu) (dst for backward)
+    dnnl_eltwise_elu_use_dst_for_bwd = 0x102,
+    /// Eltwise: square root (dst for backward)
+    dnnl_eltwise_sqrt_use_dst_for_bwd = 0x103,
+    /// Eltwise: logistic (dst for backward)
+    dnnl_eltwise_logistic_use_dst_for_bwd = 0x104,
+    /// Eltwise: exp (dst for backward)
+    dnnl_eltwise_exp_use_dst_for_bwd = 0x105,
     /// Max pooling
     dnnl_pooling_max = 0x1ff,
     /// Average pooling include padding
@@ -779,14 +838,28 @@ typedef enum {
     dnnl_binary_add = 0x1fff0,
     /// Binary mul
     dnnl_binary_mul = 0x1fff1,
+    /// Binary max
+    dnnl_binary_max = 0x1fff2,
+    /// Binary min
+    dnnl_binary_min = 0x1fff3,
     /// Nearest Neighbor Resampling Method
     dnnl_resampling_nearest = 0x2fff0,
     /// Linear Resampling Method
     dnnl_resampling_linear = 0x2fff1,
 } dnnl_alg_kind_t;
 
-/// Flags for batch normalization primitive.
+/// Flags for normalization primitives.
 typedef enum {
+    /// Use no normalization flags
+    ///
+    /// If specified
+    ///  - on forward training propagation mean and variance are computed and
+    ///    stored as output
+    ///  - on backward propagation compute full derivative wrt data
+    ///  - on backward propagation prop_kind == #dnnl_backward_data has the same
+    ///    behavior as prop_kind == #dnnl_backward
+    dnnl_normalization_flags_none = 0x0U,
+
     /// Use global statistics
     ///
     /// If specified
@@ -795,9 +868,9 @@ typedef enum {
     ///    mean and variance are considered as constants
     ///
     ///  If not specified:
-    ///   - on forward propagation mean and variance are computed and stored in
+    ///   - on forward propagation mean and variance are computed and stored as
     ///     output
-    ///   - on backward propagation compute full derivative wrt to data
+    ///   - on backward propagation compute full derivative wrt data
     dnnl_use_global_stats = 0x1U,
 
     /// Use scale and shift parameters
@@ -806,7 +879,7 @@ typedef enum {
     ///  - on forward propagation use scale and shift (aka scale and bias) for
     ///    the batch normalization results
     ///  - on backward propagation (for prop_kind == #dnnl_backward) compute
-    ///    diff wrt to scale and shift (hence one extra output used)
+    ///    diff wrt scale and shift (hence one extra output used)
     ///
     /// If no specified:
     ///  - on backward propagation prop_kind == #dnnl_backward_data has the
@@ -1144,8 +1217,14 @@ typedef struct {
     /// #dnnl_eltwise_tanh, #dnnl_eltwise_elu, #dnnl_eltwise_square,
     /// #dnnl_eltwise_abs, #dnnl_eltwise_sqrt, #dnnl_eltwise_linear,
     /// #dnnl_eltwise_bounded_relu, #dnnl_eltwise_soft_relu,
-    /// #dnnl_eltwise_logistic, #dnnl_eltwise_exp, #dnnl_eltwise_gelu,
-    /// #dnnl_eltwise_swish, #dnnl_eltwise_log, #dnnl_eltwise_clip.
+    /// #dnnl_eltwise_logistic, #dnnl_eltwise_exp, #dnnl_eltwise_gelu_tanh,
+    /// #dnnl_eltwise_swish, #dnnl_eltwise_log, #dnnl_eltwise_clip,
+    /// #dnnl_eltwise_pow, #dnnl_eltwise_gelu_erf.
+    /// Possible values for passing destination memory on backward:
+    /// #dnnl_eltwise_relu_use_dst_for_bwd, #dnnl_eltwise_tanh_use_dst_for_bwd,
+    /// #dnnl_eltwise_elu_use_dst_for_bwd, #dnnl_eltwise_sqrt_use_dst_for_bwd,
+    /// #dnnl_eltwise_logistic_use_dst_for_bwd,
+    /// #dnnl_eltwise_exp_use_dst_for_bwd.
     dnnl_alg_kind_t alg_kind;
     /// Source and destination memory descriptor.
     dnnl_memory_desc_t data_desc;
@@ -1164,10 +1243,12 @@ typedef struct {
     ///  - #dnnl_eltwise_soft_relu: @p alpha and @p beta ignored
     ///  - #dnnl_eltwise_logistic: @p alpha and @p beta ignored
     ///  - #dnnl_eltwise_exp: @p alpha and @p beta ignored
-    ///  - #dnnl_eltwise_gelu: @p alpha and @p beta ignored
+    ///  - #dnnl_eltwise_gelu_tanh: @p alpha and @p beta ignored
     ///  - #dnnl_eltwise_swish: @p alpha -- sigmoid arg scaling, @p beta ignored
     ///  - #dnnl_eltwise_log: @p alpha and @p beta ignored
     ///  - #dnnl_eltwise_clip: @p alpha -- lower bound, @p beta -- upper bound
+    ///  - #dnnl_eltwise_pow: @p alpha -- scale, @p beta -- exponent
+    ///  - #dnnl_eltwise_gelu_erf: @p alpha and @p beta ignored
     float alpha, beta;
 } dnnl_eltwise_desc_t;
 
@@ -1432,9 +1513,14 @@ typedef struct {
     dnnl_memory_desc_t dst_iter_desc;
     /// Destination iter memory descriptor for cell state.
     dnnl_memory_desc_t dst_iter_c_desc;
-    /// Placeholders
-    dnnl_memory_desc_t placeholder_desc;
-    dnnl_memory_desc_t placeholder2_desc;
+    /// Weights peephole memory descriptor.
+    /// This memory descriptor is equal to zero memory descriptor in case of
+    /// non-peephole LSTMs and other non-LSTM RNNs.
+    dnnl_memory_desc_t weights_peephole_desc;
+    /// Weights projection memory descriptor.
+    /// This memory descriptor is equal to zero memory descriptor in case of
+    /// non-projection LSTMs and other non-LSTM RNNs.
+    dnnl_memory_desc_t weights_projection_desc;
 
     /// Source gradient layer memory descriptor.
     dnnl_memory_desc_t diff_src_layer_desc;
@@ -1454,9 +1540,14 @@ typedef struct {
     dnnl_memory_desc_t diff_dst_iter_desc;
     /// Destination gradient iteration memory descriptor for cell state.
     dnnl_memory_desc_t diff_dst_iter_c_desc;
-    /// Placeholders
-    dnnl_memory_desc_t diff_placeholder_desc;
-    dnnl_memory_desc_t diff_placeholder2_desc;
+    /// Weights gradient peephole memory descriptor.
+    /// This memory descriptor is equal to zero memory descriptor in case of
+    /// non-peephole LSTMs and other non-LSTM RNNs.
+    dnnl_memory_desc_t diff_weights_peephole_desc;
+    /// Weights gradient projection memory descriptor.
+    /// This memory descriptor is equal to zero memory descriptor in case of
+    /// non-projection LSTMs and other non-LSTM RNNs.
+    dnnl_memory_desc_t diff_weights_projection_desc;
 
     /// RNN cell flags
     unsigned int flags;
@@ -1479,7 +1570,8 @@ typedef struct {
     /// descriptor. Must be #dnnl_binary.
     dnnl_primitive_kind_t primitive_kind;
     /// The kind of the binary algorithm. Possible values:
-    /// #dnnl_binary_add and #dnnl_binary_mul.
+    /// #dnnl_binary_add, #dnnl_binary_mul, #dnnl_binary_max and
+    /// #dnnl_binary_min.
     dnnl_alg_kind_t alg_kind;
     /// Source memory descriptors.
     dnnl_memory_desc_t src_desc[2];
@@ -1606,27 +1698,27 @@ typedef const struct dnnl_primitive_desc *const_dnnl_primitive_desc_t;
 
 /// Scratchpad mode
 typedef enum {
-    /// The library manages scratchpad (default)
-    /// The allocation policy is controlled by the DNNL_ENABLE_CONCURRENT_EXEC
-    /// build option (@ref dev_guide_build_options).
+    /// The library manages the scratchpad allocation according to the policy
+    /// specified by the `DNNL_ENABLE_CONCURRENT_EXEC`
+    /// [build option](@ref dev_guide_build_options) (default).
     ///
-    /// When DNNL_ENABLE_CONCURRENT_EXEC=OFF (default), the library
-    /// scratchpad is common to all primitives to reduce the memory
-    /// footprint.  This configuration comes with limited
-    /// thread-safety properties, namely different primitives can be
-    /// created and executed in parallel but cannot migrate between
-    /// threads (in other words, each primitive should be executed in
+    /// When `DNNL_ENABLE_CONCURRENT_EXEC=OFF` (default), the library
+    /// scratchpad is common to all primitives to reduce the memory footprint.
+    /// This configuration comes with limited thread-safety properties, namely
+    /// primitives can be created and executed in parallel but cannot migrate
+    /// between threads (in other words, each primitive should be executed in
     /// the same thread it was created in).
     ///
-    /// When DNNL_ENABLE_CONCURRENT_EXEC=ON, the library scratchpad is private
-    /// to each primitive. The memory footprint is larger than when using
-    /// DNNL_ENABLE_CONCURRENT_EXEC=OFF but different primitives can be created
-    /// and run concurrently (the same primitive cannot be run concurrently from
-    /// two different threads though).
+    /// When `DNNL_ENABLE_CONCURRENT_EXEC=ON`, the library scratchpad is
+    /// private to each primitive. The memory footprint is larger than when
+    /// using `DNNL_ENABLE_CONCURRENT_EXEC=OFF` but different primitives can be
+    /// created and run concurrently (the same primitive cannot be run
+    /// concurrently from two different threads though).
     dnnl_scratchpad_mode_library,
-    /// A user shall query and provide the scratchpad memory to primitives
-    /// This mode is thread-safe as long as the scratchpad buffers
-    /// are not used concurrently by two primitive executions.
+    /// The user manages the scratchpad allocation by querying and providing
+    /// the scratchpad memory to primitives. This mode is thread-safe as long
+    /// as the scratchpad buffers are not used concurrently by two primitive
+    /// executions.
     dnnl_scratchpad_mode_user,
 } dnnl_scratchpad_mode_t;
 
@@ -1748,6 +1840,18 @@ typedef const struct dnnl_primitive *const_dnnl_primitive_t;
 /// An alias for #DNNL_ARG_WEIGHTS_1.
 #define DNNL_ARG_WEIGHTS_ITER DNNL_ARG_WEIGHTS_1
 
+/// Weights argument #2.
+#define DNNL_ARG_WEIGHTS_2 35
+/// A special mnemonic for RNN weights applied to the peephole weights.
+/// An alias for #DNNL_ARG_WEIGHTS_2.
+#define DNNL_ARG_WEIGHTS_PEEPHOLE DNNL_ARG_WEIGHTS_2
+
+/// Weights argument #3.
+#define DNNL_ARG_WEIGHTS_3 36
+/// A special mnemonic for RNN weights applied to the projection weights.
+/// An alias for #DNNL_ARG_WEIGHTS_3.
+#define DNNL_ARG_WEIGHTS_PROJECTION DNNL_ARG_WEIGHTS_3
+
 /// Bias tensor argument.
 #define DNNL_ARG_BIAS 41
 
@@ -1822,6 +1926,18 @@ typedef const struct dnnl_primitive *const_dnnl_primitive_t;
 /// An alias for #DNNL_ARG_DIFF_WEIGHTS_1.
 #define DNNL_ARG_DIFF_WEIGHTS_ITER DNNL_ARG_DIFF_WEIGHTS_1
 
+/// Gradient (diff) of the weights argument #2.
+#define DNNL_ARG_DIFF_WEIGHTS_2 163
+/// A special mnemonic for diff of RNN weights applied to the peephole weights.
+/// An alias for #DNNL_ARG_DIFF_WEIGHTS_2.
+#define DNNL_ARG_DIFF_WEIGHTS_PEEPHOLE DNNL_ARG_DIFF_WEIGHTS_2
+
+/// Gradient (diff) of the weights argument #3.
+#define DNNL_ARG_DIFF_WEIGHTS_3 164
+/// A special mnemonic for diff of RNN weights applied to the projection
+/// weights. An alias for #DNNL_ARG_DIFF_WEIGHTS_3.
+#define DNNL_ARG_DIFF_WEIGHTS_PROJECTION DNNL_ARG_DIFF_WEIGHTS_3
+
 /// Gradient (diff) of the bias tensor argument.
 #define DNNL_ARG_DIFF_BIAS 169
 
@@ -1837,6 +1953,10 @@ typedef const struct dnnl_primitive *const_dnnl_primitive_t;
 
 /// Zero points provided at execution time.
 #define DNNL_ARG_ATTR_ZERO_POINTS 4096
+
+/// Arguments for fused depthwise convolution.
+/// See @ref dev_guide_attributes_post_ops_depthwise_fusion
+#define DNNL_ARG_ATTR_POST_OP_DW 8192
 
 /// A structure that contains an index and a memory object, and is used to pass
 /// arguments to dnnl_primitive_execute().
@@ -1965,6 +2085,13 @@ typedef struct dnnl_stream *dnnl_stream_t;
 /// A constant execution stream handle.
 typedef const struct dnnl_stream *const_dnnl_stream_t;
 
+/// An opaque structure to describe execution stream attrbutes.
+struct dnnl_stream_attr;
+/// An execution stream attributes handle.
+typedef struct dnnl_stream_attr *dnnl_stream_attr_t;
+/// A constant execution stream attributes handle.
+typedef const struct dnnl_stream_attr *const_dnnl_stream_attr_t;
+
 /// @} dnnl_api_stream
 
 /// @addtogroup dnnl_api_service
@@ -1981,6 +2108,9 @@ typedef const struct dnnl_stream *const_dnnl_stream_t;
 
 /// TBB runtime (CPU only)
 #define DNNL_RUNTIME_TBB 4u
+
+/// Threadpool runtime (CPU only)
+#define DNNL_RUNTIME_THREADPOOL 8u
 
 /// OpenCL runtime
 #define DNNL_RUNTIME_OCL 256u
@@ -1999,7 +2129,7 @@ typedef struct {
 /// Disable profiling completely
 #define DNNL_JIT_PROFILE_NONE 0u
 
-/// Enable VTune integration
+/// Enable VTune Amplifier integration
 #define DNNL_JIT_PROFILE_VTUNE 1u
 
 /// Enable Linux perf integration via perfmap files
@@ -2021,35 +2151,35 @@ typedef enum {
     /// Any ISA (no restrictions)
     dnnl_cpu_isa_all = 0x0,
 
-    /// Intel(R) SSE4.1.
+    /// Intel Streaming SIMD Extensions 4.1 (Intel SSE4.1)
     dnnl_cpu_isa_sse41 = 0x1,
 
-    /// Intel(R) Advanced Vector Extensions.
+    /// Intel Advanced Vector Extensions (Intel AVX)
     dnnl_cpu_isa_avx = 0x3,
 
-    /// Intel(R) Advanced Vector Extensions 2.
+    /// Intel Advanced Vector Extensions 2 (Intel AVX2)
     dnnl_cpu_isa_avx2 = 0x7,
 
-    /// Intel(R) Advanced Vector Extensions 512 subset for Intel(R) Xeon
-    /// Phi(TM) Processors x200 Series.
+    /// Intel Advanced Vector Extensions 512 (Intel AVX-512) subset
+    /// for Intel Xeon Phi processors x200 Series.
     dnnl_cpu_isa_avx512_mic = 0xf,
 
-    /// Intel(R) Advanced Vector Extensions 512 subset for Intel(R) Xeon
-    /// Phi(TM) Processors 7235, 7285, 7295 Series.
+    /// Intel AVX-512 subset
+    /// for Intel Xeon Phi processors 7235, 7285, 7295 Series.
     dnnl_cpu_isa_avx512_mic_4ops = 0x1f,
 
-    /// Intel(R) Advanced Vector Extensions 512 for Intel(R) Xeon(R) Processor
-    /// Scalable Family and Intel(R) Core(TM) processor family.
+    /// Intel AVX-512 subset for Intel Xeon Scalable processor family
+    /// and Intel Core processor family.
     dnnl_cpu_isa_avx512_core = 0x27,
 
-    /// Intel(R) Advanced Vector Extensions 512 with Intel(R) DL Boost Support
-    /// for Intel(R) Xeon(R) Processor Scalable Family and Intel(R) Core(TM)
-    /// processor family.
+    /// Intel AVX-512 and Intel Deep Learning Boost (Intel DL Boost) support
+    /// for Intel Xeon Scalable processor family
+    /// and Intel Core processor family.
     dnnl_cpu_isa_avx512_core_vnni = 0x67,
 
-    /// Intel(R) Advanced Vector Extensions 512 with Intel(R) DL Boost and
-    /// Bfloat16 Support for Intel(R) Xeon(R) Processor Scalable Family and
-    /// Intel(R) Core(TM) processor family.
+    /// Intel AVX-512, Intel DL Boost and bfloat16 support
+    /// for Intel Xeon Scalable processor family
+    /// and Intel Core processor family.
     dnnl_cpu_isa_avx512_core_bf16 = 0xe7,
 } dnnl_cpu_isa_t;
 

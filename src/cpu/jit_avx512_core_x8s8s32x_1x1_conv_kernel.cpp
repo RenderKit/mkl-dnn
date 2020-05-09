@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -169,10 +169,12 @@ void _jit_avx512_core_x8s8s32x_1x1_conv_kernel<Vmm>::reduce_loop(
     };
 
     auto output_ptr = [=](int i_load, int i_ur) {
+        const size_t ur_stride = jcp.with_dw_conv
+                ? jcp.nb_load_blocking * jcp.oc_block * i_ur
+                : jcp.oc_without_padding * jcp.ngroups * i_ur;
+
         return EVEX_compress_addr(aux_reg_output_data,
-                jcp.typesize_out
-                        * (jcp.oc_without_padding * i_ur * jcp.ngroups
-                                + i_load * jcp.load_block));
+                jcp.typesize_out * (ur_stride + i_load * jcp.load_block));
     };
 
     auto init = [=]() {
@@ -515,13 +517,19 @@ bool jit_avx512_core_x8s8s32x_1x1_conv_kernel::post_ops_ok(
     const auto &p = attr.post_ops_;
 
     auto is_eltwise = [&](int idx) { return p.entry_[idx].is_eltwise(); };
+    auto is_convolution
+            = [&](int idx) { return p.entry_[idx].is_convolution(); };
 
-    switch (p.len_) {
+    int dw_idx = p.find(primitive_kind::convolution);
+    int len = dw_idx != -1 ? dw_idx + 1 : p.len_;
+
+    switch (len) {
         case 0: return true;
-        case 1: return is_eltwise(0) || p.contain(sum, 0);
+        case 1: return is_eltwise(0) || p.contain(sum, 0) || is_convolution(0);
         case 2:
             return (p.contain(sum, 0) && is_eltwise(1))
-                    || (p.contain(sum, 1) && is_eltwise(0));
+                    || (p.contain(sum, 1) && is_eltwise(0))
+                    || (is_eltwise(0) && is_convolution(1));
         default: return false;
     }
 
@@ -547,6 +555,8 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
             || !one_of(dst_d.data_type(), data_type::f32, data_type::s32,
                     data_type::s8, data_type::u8))
         return status::unimplemented;
+
+    jcp.nthr = nthreads;
 
     jcp.ver = ver_avx512_core;
     if (mayiuse(avx512_core_vnni)) jcp.ver = ver_vnni;
@@ -598,7 +608,11 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     if (!post_ops_ok(jcp, attr)) return status::unimplemented;
 
     const auto &p = attr.post_ops_;
-    const int eltwise_ind = p.find(primitive_kind::eltwise);
+    const int dw_conv_ind = p.find(primitive_kind::convolution);
+    jcp.with_dw_conv = dw_conv_ind != -1;
+    // Using dw_conv_ind as upper-bound below, as post-ops after it will be
+    // handled in depthwise convolution.
+    const int eltwise_ind = p.find(primitive_kind::eltwise, 0, dw_conv_ind);
     jcp.with_eltwise = eltwise_ind != -1;
     if (jcp.with_eltwise) jcp.eltwise = p.entry_[eltwise_ind].eltwise;
 
@@ -684,7 +698,7 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     jcp.load_grp_count = 1;
     jcp.use_vmovntps = false;
 
-    const int L2_size = get_cache_size(2, true) / sizeof(jcp.typesize_in);
+    const int L2_size = get_per_core_cache_size(2) / sizeof(jcp.typesize_in);
     const int L2_capacity = (L2_size * 3) / 4;
 
     int size_treshold = 28;
@@ -727,6 +741,7 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
             }
         }
     }
+    if (jcp.with_dw_conv) jcp.ur = nstl::min(jcp.ow, jcp.ur);
 
     jcp.reduce_dim = jcp.ic;
     jcp.reduce_block = jcp.ic_block;
@@ -772,21 +787,21 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     if (cmp_reduce) jcp.loop_order = reduce_src ? loop_rbl : loop_rlb;
     load_blocking = jcp.load_dim;
 
-    jcp.load_grp_count = div_up(nthreads, jcp.mb * jcp.ngroups * nb_bcast);
+    jcp.load_grp_count = div_up(jcp.nthr, jcp.mb * jcp.ngroups * nb_bcast);
     jcp.load_grp_count = best_divider(
-            nthreads, jcp.load_grp_count, 2 * jcp.load_grp_count, false);
+            jcp.nthr, jcp.load_grp_count, 2 * jcp.load_grp_count, false);
 
     if (jcp.bcast_dim <= SMALL_SPATIAL
             && jcp.load_dim * jcp.reduce_dim >= L2_size) {
         jcp.load_grp_count = nstl::max(jcp.load_grp_count, 4);
-    } else if (jcp.bcast_dim <= SMALL_SPATIAL && jcp.mb <= nthreads
+    } else if (jcp.bcast_dim <= SMALL_SPATIAL && jcp.mb <= jcp.nthr
             && jcp.load_dim > 512 && jcp.load_dim / jcp.reduce_dim >= 4) {
         jcp.load_grp_count = nstl::max(jcp.load_grp_count, 2); //
         load_blocking = jcp.load_block;
     }
 
     bcast_blocking = div_up(jcp.mb * jcp.ngroups * nb_bcast,
-                             div_up(nthreads, jcp.load_grp_count))
+                             div_up(jcp.nthr, jcp.load_grp_count))
             * jcp.bcast_block;
     bcast_blocking = nstl::min(jcp.bcast_dim, bcast_blocking);
     bcast_blocking = rnd_up(bcast_blocking, jcp.bcast_block);
@@ -822,7 +837,7 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     assert(jcp.bcast_block % jcp.ur == 0);
     assert(jcp.reduce_dim % jcp.reduce_block == 0);
 
-    jcp.ur_tail = jcp.bcast_dim % jcp.ur;
+    jcp.ur_tail = (jcp.with_dw_conv ? jcp.ow : jcp.bcast_dim) % jcp.ur;
 
     jcp.nb_bcast_blocking = bcast_blocking / jcp.bcast_block;
     jcp.nb_bcast_blocking_max = bcast_blocking_max / jcp.bcast_block;
@@ -842,7 +857,7 @@ status_t jit_avx512_core_x8s8s32x_1x1_conv_kernel::init_conf(
     int ncores_per_socket = (int)cpu.getNumCores(
             Xbyak::util::IntelCpuTopologyLevel::CoreLevel);
     if (jcp.mb == 1 && jcp.nb_load % 4 == 0 && jcp.ic / jcp.oc >= 4
-            && jcp.ic * jcp.oc <= L2_size && nthreads <= ncores_per_socket) {
+            && jcp.ic * jcp.oc <= L2_size && jcp.nthr <= ncores_per_socket) {
         jcp.nb_load_chunk = 4;
         jcp.load_grp_count = nstl::max(jcp.nb_load / 4, jcp.load_grp_count);
     }

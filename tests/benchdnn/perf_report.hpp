@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -80,17 +80,17 @@ struct base_perf_report_t {
 
         HANDLE("attr", if (attr() && !attr()->is_def()) s << *attr());
         HANDLE("axis", if (axis()) s << *axis());
-        HANDLE("dir", if (dir()) s << dir2str(*dir()));
-        HANDLE("dt", if (dt()) s << dt2str(*dt()));
+        HANDLE("dir", if (dir()) s << *dir());
+        HANDLE("dt", if (dt()) s << *dt());
         HANDLE("group", if (group()) s << *group());
         HANDLE("sdt", if (sdt()) s << *sdt());
         HANDLE("stag", if (stag()) s << *stag());
         HANDLE("name", if (name()) s << name());
-        HANDLE("ddt", if (ddt()) s << dt2str(*ddt()));
-        HANDLE("dtag", if (dtag()) s << fmt_tag2str(*dtag()));
+        HANDLE("ddt", if (ddt()) s << *ddt());
+        HANDLE("dtag", if (dtag()) s << *dtag());
         HANDLE("prop", if (prop()) s << prop2str(*prop()));
-        HANDLE("tag", if (tag()) s << fmt_tag2str(*tag()));
-        HANDLE("stat_tag", if (stat_tag()) s << fmt_tag2str(*stat_tag()));
+        HANDLE("tag", if (tag()) s << *tag());
+        HANDLE("stat_tag", if (stat_tag()) s << *stat_tag());
 
         HANDLE("bw", s << get_bw());
         HANDLE("flops", s << get_flops());
@@ -122,7 +122,7 @@ struct base_perf_report_t {
         }
 
         std::string str = ss.str();
-        print(0, "%s\n", str.c_str());
+        BENCHDNN_PRINT(0, "%s\n", str.c_str());
     };
 
     /* truly common types */
@@ -135,12 +135,10 @@ struct base_perf_report_t {
     virtual const dnnl_data_type_t *dt() const { return nullptr; }
     virtual const std::vector<dnnl_data_type_t> *sdt() const { return nullptr; }
     virtual const dnnl_data_type_t *ddt() const { return nullptr; }
-    virtual const dnnl_format_tag_t *tag() const { return nullptr; }
-    virtual const dnnl_format_tag_t *stat_tag() const { return nullptr; }
-    virtual const std::vector<dnnl_format_tag_t> *stag() const {
-        return nullptr;
-    }
-    virtual const dnnl_format_tag_t *dtag() const { return nullptr; }
+    virtual const std::string *tag() const { return nullptr; }
+    virtual const std::string *stat_tag() const { return nullptr; }
+    virtual const std::vector<std::string> *stag() const { return nullptr; }
+    virtual const std::string *dtag() const { return nullptr; }
     virtual const dnnl_prop_kind_t *prop() const { return nullptr; }
 
     /* primitive-specific properties (but with common interface) */
@@ -158,7 +156,7 @@ private:
     void dump_perf_footer() const {
         static bool footer_printed = false;
         if (!footer_printed) {
-            print(0, "Output template: %s\n", pt_);
+            BENCHDNN_PRINT(0, "Output template: %s\n", pt_);
             footer_printed = true;
         }
     }

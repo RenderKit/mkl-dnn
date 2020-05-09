@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@
 #include "cpu_convolution_pd.hpp"
 #include "cpu_engine.hpp"
 #include "cpu_reducer.hpp"
+#include "eltwise/jit_uni_eltwise_injector.hpp"
 #include "gemm/gemm.hpp"
 #include "gemm_convolution_utils.hpp"
 #include "jit_avx512_core_bf16cvt.hpp"
-#include "jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -207,7 +207,7 @@ private:
         size_t vlen_;
         cpu_isa_t isa_;
         bf16_emulation_t *bf16_emu_;
-        jit_uni_eltwise_injector_f32<avx512_common> *eltwise_injector_;
+        jit_uni_eltwise_injector_f32<avx512_core> *eltwise_injector_;
 
         void generate();
         int vreg_dst_idx(int iter) {

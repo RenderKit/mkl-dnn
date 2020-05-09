@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,15 +29,13 @@
 #include "common.hpp"
 #include "dnnl_types.h"
 
-struct dims_t : public std::vector<int64_t> {};
-dims_t off2dims_idx(const dims_t &dims, int64_t off);
-std::ostream &operator<<(std::ostream &s, const dims_t &dims);
-std::ostream &operator<<(std::ostream &s, const std::vector<dims_t> &sdims);
-std::ostream &operator<<(
-        std::ostream &s, const std::vector<dnnl_data_type_t> &v_dt);
-std::ostream &operator<<(
-        std::ostream &s, const std::vector<dnnl_format_tag_t> &v_tag);
+namespace tag {
+extern const char *abx;
+extern const char *any;
+extern const char *undef;
+} // namespace tag
 
+struct dims_t : public std::vector<int64_t> {};
 enum dir_t {
     DIR_UNDEF = 0,
     FLAG_DAT = 1,
@@ -55,11 +53,22 @@ enum dir_t {
     BWD_WB = FLAG_BWD + FLAG_WEI + FLAG_BIA,
 };
 dir_t str2dir(const char *str);
-const char *dir2str(dir_t dir);
 
 /* TODO: merge prop and dir_t (in favor of prop) */
 const char *prop2str(dnnl_prop_kind_t prop);
 dnnl_prop_kind_t prop2prop_kind(dir_t dir);
+
+dims_t off2dims_idx(const dims_t &dims, int64_t off);
+std::ostream &operator<<(std::ostream &s, const dims_t &dims);
+std::ostream &operator<<(std::ostream &s, dir_t dir);
+std::ostream &operator<<(std::ostream &s, dnnl_data_type_t dt);
+template <typename T>
+std::ostream &operator<<(std::ostream &s, const std::vector<T> &v) {
+    s << v[0];
+    for (size_t d = 1; d < v.size(); ++d)
+        s << ":" << v[d];
+    return s;
+}
 
 typedef int data_kind_t;
 enum { SRC = 0, WEI, BIA, DST, ACC, DATA, MEAN, VAR, SS, GWEI, DAT_TOTAL };
@@ -123,6 +132,8 @@ struct attr_t {
             return points.end();
         }
 
+        zero_points_t() : points() {} // needed for debug icc190 build;
+
         std::map<int, entry_t> points;
     };
 
@@ -139,12 +150,18 @@ struct attr_t {
         bool is_def() const { return scales.empty(); }
         int from_str(const char *str, const char **end_s);
 
+        arg_scales_t() : scales() {} // needed for debug icc190 build;
+
         std::map<int, scale_t> scales;
     };
 
     struct post_ops_t {
         enum kind_t {
             SUM,
+
+            DW_K3S1P1,
+            DW_K3S2P1,
+
             RELU,
             TANH,
             ELU,
@@ -156,10 +173,20 @@ struct attr_t {
             SRELU,
             LOGISTIC,
             EXP,
-            GELU,
+            GELU_TANH,
             SWISH,
             LOG,
             CLIP,
+            POW,
+            GELU_ERF,
+
+            RELU_DST,
+            TANH_DST,
+            ELU_DST,
+            SQRT_DST,
+            LOGISTIC_DST,
+            EXP_DST,
+
             KIND_TOTAL
         };
         static kind_t str2kind(const char *str);
@@ -167,6 +194,8 @@ struct attr_t {
         static dnnl_alg_kind_t kind2dnnl_kind(kind_t kind);
 
         struct entry_t {
+            entry_t() {}
+
             kind_t kind;
             union {
                 struct {
@@ -176,7 +205,15 @@ struct attr_t {
                     dnnl_alg_kind_t alg;
                     float scale, alpha, beta;
                 } eltwise;
+                struct {
+                    int stride;
+                    dnnl_data_type_t dst_dt;
+                    scale_t oscale;
+                } convolution;
             };
+
+            bool is_eltwise_kind() const;
+            bool is_convolution_kind() const;
         };
 
         post_ops_t() : len(0) {}
@@ -186,6 +223,8 @@ struct attr_t {
 
         bool is_def() const { return len == 0; }
         int find(kind_t kind, int start = 0, int stop = -1) const;
+        int eltwise_index() const;
+        int convolution_index() const;
 
         enum { capacity = 4 };
         int len;
@@ -202,13 +241,15 @@ struct attr_t {
 using policy_t = attr_t::scale_t::policy_t;
 
 int str2attr(attr_t *attr, const char *str);
+std::ostream &operator<<(std::ostream &s, const policy_t &policy);
 std::ostream &operator<<(std::ostream &s, const attr_t::scale_t &scale);
 std::ostream &operator<<(
         std::ostream &s, const attr_t::zero_points_t &zero_points);
+std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t::kind_t &k);
 std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t &post_ops);
 std::ostream &operator<<(std::ostream &s, const attr_t &attr);
 
-/* Container for becnhdnn description of attributes and dnnl primitive
+/* Container for becnhdnn description of attributes and oneDNN primitive
  * attributes. Also contains the generated scales and zero-points.
  *
  * Usage model:
@@ -223,7 +264,7 @@ struct attr_bundle_t {
     std::vector<float> oscale;
     std::map<int, std::vector<int>> zero_points; // arg -> arg_zero_points
 
-    // constructor to forward already constructed DNNL primitive attributes
+    // constructor to forward already constructed oneDNN primitive attributes
     attr_bundle_t(const_dnnl_primitive_attr_t dnnl_attr)
         : dnnl_attr_((dnnl_primitive_attr_t)dnnl_attr,
                 [](dnnl_primitive_attr_t) {}) {}
@@ -244,16 +285,21 @@ private:
 
 std::ostream &dump_global_params(std::ostream &s);
 
-dnnl_format_tag_t get_default_tag(int ndims);
+dnnl_format_tag_t get_abx_tag(int ndims);
+dnnl_format_tag_t convert_tag(const std::string &tag_str, int ndims);
+
 dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
         int scale_mask, const float *scales);
 inline dnnl_primitive_attr_t create_dnnl_attr(
         const attr_t &attr, int64_t scale_cnt, const float *scales) {
     return create_dnnl_attr(attr, scale_cnt, -1, scales);
 }
+inline dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr) {
+    return create_dnnl_attr(attr, 1, -1, NULL);
+}
 
 dnnl_engine_kind_t str2engine_kind(const char *str);
-const char *engine_kind2str(dnnl_engine_kind_t engine);
+dnnl_scratchpad_mode_t str2scratchpad_mode(const char *str);
 
 void maybe_scale(float &d, float *scales, int64_t oc, const attr_t &attr);
 float compute_eltwise_fwd(attr_t::post_ops_t::kind_t kind, float src,
@@ -261,4 +307,5 @@ float compute_eltwise_fwd(attr_t::post_ops_t::kind_t kind, float src,
 float compute_eltwise_bwd(attr_t::post_ops_t::kind_t kind, float d_dst,
         float src, float alpha, float beta);
 void maybe_post_ops(float &d, float dst, const attr_t &attr);
+
 #endif

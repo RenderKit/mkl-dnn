@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #include "gemm_inner_product_utils.hpp"
 #include "dnnl_thread.hpp"
-#include "jit_uni_eltwise_injector.hpp"
+#include "eltwise/jit_uni_eltwise_injector.hpp"
 #include "math_utils.hpp"
 #include "simple_q10n.hpp"
 

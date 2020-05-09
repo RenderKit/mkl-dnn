@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -67,8 +67,8 @@ protected:
     }
 
     void Test() {
-        eng = engine(get_test_engine_kind(), 0);
-        strm = stream(eng);
+        eng = get_test_engine();
+        strm = make_stream(eng);
 
         data_d.reset(
                 new memory::desc(p.dims, memory::data_type::f32, p.data_tag));
@@ -102,8 +102,8 @@ protected:
                 flags::use_scale_shift | flags::use_global_stats);
     }
 
-    void Forward(
-            prop_kind pk, normalization_flags flags = (normalization_flags)0u) {
+    void Forward(prop_kind pk,
+            normalization_flags flags = normalization_flags::none) {
         fwd_iface_test_stat_any(pk, flags);
 
         bool useScaleShift
@@ -151,8 +151,8 @@ protected:
                 p, src->get(), mean, variance, weights, dst->get(), flags, pk);
     }
 
-    void Backward(
-            prop_kind pk, normalization_flags flags = (normalization_flags)0u) {
+    void Backward(prop_kind pk,
+            normalization_flags flags = normalization_flags::none) {
         bwd_iface_test_stat_any(pk, flags);
 
         bool useScaleShift

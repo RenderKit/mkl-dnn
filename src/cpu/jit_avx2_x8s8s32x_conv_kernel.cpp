@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,12 +34,11 @@ using namespace dnnl::impl::utils;
 using namespace Xbyak;
 
 namespace {
-void pick_loop_order(jit_conv_conf_t &jcp, int nthr) {
-
+void pick_loop_order(jit_conv_conf_t &jcp) {
     jcp.loop_order = loop_cwgn;
     if (jcp.ngroups > 1) {
         jcp.loop_order = loop_ngcw;
-        if (jcp.mb < nthr)
+        if (jcp.mb < jcp.nthr)
             jcp.loop_order = jcp.ndims == 3 ? loop_nwcg : loop_nhwcg;
     }
 }
@@ -209,7 +208,11 @@ void _jit_avx2_x8s8s32x_fwd_kernel<Ymm>::compute_ker_dw(int ur_w, int pad_l,
     };
 
     auto input_offset2 = [=](int ii, int ci) {
-        return jcp.typesize_in * (ii * jcp.ngroups + ci * jcp.ch_block);
+        if (jcp.is_fused_conv)
+            return jcp.typesize_in
+                    * (ii * jcp.dw_conv_buffer_oc + ci * jcp.ch_block);
+        else
+            return jcp.typesize_in * (ii * jcp.ngroups + ci * jcp.ch_block);
     };
 
     auto input_offset3 = [=](int oi, int ci, int ki) {
@@ -449,7 +452,11 @@ void _jit_avx2_x8s8s32x_fwd_kernel<Vmm>::kh_loop(
         mov(aux_reg_inp, aux_reg_inp_d);
         mov(aux_reg_ker, aux_reg_ker_d);
     } else {
-        mov(aux_reg_inp, reg_inp);
+        if (jcp.is_fused_conv) {
+            mov(aux_reg_inp_buffer_ptr, reg_inp_buffer_ptr);
+        } else {
+            mov(aux_reg_inp, reg_inp);
+        }
         mov(aux_reg_ker, reg_ker);
     }
 
@@ -478,10 +485,18 @@ void _jit_avx2_x8s8s32x_fwd_kernel<Vmm>::kh_loop(
     }
     L(kh_label);
     {
+        if (jcp.is_fused_conv) {
+            mov(aux_reg_inp, ptr[aux_reg_inp_buffer_ptr]);
+            add(aux_reg_inp, reg_inp);
+        }
         compute_ker(ur_w, pad_l, pad_r, last_ic_block_flag, false);
 
         add(aux_reg_ker, shift_kernel_ptr);
-        add(aux_reg_inp, shift_input_ptr * (jcp.dilate_h + 1));
+        if (jcp.is_fused_conv) {
+            add(aux_reg_inp_buffer_ptr, sizeof(void *));
+        } else {
+            add(aux_reg_inp, shift_input_ptr * (jcp.dilate_h + 1));
+        }
         dec(reg_kj);
         cmp(reg_kj, 0);
         jg(kh_label, T_NEAR);
@@ -600,12 +615,13 @@ void _jit_avx2_x8s8s32x_fwd_kernel<Vmm>::icb_loop(
 template <typename Vmm>
 void _jit_avx2_x8s8s32x_fwd_kernel<Vmm>::generate() {
     Label permute_index_table;
+    int in_ic_shift = jcp.is_fused_conv ? jcp.dw_conv_buffer_oc
+                                        : jcp.ic_without_padding * jcp.ngroups;
     int inp_shift_pad = jcp.typesize_in * (jcp.ur_w * jcp.stride_w - jcp.l_pad)
-            * jcp.ic_without_padding * jcp.ngroups;
-    int inp_shift_pad_second_block = -1 * jcp.typesize_in * jcp.l_pad
-            * jcp.ic_without_padding * jcp.ngroups;
-    int inp_shift = jcp.typesize_in
-            * (jcp.ur_w * jcp.stride_w * jcp.ic_without_padding * jcp.ngroups);
+            * in_ic_shift;
+    int inp_shift_pad_second_block
+            = -1 * jcp.typesize_in * jcp.l_pad * in_ic_shift;
+    int inp_shift = jcp.typesize_in * (jcp.ur_w * jcp.stride_w * in_ic_shift);
     int out_shift = jcp.typesize_out
             * (jcp.ur_w * jcp.oc_without_padding * jcp.ngroups);
     preamble();
@@ -628,7 +644,26 @@ void _jit_avx2_x8s8s32x_fwd_kernel<Vmm>::generate() {
         vpbroadcastw(vmm_one, vmm_one_128);
     }
 
-    mov(reg_inp, ptr[param1 + GET_OFF(src)]);
+    if (jcp.is_fused_conv) {
+        mov(reg_inp_buffer_ptr, ptr[param1 + GET_OFF(src)]);
+        /* In case of fused depthwise convolution, `param.src` is not a pointer
+        to input, instead it points to a buffer containing pointers to
+        consecutive rows of input in format wc with c=jcp.dw_conv_buffer_oc.
+        Example: [ptr_to_inp_row0, ptr_to_inp_row1, ptr_to_inp_row2].
+        Traverse the data as
+            mov(reg_data, ptr[reg_input_buffer_ptr])
+            ... process row0 ...
+            add(reg_input_buffer_ptr, sizeof(void*))
+            mov(reg_data, ptr[reg_input_buffer_ptr])
+            ... process row1 ...
+            add(reg_input_buffer_ptr, sizeof(void*))
+            mov(reg_data, ptr[reg_input_buffer_ptr])
+            ... process row2 ...
+        */
+        xor_(reg_inp, reg_inp);
+    } else {
+        mov(reg_inp, ptr[param1 + GET_OFF(src)]);
+    }
     mov(reg_out, ptr[param1 + GET_OFF(dst)]);
     mov(reg_ker, ptr[param1 + GET_OFF(filt)]);
 
@@ -869,6 +904,7 @@ status_t jit_avx2_x8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
         return status::unimplemented;
 
     jcp = zero<decltype(jcp)>();
+    jcp.nthr = nthreads;
     jcp.ndims = ndims;
     jcp.prop_kind = cd.prop_kind;
     jcp.ngroups = with_groups ? weights_d.dims()[0] : 1;
@@ -935,7 +971,7 @@ status_t jit_avx2_x8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
         } else if (jcp.ngroups != 1
                 && ((jcp.ic % jcp.ic_block != 0)
                         || (jcp.oc % jcp.oc_block != 0))) {
-            /* For grouped convolutions, DNNL doesn't support padding.
+            /* For grouped convolutions, oneDNN doesn't support padding.
              * When channels per group is not multiple of 8:
              * - Use Xmm when channels per group is multiple of 4.
              * - Otherwise return unimplemented */
@@ -1099,7 +1135,7 @@ status_t jit_avx2_x8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
     int base_work_amount = jcp.mb * jcp.nb_ch * jcp.oh
             * (jcp.nb_oc / jcp.nb_oc_blocking_thr_chunk);
     float best_thr_eff
-            = (float)base_work_amount / rnd_up(base_work_amount, nthreads);
+            = (float)base_work_amount / rnd_up(base_work_amount, jcp.nthr);
     int max_nb_ow = div_up(jcp.ow, 2 * jcp.ur_w);
     for (int nb_ow = 1; nb_ow <= max_nb_ow; ++nb_ow) {
         int ow_block
@@ -1109,7 +1145,7 @@ status_t jit_avx2_x8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
             break;
         if (div_up(jcp.ow, ow_block) != nb_ow) continue;
         auto work_amount = base_work_amount * nb_ow;
-        float thr_eff = (float)work_amount / rnd_up(work_amount, nthreads);
+        float thr_eff = (float)work_amount / rnd_up(work_amount, jcp.nthr);
         if (ow_block >= 2 * jcp.ur_w && thr_eff > 1.1f * best_thr_eff) {
             jcp.ow_block = ow_block;
             best_thr_eff = thr_eff;
@@ -1128,7 +1164,7 @@ status_t jit_avx2_x8s8s32x_fwd_kernel::init_conf(jit_conv_conf_t &jcp,
 
     if (r_pad_no_tail > jcp.ur_w) return status::unimplemented;
 
-    pick_loop_order(jcp, nthreads);
+    pick_loop_order(jcp);
 
     jcp.nb_ic_L2 = jcp.nb_ic;
 
@@ -1152,8 +1188,9 @@ void jit_avx2_x8s8s32x_fwd_kernel::init_scratchpad(
         const primitive_attr_t &attr) {
 
     if (jcp.signed_input) {
-        dim_t count
-                = nstl::max(attr.output_scales_.count_, (dim_t)jcp.ic_block);
+        dim_t count = attr.output_scales_.count_ == 1
+                ? (dim_t)8
+                : attr.output_scales_.count_;
         scratchpad.book(key_conv_adjusted_scales, sizeof(float) * count);
     }
 }

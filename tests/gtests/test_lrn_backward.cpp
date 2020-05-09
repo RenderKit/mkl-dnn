@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -228,8 +228,8 @@ protected:
     void Test() {
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
 
-        eng = engine(get_test_engine_kind(), 0);
-        strm = stream(eng);
+        eng = get_test_engine();
+        strm = make_stream(eng);
         ASSERT_EQ(true,
                 dnnl::impl::utils::one_of(data_type,
                         dnnl::memory::data_type::f32,
@@ -506,7 +506,7 @@ static auto RegressionWeightFormat_cases = [](algorithm lk) {
             GoogleNetV1_nChw16c, test, GoogleNetV1_nChw16c_cases(lk)); \
     INSTANTIATE_TEST_SUITE_P(RegressionWeightFormat, test, \
             RegressionWeightFormat_cases( \
-                    lk)); // This tests compatibility with MKL-DNN 0.14
+                    lk)); // This tests compatibility with Intel MKL-DNN v0.14
 
 using float_across = lrn_test<float>;
 using float_within = lrn_test<float>;

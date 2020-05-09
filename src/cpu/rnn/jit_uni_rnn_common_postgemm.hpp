@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 
 #include "../jit_avx512_core_bf16cvt.hpp"
 #include "../jit_generator.hpp"
-#include "../jit_uni_eltwise_injector.hpp"
+#include "eltwise/jit_uni_eltwise_injector.hpp"
 
 #include "rnn_pd.hpp"
 #include "rnn_utils.hpp"
@@ -72,75 +72,81 @@ struct jit_uni_rnn_postgemm : public jit_generator {
             bf16_emu_ = nullptr;
     };
 
-    template <typename src_data_t, typename acc_data_t, typename scratch_data_t>
+    template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
+            typename gemm_acc_t, typename gates_t, typename scratch_t>
     rnn_postgemm_sig(execute) {
         if (pd_->desc()->prop_kind == prop_kind::backward)
-            execute_bwd<src_data_t, acc_data_t, scratch_data_t>(rnn,
-                    cell_position, ws_gates_, scratch_gates_, states_t_l_,
-                    c_states_t_l_, states_tm1_l_, c_states_tm1_l_,
-                    diff_states_t_l_, diff_states_t_lp1_, diff_states_tp1_l_,
-                    bias_, ws_grid_, scratch_cell_, states_t_l_copy_);
+            execute_bwd(rnn, cell_position, ws_gates_, scratch_gates_,
+                    dst_layer_, dst_iter_c_, src_iter_, src_iter_c_,
+                    diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
+                    diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
+                    weights_peephole_, bias_, ws_grid_, scratch_cell_,
+                    dst_iter_);
         else
-            execute_fwd<src_data_t, acc_data_t, scratch_data_t>(rnn,
-                    cell_position, ws_gates_, scratch_gates_, states_t_l_,
-                    c_states_t_l_, states_tm1_l_, c_states_tm1_l_,
-                    diff_states_t_l_, diff_states_t_lp1_, diff_states_tp1_l_,
-                    bias_, ws_grid_, scratch_cell_, states_t_l_copy_);
+            execute_fwd(rnn, cell_position, ws_gates_, scratch_gates_,
+                    dst_layer_, dst_iter_c_, src_iter_, src_iter_c_,
+                    diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
+                    diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
+                    weights_peephole_, bias_, ws_grid_, scratch_cell_,
+                    dst_iter_);
     }
 
-    template <typename src_data_t, typename acc_data_t, typename scratch_data_t>
+    template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
+            typename gemm_acc_t, typename gates_t, typename scratch_t>
     rnn_postgemm_sig(execute_fwd) {
         using namespace rnn_utils;
-        rnn_utils::ws_gates_aoc<src_data_t> ws_gates(rnn, ws_gates_);
-        rnn_utils::ws_gates_aoc<scratch_data_t> scratch_gates(
+        rnn_utils::ws_gates_aoc<gates_t> ws_gates(rnn, ws_gates_);
+        rnn_utils::scratch_gates_aoc<scratch_t> scratch_gates(
                 rnn, scratch_gates_);
+        rnn_utils::weights_peephole_aoc_t<const float> weights_peephole(
+                rnn, weights_peephole_);
         rnn_utils::bias_aoc_t bias(rnn, bias_);
-        auto src_iter_ld = rnn.src_iter_ld(cell_position);
-        auto src_iter_c_ld = rnn.src_iter_c_ld(cell_position);
-        auto dst_iter_c_ld = rnn.dst_iter_c_ld(cell_position);
-        auto dst_ld = rnn.dst_ld(cell_position);
-        auto dst_copy_ld = rnn.dst_copy_ld(cell_position);
-        rnn_utils::ws_states_aoc<src_data_t> states_t_l(
-                rnn, states_t_l_, dst_ld);
-        rnn_utils::ws_states_aoc<src_data_t> states_t_l_copy(
-                rnn, states_t_l_copy_, dst_copy_ld);
-        rnn_utils::ws_states_aoc<const src_data_t> states_tm1_l(
-                rnn, states_tm1_l_, src_iter_ld);
-        rnn_utils::ws_states_aoc<float> c_states_t_l(
-                rnn, c_states_t_l_, dst_iter_c_ld);
-        rnn_utils::ws_states_aoc<const float> c_states_tm1_l(
-                rnn, c_states_tm1_l_, src_iter_c_ld);
-        rnn_utils::ws_gates_aoc<scratch_data_t> scratch_cell(
-                rnn, scratch_cell_);
-        utils::array_offset_calculator<src_data_t, 2> ws_Wh_b(
-                ws_grid_, rnn.mb, rnn.dic);
 
-        // Todo: add parallelization on dic for the batch 1 case
-        // Assumption: the kernel runs a loop on dic elements
+        auto src_iter_ld = rnn.src_iter_ld(cell_position);
+        auto dst_iter_c_ld = rnn.dst_iter_c_ld(cell_position);
+        auto dst_layer_ld = rnn.dst_layer_ld(cell_position);
+        auto dst_iter_ld = rnn.dst_iter_ld(cell_position);
+        auto src_iter_c_ld = rnn.src_iter_c_ld(cell_position);
+
+        rnn_utils::ws_states_layer_aoc<dst_layer_t> dst_layer(
+                rnn, dst_layer_, dst_layer_ld);
+        rnn_utils::ws_states_iter_aoc<dst_iter_t> dst_iter(
+                rnn, dst_iter_, dst_iter_ld);
+        rnn_utils::ws_states_iter_aoc<const src_iter_t> src_iter(
+                rnn, src_iter_, src_iter_ld);
+        rnn_utils::ws_states_iter_c_aoc<float> dst_iter_c(
+                rnn, dst_iter_c_, dst_iter_c_ld);
+        rnn_utils::ws_states_iter_c_aoc<const float> src_iter_c(
+                rnn, src_iter_c_, src_iter_c_ld);
+        rnn_utils::ws_gates_aoc<scratch_t> scratch_cell(rnn, scratch_cell_);
+        utils::array_offset_calculator<gates_t, 2> ws_Wh_b(
+                ws_grid_, rnn.mb, rnn.dhc);
+
+        // Todo: add parallelization on dhc for the batch 1 case
+        // Assumption: the kernel runs a loop on dhc elements
         parallel_nd(rnn.mb, [&](int i) {
             void *param1_ = &ws_gates(i, 0, 0); // RNN, LSTM, GRU
             void *param2_ = &scratch_gates(i, 0, 0); // RNN, LSTM, GRU
             const void *param3_ = &bias(0, 0); // RNN, LSTM, GRU
-            void *param4_ = &states_t_l(i, 0); // RNN, LSTM, GRU
-            void *param5_ = states_t_l_copy_
-                    ? &states_t_l_copy(i, 0)
-                    : states_t_l_copy_; // RNN, LSTM, GRU
+            void *param4_ = &dst_layer(i, 0); // RNN, LSTM, GRU
+            void *param5_
+                    = dst_iter_ ? &dst_iter(i, 0) : dst_iter_; // RNN, LSTM, GRU
             const void *param6_;
             void *param7_, *param8_;
             void *param9_ = nullptr;
             switch (pd_->cell_kind()) {
                 case alg_kind::vanilla_lstm:
-                    param6_ = &c_states_tm1_l(i, 0);
-                    param7_ = &c_states_t_l(i, 0);
-                    param8_ = nullptr;
+                    param6_ = &src_iter_c(i, 0);
+                    param7_ = &dst_iter_c(i, 0);
+                    param8_ = (void *)&weights_peephole(0, 0);
                     break;
                 case alg_kind::lbr_gru:
-                    param6_ = &states_tm1_l(i, 0);
+                    param6_ = &src_iter(i, 0);
                     param7_ = &scratch_cell(i, 0, 0);
                     param8_ = &ws_Wh_b(i, 0);
                     break;
                 case alg_kind::vanilla_gru:
-                    param6_ = &states_tm1_l(i, 0);
+                    param6_ = &src_iter(i, 0);
                     param7_ = nullptr;
                     param8_ = nullptr;
                     break;
@@ -155,37 +161,45 @@ struct jit_uni_rnn_postgemm : public jit_generator {
         });
     }
 
-    template <typename src_data_t, typename acc_data_t, typename scratch_data_t>
+    template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
+            typename gemm_acc_t, typename gates_t, typename scratch_t>
     rnn_postgemm_sig(execute_bwd) {
         using namespace rnn_utils;
         auto dst_iter_c_ld = rnn.dst_iter_c_ld(cell_position);
         auto src_iter_c_ld = rnn.src_iter_c_ld(cell_position);
         auto src_iter_ld = rnn.src_iter_ld(cell_position);
 
-        rnn_utils::ws_gates_aoc<src_data_t> ws_gates(rnn, ws_gates_);
-        rnn_utils::ws_gates_aoc<scratch_data_t> scratch_gates(
-                rnn, scratch_gates_);
-        rnn_utils::ws_diff_states_aoc<acc_data_t> diff_states_t_l(
-                rnn, diff_states_t_l_);
-        rnn_utils::ws_diff_states_aoc<acc_data_t> diff_states_tp1_l(
-                rnn, diff_states_tp1_l_);
-        rnn_utils::ws_diff_states_aoc<acc_data_t> diff_states_t_lp1(
-                rnn, diff_states_t_lp1_);
-        rnn_utils::ws_states_aoc<float> c_states_t_l(
-                rnn, c_states_t_l_, dst_iter_c_ld);
-        rnn_utils::ws_states_aoc<const float> c_states_tm1_l(
-                rnn, c_states_tm1_l_, src_iter_c_ld);
+        rnn_utils::weights_peephole_aoc_t<const float> weights_peephole(
+                rnn, weights_peephole_);
+        rnn_utils::ws_gates_aoc<gates_t> ws_gates(rnn, ws_gates_);
+        rnn_utils::ws_gates_aoc<scratch_t> scratch_gates(rnn, scratch_gates_);
+        rnn_utils::ws_diff_states_layer_aoc<gemm_acc_t> diff_src_layer(
+                rnn, diff_src_layer_);
+        rnn_utils::ws_diff_states_iter_aoc<gemm_acc_t> diff_src_iter(
+                rnn, diff_src_iter_);
+        rnn_utils::ws_diff_states_iter_c_aoc<gemm_acc_t> diff_src_iter_c(
+                rnn, diff_src_iter_c_);
+        rnn_utils::ws_diff_states_layer_aoc<gemm_acc_t> diff_dst_layer(
+                rnn, diff_dst_layer_);
+        rnn_utils::ws_diff_states_iter_aoc<gemm_acc_t> diff_dst_iter(
+                rnn, diff_dst_iter_);
+        rnn_utils::ws_diff_states_iter_c_aoc<gemm_acc_t> diff_dst_iter_c(
+                rnn, diff_dst_iter_c_);
+        rnn_utils::ws_states_iter_c_aoc<float> dst_iter_c(
+                rnn, dst_iter_c_, dst_iter_c_ld);
+        rnn_utils::ws_states_iter_c_aoc<const float> src_iter_c(
+                rnn, src_iter_c_, src_iter_c_ld);
 
-        ws_states_aoc<const src_data_t> states_tm1_l(
-                rnn, states_tm1_l_, src_iter_ld);
-        ws_gates_aoc<scratch_data_t> scratch_cell(rnn, scratch_cell_);
-        utils::array_offset_calculator<scratch_data_t, 2> hG1(
-                scratch_cell_, rnn.states_nld, rnn.states_ws_ld);
-        utils::array_offset_calculator<src_data_t, 2> ws_grid(
-                ws_grid_, rnn.mb, rnn.dic);
+        ws_states_iter_aoc<const src_iter_t> src_iter(
+                rnn, src_iter_, src_iter_ld);
+        ws_gates_aoc<scratch_t> scratch_cell(rnn, scratch_cell_);
+        utils::array_offset_calculator<scratch_t, 2> hG1(
+                scratch_cell_, rnn.ws_states_layer_nld, rnn.ws_states_layer_ld);
+        utils::array_offset_calculator<gates_t, 2> ws_grid(
+                ws_grid_, rnn.mb, rnn.dhc);
 
-        // Todo: add parallelization on dic for the batch 1 case
-        // Assumption: the kernel runs a loop on dic elements
+        // Todo: add parallelization on dhc for the batch 1 case
+        // Assumption: the kernel runs a loop on dhc elements
         parallel_nd(rnn.mb, [&](int i) {
             void *param1_, *param2_, *param4_, *param5_, *param7_, *param8_,
                     *param9_;
@@ -194,21 +208,21 @@ struct jit_uni_rnn_postgemm : public jit_generator {
                 case alg_kind::vanilla_lstm:
                     param1_ = &ws_gates(i, 0, 0);
                     param2_ = &scratch_gates(i, 0, 0); // RNN, LSTM, GRU
-                    param3_ = &diff_states_t_lp1(rnn.n_states, i, 0);
-                    param4_ = &diff_states_tp1_l(0, i, 0);
-                    param5_ = &diff_states_t_l(1, i, 0);
-                    param6_ = &diff_states_tp1_l(1, i, 0);
-                    param7_ = (float *)&c_states_tm1_l(i, 0);
-                    param8_ = &c_states_t_l(i, 0);
-                    param9_ = nullptr;
+                    param3_ = &diff_dst_layer(i, 0);
+                    param4_ = &diff_dst_iter(i, 0);
+                    param5_ = &diff_src_iter_c(i, 0);
+                    param6_ = &diff_dst_iter_c(i, 0);
+                    param7_ = (float *)&src_iter_c(i, 0);
+                    param8_ = &dst_iter_c(i, 0);
+                    param9_ = (void *)&weights_peephole(0, 0);
                     break;
                 case alg_kind::lbr_gru:
                     param1_ = &ws_gates(i, 0, 0);
                     param2_ = &scratch_gates(i, 0, 0);
-                    param3_ = &diff_states_t_lp1(rnn.n_states, i, 0);
-                    param4_ = &diff_states_tp1_l(0, i, 0);
-                    param5_ = &diff_states_t_l(0, i, 0);
-                    param6_ = &states_tm1_l(i, 0);
+                    param3_ = &diff_dst_layer(i, 0);
+                    param4_ = &diff_dst_iter(i, 0);
+                    param5_ = &diff_src_iter(i, 0);
+                    param6_ = &src_iter(i, 0);
                     param7_ = &scratch_cell(i, 0, 0);
                     param8_ = &ws_grid(i, 0);
                     param9_ = nullptr;
@@ -217,22 +231,19 @@ struct jit_uni_rnn_postgemm : public jit_generator {
                     // TODO: split part 1 and part2 APIs/ABIs
                     param1_ = &ws_gates(i, 0, 0);
                     param2_ = &scratch_gates(i, 0, 0); // RNN, LSTM, GRU
-                    param3_ = &diff_states_t_lp1(
-                            rnn.n_states, i, 0); // not needed for part2
-                    param4_ = &diff_states_tp1_l(
-                            0, i, 0); // not needed for part2
-                    param5_ = &diff_states_t_l(0, i, 0);
-                    param6_ = &states_tm1_l(i, 0);
+                    param3_ = &diff_dst_layer(i, 0); // not needed for part2
+                    param4_ = &diff_dst_iter(i, 0); // not needed for part2
+                    param5_ = &diff_src_iter(i, 0);
+                    param6_ = &src_iter(i, 0);
                     param7_ = &hG1(i, 0); // not needed for part1
                     param8_ = &ws_grid(i, 0); // not needed in part1
-                    param9_ = &diff_states_t_l(
-                            rnn.n_states, i, 0); // not needed for part1
+                    param9_ = &diff_src_layer(i, 0); // not needed for part1
                     break;
                 case alg_kind::vanilla_rnn:
                     param1_ = &ws_gates(i, 0, 0);
                     param2_ = &scratch_gates(i, 0, 0);
-                    param3_ = &diff_states_t_lp1(rnn.n_states, i, 0);
-                    param4_ = &diff_states_tp1_l(0, i, 0);
+                    param3_ = &diff_dst_layer(i, 0);
+                    param4_ = &diff_dst_iter(i, 0);
                     param5_ = nullptr;
                     param6_ = nullptr;
                     param7_ = nullptr;
@@ -408,7 +419,7 @@ protected:
             uni_vbroadcastss(tmp1, ptr[weights_scales_reg]);
         else {
             auto scales_ptr = ptr[weights_scales_reg
-                    + gate * rnn_.dic * qscale_dt_size];
+                    + gate * rnn_.dhc * qscale_dt_size];
             if (packed)
                 uni_vmovups(tmp1, scales_ptr);
             else

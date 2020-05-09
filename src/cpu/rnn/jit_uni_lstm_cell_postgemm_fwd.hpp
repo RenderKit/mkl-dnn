@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -43,7 +43,8 @@ struct jit_uni_lstm_cell_postgemm_fwd : public jit_uni_rnn_postgemm {
 
     void init(data_type_t sdt) override {
         jit_uni_rnn_postgemm::init(src_data_t);
-        // we use rax for both constant tables as they use the same table
+        // we use rax for both constant tables and load correspondent label
+        // into it when calling correspondent injector.
         sigmoid_injector_ = new injector_t(
                 this, alg_kind::eltwise_logistic, 0.0f, 0.0f, 1.0f, true, rax);
         tanh_injector_ = new injector_t(
@@ -66,6 +67,7 @@ protected:
     size_t gate_dt_size = types::data_type_size(src_data_t);
     size_t scratch_dt_size = types::data_type_size(scratch_data_t);
     size_t qscale_dt_size = sizeof(float);
+    size_t weights_peephole_dt_size = sizeof(float);
     size_t bias_dt_size = sizeof(float);
 
     void generate() {
@@ -90,12 +92,13 @@ protected:
         // extract addresses passed as parameter
         auto addr_ws_gates_reg = abi_param1;
         auto addr_scratch_gates_reg = abi_param2;
+        auto addr_weights_peephole_reg = r11;
         auto addr_bias_reg = abi_param3;
         auto addr_states_t_l_reg = abi_param4;
 #ifdef _WIN32
         auto addr_states_t_l_copy_reg = r10;
-        auto addr_c_states_tm1_l_reg = r11;
-        auto addr_c_states_t_l_reg = r12;
+        auto addr_c_states_tm1_l_reg = rdi;
+        auto addr_c_states_t_l_reg = rsi;
         // Here we cannot use rbp to have initial stack pointer so we
         // use rsp and offset it with the size of pushed registers in
         // preamble
@@ -103,33 +106,39 @@ protected:
         mov(addr_states_t_l_copy_reg, ptr[base_args]);
         mov(addr_c_states_tm1_l_reg, ptr[base_args + 8]);
         mov(addr_c_states_t_l_reg, ptr[base_args + 16]);
+        mov(addr_weights_peephole_reg, ptr[base_args + 24]);
 #else
         auto addr_states_t_l_copy_reg = abi_param5;
         auto addr_c_states_tm1_l_reg = abi_param6;
         auto addr_c_states_t_l_reg = r10;
         auto base_args = get_stack_params_address();
         mov(addr_c_states_t_l_reg, ptr[base_args]);
+        mov(addr_weights_peephole_reg, ptr[base_args + 8]);
 #endif
 
         // helper lambda to address the gates and biases
         auto sg_addr = [&](int i) {
-            return ptr[addr_scratch_gates_reg + i * rnn_.dic * scratch_dt_size];
+            return ptr[addr_scratch_gates_reg + i * rnn_.dhc * scratch_dt_size];
         };
 
         auto wg_addr = [&](int i) {
-            return ptr[addr_ws_gates_reg + i * rnn_.dic * gate_dt_size];
+            return ptr[addr_ws_gates_reg + i * rnn_.dhc * gate_dt_size];
+        };
+        auto weights_peephole_addr = [&](int i) {
+            return ptr[addr_weights_peephole_reg
+                    + i * rnn_.dhc * weights_peephole_dt_size];
         };
         auto B_addr = [&](int i) {
-            return ptr[addr_bias_reg + i * rnn_.dic * bias_dt_size];
+            return ptr[addr_bias_reg + i * rnn_.dhc * bias_dt_size];
         };
 
         // initialize registers with addresses and constants
         init_regs(vlen);
 
-        // both sigmoid and tanh use the same table so load address just once in rax
         sigmoid_injector_->load_table_addr();
+        tanh_injector_->load_table_addr();
 
-        mov(loop_cnt, rnn_.dic * scratch_dt_size);
+        mov(loop_cnt, rnn_.dhc * scratch_dt_size);
         cmp(loop_cnt, vlen);
         jl(vector_loop_end_label, Xbyak::CodeGenerator::T_NEAR);
 
@@ -159,18 +168,27 @@ protected:
             uni_vmovups(tmp1_vmm, B_addr(3));
             uni_vaddps(G3, G3, tmp1_vmm);
 
+            // add peephole
+            if (rnn_.is_lstm_peephole) {
+                uni_vmovups(tmp1_vmm, weights_peephole_addr(0));
+                uni_vmovups(tmp2_vmm, ptr[addr_c_states_tm1_l_reg]);
+                uni_vfmadd231ps(G0, tmp1_vmm, tmp2_vmm);
+                uni_vmovups(tmp1_vmm, weights_peephole_addr(1));
+                uni_vfmadd231ps(G1, tmp1_vmm, tmp2_vmm);
+            }
+
             // inject eltwise code
+            sigmoid_injector_->load_table_addr();
             sigmoid_injector_->compute_vector(G0.getIdx());
             sigmoid_injector_->compute_vector(G1.getIdx());
+            tanh_injector_->load_table_addr();
             tanh_injector_->compute_vector(G2.getIdx());
-            sigmoid_injector_->compute_vector(G3.getIdx());
 
             // if training we write back the gates
             if (is_training) {
                 to_src<src_data_t>(wg_addr(0), G0, vlen);
                 to_src<src_data_t>(wg_addr(1), G1, vlen);
                 to_src<src_data_t>(wg_addr(2), G2, vlen);
-                to_src<src_data_t>(wg_addr(3), G3, vlen);
             }
 
             // compute c_states_t_l = G1 * c_tm1_l + G0 * G2
@@ -179,14 +197,29 @@ protected:
             uni_vfmadd231ps(tmp1_vmm, G0, G2);
             uni_vmovups(ptr[addr_c_states_t_l_reg], tmp1_vmm);
 
+            // add peephole
+            if (rnn_.is_lstm_peephole) {
+                uni_vmovups(tmp1_vmm, weights_peephole_addr(2));
+                uni_vmovups(tmp2_vmm, ptr[addr_c_states_t_l_reg]);
+                uni_vfmadd231ps(G3, tmp1_vmm, tmp2_vmm);
+            }
+
+            sigmoid_injector_->load_table_addr();
+            sigmoid_injector_->compute_vector(G3.getIdx());
+
+            // if training we write back the gates
+            if (is_training) { to_src<src_data_t>(wg_addr(3), G3, vlen); }
+
             // states_t_l = G3 * tanh(c_states_t_l)
+            uni_vmovups(tmp1_vmm, ptr[addr_c_states_t_l_reg]);
+            tanh_injector_->load_table_addr();
             tanh_injector_->compute_vector(tmp1_vmm.getIdx());
             uni_vmulps(tmp1_vmm, tmp1_vmm, G3);
 
             // downconvert and write back the state
             to_src<src_data_t>(ptr[addr_states_t_l_reg], tmp1_vmm, vlen);
             // if states_t_l_copy is a non null ptr, we write the output to it too
-            cmp(addr_states_t_l_copy_reg, rnn_.dic * hstate_dt_size);
+            cmp(addr_states_t_l_copy_reg, rnn_.dhc * hstate_dt_size);
             jle(vector_loop_inc_regs);
             to_src<src_data_t>(
                     ptr[addr_states_t_l_copy_reg], tmp1_vmm, vlen, true);
@@ -194,6 +227,7 @@ protected:
             // increment address pointers
             L(vector_loop_inc_regs);
             add(addr_scratch_gates_reg, vlen);
+            if (rnn_.is_lstm_peephole) add(addr_weights_peephole_reg, vlen);
             add(addr_bias_reg, vlen);
             add(addr_states_t_l_reg, vlen_dst);
             add(addr_states_t_l_copy_reg, vlen_dst);
@@ -238,18 +272,27 @@ protected:
             uni_vmovss(tmp1_vmm, B_addr(3));
             uni_vaddps(G3, G3, tmp1_vmm);
 
+            // add peephole
+            if (rnn_.is_lstm_peephole) {
+                uni_vmovss(tmp1_vmm, weights_peephole_addr(0));
+                uni_vmovss(tmp2_vmm, ptr[addr_c_states_tm1_l_reg]);
+                uni_vfmadd231ss(G0, tmp1_vmm, tmp2_vmm);
+                uni_vmovss(tmp1_vmm, weights_peephole_addr(1));
+                uni_vfmadd231ss(G1, tmp1_vmm, tmp2_vmm);
+            }
+
             // inject eltwise code
+            sigmoid_injector_->load_table_addr();
             sigmoid_injector_->compute_vector(G0.getIdx());
             sigmoid_injector_->compute_vector(G1.getIdx());
+            tanh_injector_->load_table_addr();
             tanh_injector_->compute_vector(G2.getIdx());
-            sigmoid_injector_->compute_vector(G3.getIdx());
 
             // if training we write back the gates
             if (is_training) {
                 to_src<src_data_t>(wg_addr(0), G0, scratch_dt_size);
                 to_src<src_data_t>(wg_addr(1), G1, scratch_dt_size);
                 to_src<src_data_t>(wg_addr(2), G2, scratch_dt_size);
-                to_src<src_data_t>(wg_addr(3), G3, scratch_dt_size);
             }
 
             // compute c_states_t_l = G1 * c_tm1_l + G0 * G2
@@ -258,7 +301,25 @@ protected:
             uni_vfmadd231ps(tmp1_vmm, G0, G2);
             uni_vmovss(ptr[addr_c_states_t_l_reg], tmp1_vmm);
 
+            // add peephole
+            if (rnn_.is_lstm_peephole) {
+                uni_vmovss(tmp1_vmm, weights_peephole_addr(2));
+                uni_vmovss(tmp2_vmm, ptr[addr_c_states_t_l_reg]);
+                uni_vfmadd231ss(G3, tmp1_vmm, tmp2_vmm);
+            }
+
+            // inject eltwise code
+            sigmoid_injector_->load_table_addr();
+            sigmoid_injector_->compute_vector(G3.getIdx());
+
+            // if training we write back the gates
+            if (is_training) {
+                to_src<src_data_t>(wg_addr(3), G3, scratch_dt_size);
+            }
+
             // states_t_l = G3 * tanh(c_states_t_l)
+            uni_vmovss(tmp1_vmm, ptr[addr_c_states_t_l_reg]);
+            tanh_injector_->load_table_addr();
             tanh_injector_->compute_vector(tmp1_vmm.getIdx());
             uni_vmulps(tmp1_vmm, tmp1_vmm, G3);
 
@@ -266,7 +327,7 @@ protected:
             to_src<src_data_t>(
                     ptr[addr_states_t_l_reg], tmp1_vmm, scratch_dt_size);
             // if states_t_l_copy is a non null ptr, we write the output to it too
-            cmp(addr_states_t_l_copy_reg, rnn_.dic * hstate_dt_size);
+            cmp(addr_states_t_l_copy_reg, rnn_.dhc * hstate_dt_size);
             jle(rem_loop_inc_regs);
             to_src<src_data_t>(ptr[addr_states_t_l_copy_reg], tmp1_vmm,
                     scratch_dt_size, true);
@@ -274,6 +335,8 @@ protected:
             // increment address pointers
             L(rem_loop_inc_regs);
             add(addr_scratch_gates_reg, scratch_dt_size);
+            if (rnn_.is_lstm_peephole)
+                add(addr_weights_peephole_reg, weights_peephole_dt_size);
             add(addr_bias_reg, bias_dt_size);
             add(addr_states_t_l_reg, hstate_dt_size);
             add(addr_states_t_l_copy_reg, hstate_dt_size);
@@ -291,8 +354,7 @@ protected:
 
         postamble();
 
-        // Again, only one table is needed and shared between sigmoid and tanh
-        sigmoid_injector_->prepare_table(false);
+        sigmoid_injector_->prepare_table(true);
         tanh_injector_->prepare_table(true);
 
         init_table(vlen);

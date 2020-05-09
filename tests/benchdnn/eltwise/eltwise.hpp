@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -31,9 +31,36 @@ namespace eltwise {
 
 using alg_t = attr_t::post_ops_t::kind_t;
 
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    dims_t dims;
+
+    std::vector<dir_t> dir {FWD_D};
+    std::vector<dnnl_data_type_t> dt {dnnl_f32};
+    std::vector<std::string> tag {tag::abx};
+    std::vector<alg_t> alg {alg_t::RELU};
+    std::vector<float> scales {0, 0.25, -0.25}, alpha {scales}, beta {scales};
+    std::vector<int64_t> mb {0};
+    std::vector<bool> inplace {true};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%0time%";
+    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
+
 struct prb_t {
     prb_t(const dims_t &dims, dir_t dir, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, alg_t alg, float alpha, float beta,
+            const std::string &tag, alg_t alg, float alpha, float beta,
             bool inplace, int64_t mb = 0)
         : dims(dims)
         , dir(dir)
@@ -42,7 +69,8 @@ struct prb_t {
         , alg(alg)
         , alpha(alpha)
         , beta(beta)
-        , inplace(inplace) {
+        , inplace(inplace)
+        , ndims((int)dims.size()) {
         if (mb) this->dims[0] = mb;
     }
     ~prb_t() {}
@@ -50,10 +78,17 @@ struct prb_t {
     dims_t dims;
     dir_t dir;
     dnnl_data_type_t dt;
-    dnnl_format_tag_t tag;
+    std::string tag;
     alg_t alg;
     float alpha, beta;
     bool inplace;
+    int ndims;
+
+    bool use_dst() const {
+        return alg == alg_t::RELU_DST || alg == alg_t::TANH_DST
+                || alg == alg_t::ELU_DST || alg == alg_t::SQRT_DST
+                || alg == alg_t::LOGISTIC_DST || alg == alg_t::EXP_DST;
+    }
 };
 std::ostream &operator<<(std::ostream &s, const prb_t &p);
 
@@ -65,9 +100,7 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_alg(std::ostream &s) const override {
-        s << attr_t::post_ops_t::kind2str(p_->alg);
-    }
+    virtual void dump_alg(std::ostream &s) const override { s << p_->alg; }
 
     virtual void dump_desc(std::ostream &s) const override { s << p_->dims; }
 
@@ -77,14 +110,13 @@ struct perf_report_t : public base_perf_report_t {
 
     virtual const dir_t *dir() const override { return &p_->dir; }
     virtual const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    virtual const dnnl_format_tag_t *tag() const override { return &p_->tag; }
+    virtual const std::string *tag() const override { return &p_->tag; }
 
 private:
     const prb_t *p_ = NULL;
 };
 
-extern const char *skip_impl; /* NULL or "" means do not skip anything */
-
+bool check_extreme_values(const float &a, const float &b, alg_t alg);
 void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &dst);
 void compute_ref_bwd(const prb_t *p, const dnn_mem_t &src,
         const dnn_mem_t &diff_dst, dnn_mem_t &diff_src);

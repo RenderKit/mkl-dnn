@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,7 +41,6 @@
 #include <assert.h>
 
 #include <chrono>
-#include <numeric>
 #include <vector>
 #include <unordered_map>
 
@@ -50,11 +49,6 @@
 #include "example_utils.hpp"
 
 using namespace dnnl;
-
-memory::dim product(const memory::dims &dims) {
-    return std::accumulate(dims.begin(), dims.end(), (memory::dim)1,
-            std::multiplies<memory::dim>());
-}
 
 void simple_net(engine::kind engine_kind, int times = 100) {
     using tag = memory::format_tag;

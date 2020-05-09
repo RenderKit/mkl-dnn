@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -66,6 +66,7 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_abcd) return "abcd";
     if (v == dnnl_abcde) return "abcde";
     if (v == dnnl_abcdef) return "abcdef";
+    if (v == dnnl_abdc) return "abdc";
     if (v == dnnl_abdec) return "abdec";
     if (v == dnnl_acb) return "acb";
     if (v == dnnl_acbde) return "acbde";
@@ -80,8 +81,10 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_bcdea) return "bcdea";
     if (v == dnnl_cba) return "cba";
     if (v == dnnl_cdba) return "cdba";
+    if (v == dnnl_dcab) return "dcab";
     if (v == dnnl_cdeba) return "cdeba";
     if (v == dnnl_decab) return "decab";
+    if (v == dnnl_defcab) return "defcab";
     if (v == dnnl_Abc16a) return "Abc16a";
     if (v == dnnl_ABc16a16b) return "ABc16a16b";
     if (v == dnnl_ABc4a4b) return "ABc4a4b";
@@ -111,6 +114,8 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_ABcd4b16a4b) return "ABcd4b16a4b";
     if (v == dnnl_ABcd4b4a) return "ABcd4b4a";
     if (v == dnnl_ABcd4a4b) return "ABcd4a4b";
+    if (v == dnnl_aBCd2c4b2c) return "aBCd2c4b2c";
+    if (v == dnnl_aBCd4b8c2b) return "aBCd4b8c2b";
     if (v == dnnl_aBCd4c16b4c) return "aBCd4c16b4c";
     if (v == dnnl_aBCd2c8b4c) return "aBCd2c8b4c";
     if (v == dnnl_aBCd4c4b) return "aBCd4c4b";
@@ -119,6 +124,7 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_ABcd2b8a4b) return "ABcd2b8a4b";
     if (v == dnnl_ABcd8a8b) return "ABcd8a8b";
     if (v == dnnl_aBcd8b) return "aBcd8b";
+    if (v == dnnl_aBCd4c8b2c) return "aBCd4c8b2c";
     if (v == dnnl_ABcd8b16a2b) return "ABcd8b16a2b";
     if (v == dnnl_aBCd8b16c2b) return "aBCd8b16c2b";
     if (v == dnnl_BAcd8a16b2a) return "BAcd8a16b2a";
@@ -131,6 +137,7 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_Abcde16a) return "Abcde16a";
     if (v == dnnl_ABcde16a16b) return "ABcde16a16b";
     if (v == dnnl_BAcde8a16b2a) return "BAcde8a16b2a";
+    if (v == dnnl_aBCd2b4c2b) return "aBCd2b4c2b";
     if (v == dnnl_ABcde4b16a4b) return "ABcde4b16a4b";
     if (v == dnnl_ABcde2b8a4b) return "ABcde2b8a4b";
     if (v == dnnl_aBcde16b) return "aBcde16b";
@@ -143,6 +150,8 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_ABcde4b4a) return "ABcde4b4a";
     if (v == dnnl_ABcde4a4b) return "ABcde4a4b";
     if (v == dnnl_aBCde4b4c) return "aBCde4b4c";
+    if (v == dnnl_aBCde2c4b2c) return "aBCde2c4b2c";
+    if (v == dnnl_aBCde4b8c2b) return "aBCde4b8c2b";
     if (v == dnnl_aBCde4c16b4c) return "aBCde4c16b4c";
     if (v == dnnl_aBCde4c4b) return "aBCde4c4b";
     if (v == dnnl_Abcde8a) return "Abcde8a";
@@ -151,6 +160,7 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_aBcde8b) return "aBcde8b";
     if (v == dnnl_ABcde8b16a2b) return "ABcde8b16a2b";
     if (v == dnnl_aBCde8b16c2b) return "aBCde8b16c2b";
+    if (v == dnnl_aBCde4c8b2c) return "aBCde4c8b2c";
     if (v == dnnl_aCBde8b16c2b) return "aCBde8b16c2b";
     if (v == dnnl_ABcde8b8a) return "ABcde8b8a";
     if (v == dnnl_aBCde8b8c) return "aBCde8b8c";
@@ -160,14 +170,19 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_aBCde2b8c8b2c) return "aBCde2b8c8b2c";
     if (v == dnnl_aBCde8c16b2c) return "aBCde8c16b2c";
     if (v == dnnl_aBCde8c8b) return "aBCde8c8b";
+    if (v == dnnl_aBCde2b4c2b) return "aBCde2b4c2b";
     if (v == dnnl_aBcdef16b) return "aBcdef16b";
     if (v == dnnl_aBCdef16b16c) return "aBCdef16b16c";
     if (v == dnnl_aBCdef16c16b) return "aBCdef16c16b";
     if (v == dnnl_aBCdef4c16b4c) return "aBCdef4c16b4c";
     if (v == dnnl_aBCdef2c8b4c) return "aBCdef2c8b4c";
+    if (v == dnnl_aBCdef4c8b2c) return "aBCdef4c8b2c";
+    if (v == dnnl_aBCdef2b4c2b) return "aBCdef2b4c2b";
     if (v == dnnl_aBcdef4b) return "aBcdef4b";
     if (v == dnnl_aBCdef4c4b) return "aBCdef4c4b";
     if (v == dnnl_aBCdef4b4c) return "aBCdef4b4c";
+    if (v == dnnl_aBCdef2c4b2c) return "aBCdef2c4b2c";
+    if (v == dnnl_aBCdef4b8c2b) return "aBCdef4b8c2b";
     if (v == dnnl_aBCdef8b8c) return "aBCdef8b8c";
     if (v == dnnl_aBCdef8c16b2c) return "aBCdef8c16b2c";
     if (v == dnnl_aBCdef8b16c2b) return "aBCdef8b16c2b";
@@ -209,6 +224,8 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_BAc16b16a) return "BAc16b16a";
     if (v == dnnl_BAcd16a16b) return "BAcd16a16b";
     if (v == dnnl_BAcd16b16a) return "BAcd16b16a";
+    if (v == dnnl_BAcde16a16b) return "BAcde16a16b";
+    if (v == dnnl_aCBdef16b16c) return "aCBdef16b16c";
     if (v == dnnl_format_tag_last) return "format_tag_last";
     if (v == dnnl_x) return "x";
     if (v == dnnl_nc) return "nc";
@@ -238,16 +255,20 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_odhwi) return "odhwi";
     if (v == dnnl_idhwo) return "idhwo";
     if (v == dnnl_goiw) return "goiw";
+    if (v == dnnl_wigo) return "wigo";
     if (v == dnnl_goihw) return "goihw";
     if (v == dnnl_hwigo) return "hwigo";
     if (v == dnnl_giohw) return "giohw";
     if (v == dnnl_goidhw) return "goidhw";
     if (v == dnnl_giodhw) return "giodhw";
+    if (v == dnnl_dhwigo) return "dhwigo";
     if (v == dnnl_tnc) return "tnc";
     if (v == dnnl_ntc) return "ntc";
     if (v == dnnl_ldnc) return "ldnc";
     if (v == dnnl_ldigo) return "ldigo";
     if (v == dnnl_ldgoi) return "ldgoi";
+    if (v == dnnl_ldio) return "ldio";
+    if (v == dnnl_ldoi) return "ldoi";
     if (v == dnnl_ldgo) return "ldgo";
     if (v == dnnl_nCdhw16c) return "nCdhw16c";
     if (v == dnnl_nCdhw4c) return "nCdhw4c";
@@ -319,6 +340,7 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_OIdhw2i8o4i) return "OIdhw2i8o4i";
     if (v == dnnl_OIdhw8o8i) return "OIdhw8o8i";
     if (v == dnnl_IOdhw16i16o) return "IOdhw16i16o";
+    if (v == dnnl_IOdhw16o16i) return "IOdhw16o16i";
     if (v == dnnl_Goiw16g) return "Goiw16g";
     if (v == dnnl_Goiw8g) return "Goiw8g";
     if (v == dnnl_gIOw16o16i) return "gIOw16o16i";
@@ -340,6 +362,10 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_gOwI16o2i) return "gOwI16o2i";
     if (v == dnnl_gOwi4o) return "gOwi4o";
     if (v == dnnl_gOwi8o) return "gOwi8o";
+    if (v == dnnl_gOIw2i4o2i) return "gOIw2i4o2i";
+    if (v == dnnl_gOIw2o4i2o) return "gOIw2o4i2o";
+    if (v == dnnl_gOIw4i8o2i) return "gOIw4i8o2i";
+    if (v == dnnl_gOIw4o8i2o) return "gOIw4o8i2o";
     if (v == dnnl_gIOhw16i16o) return "gIOhw16i16o";
     if (v == dnnl_gIOhw16o16i) return "gIOhw16o16i";
     if (v == dnnl_gOhwi16o) return "gOhwi16o";
@@ -366,7 +392,12 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_OIhw2o8i8o2i) return "OIhw2o8i8o2i";
     if (v == dnnl_gOIhw4o8i8o4i) return "gOIhw4o8i8o4i";
     if (v == dnnl_gOIhw2o8i8o2i) return "gOIhw2o8i8o2i";
+    if (v == dnnl_gOIhw2i4o2i) return "gOIhw2i4o2i";
+    if (v == dnnl_gOIhw2o4i2o) return "gOIhw2o4i2o";
+    if (v == dnnl_gOIhw4i8o2i) return "gOIhw4i8o2i";
+    if (v == dnnl_gOIhw4o8i2o) return "gOIhw4o8i2o";
     if (v == dnnl_gIOdhw16i16o) return "gIOdhw16i16o";
+    if (v == dnnl_gIOdhw16o16i) return "gIOdhw16o16i";
     if (v == dnnl_gOdhwi16o) return "gOdhwi16o";
     if (v == dnnl_gOdhwI16o2i) return "gOdhwI16o2i";
     if (v == dnnl_gOdhwi4o) return "gOdhwi4o";
@@ -385,6 +416,10 @@ const char *dnnl_fmt_tag2str(dnnl_format_tag_t v) {
     if (v == dnnl_gIOdhw8o16i2o) return "gIOdhw8o16i2o";
     if (v == dnnl_gOIdhw8o8i) return "gOIdhw8o8i";
     if (v == dnnl_Goidhw16g) return "Goidhw16g";
+    if (v == dnnl_gOIdhw2i4o2i) return "gOIdhw2i4o2i";
+    if (v == dnnl_gOIdhw4i8o2i) return "gOIdhw4i8o2i";
+    if (v == dnnl_gOIdhw2o4i2o) return "gOIdhw2o4i2o";
+    if (v == dnnl_gOIdhw4o8i2o) return "gOIdhw4o8i2o";
     assert(!"unknown fmt_tag");
     return "unknown fmt_tag";
 }
@@ -446,10 +481,19 @@ const char *dnnl_alg_kind2str(dnnl_alg_kind_t v) {
     if (v == dnnl_eltwise_soft_relu) return "eltwise_soft_relu";
     if (v == dnnl_eltwise_logistic) return "eltwise_logistic";
     if (v == dnnl_eltwise_exp) return "eltwise_exp";
+    if (v == dnnl_eltwise_gelu_tanh) return "eltwise_gelu_tanh";
     if (v == dnnl_eltwise_gelu) return "eltwise_gelu";
     if (v == dnnl_eltwise_swish) return "eltwise_swish";
     if (v == dnnl_eltwise_log) return "eltwise_log";
     if (v == dnnl_eltwise_clip) return "eltwise_clip";
+    if (v == dnnl_eltwise_pow) return "eltwise_pow";
+    if (v == dnnl_eltwise_gelu_erf) return "eltwise_gelu_erf";
+    if (v == dnnl_eltwise_relu_use_dst_for_bwd) return "eltwise_relu_use_dst_for_bwd";
+    if (v == dnnl_eltwise_tanh_use_dst_for_bwd) return "eltwise_tanh_use_dst_for_bwd";
+    if (v == dnnl_eltwise_elu_use_dst_for_bwd) return "eltwise_elu_use_dst_for_bwd";
+    if (v == dnnl_eltwise_sqrt_use_dst_for_bwd) return "eltwise_sqrt_use_dst_for_bwd";
+    if (v == dnnl_eltwise_logistic_use_dst_for_bwd) return "eltwise_logistic_use_dst_for_bwd";
+    if (v == dnnl_eltwise_exp_use_dst_for_bwd) return "eltwise_exp_use_dst_for_bwd";
     if (v == dnnl_pooling_max) return "pooling_max";
     if (v == dnnl_pooling_avg_include_padding) return "pooling_avg_include_padding";
     if (v == dnnl_pooling_avg_exclude_padding) return "pooling_avg_exclude_padding";
@@ -462,6 +506,8 @@ const char *dnnl_alg_kind2str(dnnl_alg_kind_t v) {
     if (v == dnnl_lbr_gru) return "lbr_gru";
     if (v == dnnl_binary_add) return "binary_add";
     if (v == dnnl_binary_mul) return "binary_mul";
+    if (v == dnnl_binary_max) return "binary_max";
+    if (v == dnnl_binary_min) return "binary_min";
     if (v == dnnl_resampling_nearest) return "resampling_nearest";
     if (v == dnnl_resampling_linear) return "resampling_linear";
     assert(!"unknown alg_kind");
@@ -493,10 +539,24 @@ const char *dnnl_engine_kind2str(dnnl_engine_kind_t v) {
 }
 
 const char *dnnl_scratchpad_mode2str(dnnl_scratchpad_mode_t v) {
-    if (v == dnnl_scratchpad_mode_library) return "scratchpad_mode_library";
-    if (v == dnnl_scratchpad_mode_user) return "scratchpad_mode_user";
+    if (v == dnnl_scratchpad_mode_library) return "library";
+    if (v == dnnl_scratchpad_mode_user) return "user";
     assert(!"unknown scratchpad_mode");
     return "unknown scratchpad_mode";
+}
+
+const char *dnnl_cpu_isa2str(dnnl_cpu_isa_t v) {
+    if (v == dnnl_cpu_isa_all) return "cpu_isa_all";
+    if (v == dnnl_cpu_isa_sse41) return "cpu_isa_sse41";
+    if (v == dnnl_cpu_isa_avx) return "cpu_isa_avx";
+    if (v == dnnl_cpu_isa_avx2) return "cpu_isa_avx2";
+    if (v == dnnl_cpu_isa_avx512_mic) return "cpu_isa_avx512_mic";
+    if (v == dnnl_cpu_isa_avx512_mic_4ops) return "cpu_isa_avx512_mic_4ops";
+    if (v == dnnl_cpu_isa_avx512_core) return "cpu_isa_avx512_core";
+    if (v == dnnl_cpu_isa_avx512_core_vnni) return "cpu_isa_avx512_core_vnni";
+    if (v == dnnl_cpu_isa_avx512_core_bf16) return "cpu_isa_avx512_core_bf16";
+    assert(!"unknown cpu_isa");
+    return "unknown cpu_isa";
 }
 
 

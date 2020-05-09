@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,17 +26,30 @@ namespace impl {
 namespace cpu {
 namespace bnorm_utils {
 
-void cache_balance(size_t working_set_size, dim_t C_blks,
+using namespace dnnl::impl::utils;
+
+void cache_balance(size_t working_set_size, dim_t C_blks, dim_t N, int nthr,
         dim_t &C_blks_per_iter, int64_t &iters) {
-    int nthrs = dnnl_get_max_threads();
-    int l3_size = get_cache_size(3, true) * nthrs / 2;
+    int l3_size = get_per_core_cache_size(3) * nthr / 2;
+    C_blks_per_iter = saturate<dim_t>(1, C_blks, l3_size / working_set_size);
 
-    C_blks_per_iter = l3_size / working_set_size;
+    // Align C_blks_per_iter with nthr for better balancing implying a
+    // threading approach realized in thread_balance function below.
+    //
+    // TODO: update batchnorm blocking: all blocking stuff should be in one
+    // place
+    int C_nthr = nthr;
+    if (C_blks_per_iter < nthr) {
+        const int N_nthr = (int)nstl::min<dim_t>(N, nthr);
+        C_nthr = (int)nstl::min<dim_t>(C_blks, nthr / N_nthr);
+    }
 
-    if (C_blks_per_iter == 0) C_blks_per_iter = 1;
-    if (C_blks_per_iter > C_blks) C_blks_per_iter = C_blks;
+    if (C_blks_per_iter > C_nthr)
+        C_blks_per_iter = rnd_dn(C_blks_per_iter, C_nthr);
+    else
+        C_blks_per_iter = div_up(C_nthr, div_up(C_nthr, C_blks_per_iter));
 
-    iters = (C_blks + C_blks_per_iter - 1) / C_blks_per_iter;
+    iters = div_up(C_blks, C_blks_per_iter);
 }
 
 bool thread_balance(bool do_blocking, bool spatial_thr_allowed, int ithr,
@@ -102,17 +115,18 @@ bool is_spatial_thr(
     dim_t C_PADDED = memory_desc_wrapper(bdesc->src_md()).padded_dims()[1];
     assert(C_PADDED % simd_w == 0);
 
-    size_t data = bdesc->MB() * C_PADDED * SP * data_size;
-    size_t l3_size_ = get_cache_size(3, true) * nthr / 2;
+    dim_t N = bdesc->MB();
+    size_t data = N * C_PADDED * SP * data_size;
+    size_t l3_size_ = get_per_core_cache_size(3) * nthr / 2;
     bool do_blocking = (data >= l3_size_ / 2 && l3_size_ > 0);
     dim_t C_blks_per_iter {1}, iters {1};
     dim_t C_blks = C_PADDED / simd_w;
 
     if (do_blocking) {
         int num_tensors = bdesc->is_fwd() ? 1 : 2;
-        size_t working_set_size
-                = (bdesc->MB() * SP * simd_w * data_size) * num_tensors;
-        cache_balance(working_set_size, C_blks, C_blks_per_iter, iters);
+        size_t working_set_size = (N * SP * simd_w * data_size) * num_tensors;
+        cache_balance(
+                working_set_size, C_blks, N, nthr, C_blks_per_iter, iters);
     }
 
     // Spatial threading decision made in this function shall be consistent
@@ -123,12 +137,12 @@ bool is_spatial_thr(
 
     dim_t S_nthr = 1;
     if (do_blocking) {
-        dim_t N_nthr = nstl::min(bdesc->MB(), nthr);
+        dim_t N_nthr = nstl::min(N, nthr);
         dim_t C_nthr = nstl::min(C_blks, nthr / N_nthr);
         S_nthr = nstl::min(SP, nthr / (C_nthr * N_nthr));
     } else {
         dim_t C_nthr = math::gcd(nthr, C_blks);
-        dim_t N_nthr = nstl::min(bdesc->MB(), nthr / C_nthr);
+        dim_t N_nthr = nstl::min(N, nthr / C_nthr);
         S_nthr = nstl::min(SP, nthr / (C_nthr * N_nthr));
     }
 

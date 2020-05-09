@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,19 +20,21 @@
 namespace concat {
 
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+    using ::operator<<;
+
     dump_global_params(s);
+    settings_t def;
 
-    if (canonical || p.sdt != dnnl_f32) s << "--sdt=" << dt2str(p.sdt) << " ";
-    if (canonical || (p.dtag != dnnl_format_tag_undef && p.ddt != dnnl_f32))
-        s << "--ddt=" << dt2str(p.ddt) << " ";
+    bool has_default_tags = true;
+    for (const auto &i_stag : p.stag)
+        has_default_tags = has_default_tags && i_stag == tag::abx;
 
-    if (canonical
-            || !(p.n_inputs() == 2 && p.stag[0] == dnnl_nchw
-                    && p.stag[1] == dnnl_nchw))
-        s << "--stag=" << p.stag << " ";
-    if (canonical || p.dtag != dnnl_format_tag_undef)
-        s << "--dtag=" << fmt_tag2str(p.dtag) << " ";
-    if (canonical || p.axis != 1) s << "--axis=" << p.axis << " ";
+    if (canonical || p.sdt != def.sdt[0]) s << "--sdt=" << p.sdt << " ";
+    if (canonical || (p.dtag != def.dtag[0] && p.ddt != def.ddt[0]))
+        s << "--ddt=" << p.ddt << " ";
+    if (canonical || !has_default_tags) s << "--stag=" << p.stag << " ";
+    if (canonical || p.dtag != def.dtag[0]) s << "--dtag=" << p.dtag << " ";
+    if (canonical || p.axis != def.axis[0]) s << "--axis=" << p.axis << " ";
 
     s << p.sdims;
 

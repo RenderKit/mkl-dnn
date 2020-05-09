@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -319,8 +319,7 @@ int main(int argc, char **argv) {
 ///
 /// It may be interesting to check what really happens during the run. We can
 /// use `MKLDNN_VERBOSE` environment variable for that (see also @ref
-/// dev_guide_verbose). Here's example output on a system that has an Intel(R)
-/// AVX2-capable processor (line breaks added for readability):
+/// dev_guide_verbose). Here's an example output:
 ///
 /// ~~~sh
 /// $ MKLDNN_VERBOSE=1 ./cpu_memory_format_propagation

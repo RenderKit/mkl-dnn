@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2019 Intel Corporation
+# Copyright 2019-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,5 +23,5 @@ file(GLOB_RECURSE SOURCES
 
 set(OBJ_LIB ${LIB_NAME}_common)
 add_library(${OBJ_LIB} OBJECT ${SOURCES})
-set(${LIB_NAME}_SUB_OBJS ${${LIB_NAME}_SUB_OBJS}
-    $<TARGET_OBJECTS:${OBJ_LIB}> PARENT_SCOPE)
+set_property(GLOBAL APPEND PROPERTY DNNL_LIB_DEPS
+    $<TARGET_OBJECTS:${OBJ_LIB}>)

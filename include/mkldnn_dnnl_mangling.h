@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 *******************************************************************************/
 
 // Mangle mkldnn entities to dnnl ones to preserve source-code level backwards
-// compatibility. The compatibility will be dropped at DNNL 2.0.
+// compatibility. The compatibility will be dropped in oneDNN v2.0.
 // Please switch to the new names as soon as possible.
 
 #ifndef MKLDNN_DNNL_MANGLING_H
@@ -157,12 +157,14 @@
 #define mkldnn_BAcd16b16a dnnl_BAcd16b16a
 #define mkldnn_BAcd8a16b2a dnnl_BAcd8a16b2a
 #define mkldnn_BAcde16b16a dnnl_BAcde16b16a
+#define mkldnn_BAcde16a16b dnnl_BAcde16a16b
 #define mkldnn_BAcde8a16b2a dnnl_BAcde8a16b2a
 #define mkldnn_Goidhw16g dnnl_Goidhw16g
 #define mkldnn_Goihw16g dnnl_Goihw16g
 #define mkldnn_Goihw8g dnnl_Goihw8g
 #define mkldnn_Goiw16g dnnl_Goiw16g
 #define mkldnn_IOdhw16i16o dnnl_IOdhw16i16o
+#define mkldnn_IOdhw16o16i dnnl_IOdhw16o16i
 #define mkldnn_IOdhw8o16i2o dnnl_IOdhw8o16i2o
 #define mkldnn_IOhw16i16o dnnl_IOhw16i16o
 #define mkldnn_IOhw16o16i dnnl_IOhw16o16i
@@ -278,6 +280,7 @@
 #define mkldnn_aCBde16c16b dnnl_aCBde16c16b
 #define mkldnn_aCBde8b16c2b dnnl_aCBde8b16c2b
 #define mkldnn_aCBdef16c16b dnnl_aCBdef16c16b
+#define mkldnn_aCBdef16b16c dnnl_aCBdef16b16c
 #define mkldnn_aCBdef8b16c2b dnnl_aCBdef8b16c2b
 #define mkldnn_ab dnnl_ab
 #define mkldnn_abc dnnl_abc
@@ -410,6 +413,7 @@
 #define mkldnn_forward_training dnnl_forward_training
 #define mkldnn_fuse_norm_relu dnnl_fuse_norm_relu
 #define mkldnn_gIOdhw16i16o dnnl_gIOdhw16i16o
+#define mkldnn_gIOdhw16o16i dnnl_gIOdhw16o16i
 #define mkldnn_gIOdhw8o16i2o dnnl_gIOdhw8o16i2o
 #define mkldnn_gIOhw16i16o dnnl_gIOhw16i16o
 #define mkldnn_gIOhw16o16i dnnl_gIOhw16o16i

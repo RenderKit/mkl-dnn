@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -133,6 +133,18 @@ auto cases_generic = ::testing::Values(params_t {{2, 15, 3, 2}, fmt::nChw16c},
         params_t {{1, 2, 9, 3, 2}, fmt::gOIhw8i8o},
         params_t {{2, 17, 9, 3, 2}, fmt::gOIhw4i16o4i},
         params_t {{2, 17, 9, 3, 2}, fmt::gOIhw2i8o4i},
+        params_t {{2, 16, 16, 3}, fmt::gOIw2i4o2i},
+        params_t {{2, 8, 6, 3, 3}, fmt::gOIhw2i4o2i},
+        params_t {{2, 14, 18, 3, 3, 4}, fmt::gOIdhw2i4o2i},
+        params_t {{2, 16, 16, 3}, fmt::gOIw4i8o2i},
+        params_t {{2, 12, 18, 3, 2}, fmt::gOIhw4i8o2i},
+        params_t {{2, 10, 6, 3, 5, 3}, fmt::gOIdhw4i8o2i},
+        params_t {{2, 2, 3, 4}, fmt::gOIw2o4i2o},
+        params_t {{2, 18, 8, 3, 3}, fmt::gOIhw2o4i2o},
+        params_t {{2, 10, 6, 6, 3, 3}, fmt::gOIdhw2o4i2o},
+        params_t {{2, 2, 4, 3}, fmt::gOIw4o8i2o},
+        params_t {{2, 14, 10, 3, 3}, fmt::gOIhw4o8i2o},
+        params_t {{2, 8, 8, 3, 3, 3}, fmt::gOIdhw4o8i2o},
         params_t {{15, 16, 16, 3, 3}, fmt::Goihw8g},
         params_t {{2, 9, 3}, fmt::OIw2i8o4i},
         params_t {{2, 17, 9, 3}, fmt::gOIw2i8o4i},
@@ -190,6 +202,32 @@ TEST_F(c_api_memory_test, TestZeroPadBoom) {
     free(p);
 
     ASSERT_TRUE(dnnl_success == dnnl_engine_destroy(e));
+}
+
+TEST(memory_test_cpp, TestSetDataHandleCPU) {
+    engine eng = engine(engine::kind::cpu, 0);
+    stream str = make_stream(eng);
+
+    const memory::dim N = 1, C = 5, W = 7, H = 7;
+    memory::desc data_md(
+            {N, C, W, H}, memory::data_type::f32, memory::format_tag::nChw16c);
+    memory mem(data_md, eng, DNNL_MEMORY_NONE);
+
+    float *p = (float *)malloc(mem.get_desc().get_size());
+    ASSERT_TRUE(p != NULL);
+    mem.set_data_handle(p, str);
+
+    ASSERT_TRUE(N == 1);
+    ASSERT_TRUE(C < 16);
+    ASSERT_TRUE(data_md.data.format_kind == dnnl_blocked);
+    ASSERT_TRUE(data_md.data.format_desc.blocking.inner_nblks == 1);
+    ASSERT_TRUE(data_md.data.format_desc.blocking.inner_blks[0] == 16);
+    for (int h = 0; h < H; h++)
+        for (int w = 0; w < W; w++)
+            for (int c = C; c < 16; c++)
+                ASSERT_TRUE(p[h * W * 16 + w * 16 + c] == 0.0f);
+
+    free(p);
 }
 
 } // namespace dnnl

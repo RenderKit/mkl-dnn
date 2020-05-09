@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -95,7 +95,7 @@ struct jit_bnorm_base_t : public jit_generator {
 
     void load_common_params() {
         mov(reg_tmp, float2int(1.0f));
-        movq(xone, reg_tmp);
+        uni_vmovq(xone, reg_tmp);
         uni_vbroadcastss(vone, xone);
 
 #define PARAM_OFF(x) offsetof(call_params_t, x)

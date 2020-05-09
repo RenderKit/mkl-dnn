@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2018-2019 Intel Corporation
+# Copyright 2018-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ set(options_cmake_included true)
 # ========
 
 option(DNNL_VERBOSE
-    "allows DNNL be verbose whenever DNNL_VERBOSE
+    "allows oneDNN be verbose whenever DNNL_VERBOSE
     environment variable set to 1" ON) # enabled by default
 
 option(DNNL_ENABLE_CONCURRENT_EXEC
@@ -43,7 +43,7 @@ option(DNNL_ENABLE_PRIMITIVE_CACHE "enables primitive cache.
     # disabled by default
 
 option(DNNL_ENABLE_MAX_CPU_ISA
-    "enables control of CPU ISA detected by DNNL via DNNL_MAX_CPU_ISA
+    "enables control of CPU ISA detected by oneDNN via DNNL_MAX_CPU_ISA
     environment variable and dnnl_set_max_cpu_isa() function" ON)
 
 # =============================
@@ -51,22 +51,22 @@ option(DNNL_ENABLE_MAX_CPU_ISA
 # =============================
 
 set(DNNL_LIBRARY_TYPE "SHARED" CACHE STRING
-    "specifies whether DNNL library should be SHARED or STATIC")
+    "specifies whether oneDNN library should be SHARED or STATIC")
 option(DNNL_BUILD_EXAMPLES "builds examples"  ON)
 option(DNNL_BUILD_TESTS "builds tests" ON)
-option(DNNL_BUILD_FOR_CI "specifies whether DNNL library should be built for CI" OFF)
+option(DNNL_BUILD_FOR_CI "specifies whether oneDNN library should be built for CI" OFF)
 option(DNNL_WERROR "treat warnings as errors" OFF)
 
 set(DNNL_INSTALL_MODE "DEFAULT" CACHE STRING
     "specifies installation mode; supports DEFAULT or BUNDLE.
 
-    When BUNDLE option is set DNNL will be installed as a bundle
+    When BUNDLE option is set oneDNN will be installed as a bundle
     which contains examples and benchdnn.")
 
 set(DNNL_CODE_COVERAGE "OFF" CACHE STRING
     "specifies which supported tool for code coverage will be used
     Currently only gcov supported")
-if(NOT ${DNNL_CODE_COVERAGE} MATCHES "^(OFF|GCOV)$")
+if(NOT "${DNNL_CODE_COVERAGE}" MATCHES "^(OFF|GCOV)$")
     message(FATAL_ERROR "Unsupported code coverage tool: ${DNNL_CODE_COVERAGE}")
 endif()
 
@@ -79,7 +79,7 @@ set(DNNL_ARCH_OPT_FLAGS "HostOpts" CACHE STRING
     If empty default optimization level would be applied which depends on the
     compiler being used.
 
-    - For Intel(R) C++ Compilers the default option is `-xSSE4.1` which instructs
+    - For Intel C++ Compilers the default option is `-xSSE4.1` which instructs
       the compiler to generate the code for the processors that support SSE4.1
       instructions. This option would not allow to run the library on older
       architectures.
@@ -98,9 +98,9 @@ set(DNNL_ARCH_OPT_FLAGS "HostOpts" CACHE STRING
 # ======================
 
 option(DNNL_ENABLE_JIT_PROFILING
-    "Enable registration of DNNL kernels that are generated at
-    runtime with Intel VTune Amplifier (on by default). Without the
-    registrations, Intel VTune Amplifier would report data collected inside
+    "Enable registration of oneDNN kernels that are generated at
+    runtime with VTune Amplifier (on by default). Without the
+    registrations, VTune Amplifier would report data collected inside
     the kernels as `outside any known module`."
     ON)
 
@@ -112,16 +112,25 @@ set(DNNL_CPU_RUNTIME "OMP" CACHE STRING
     "specifies the threading runtime for CPU engines;
     supports OMP (default) or TBB.
 
-    To use Intel(R) Threading Building Blocks (Intel(R) TBB) one should also
+    To use Threading Building Blocks (TBB) one should also
     set TBBROOT (either environment variable or CMake option) to the library
     location.")
-if(NOT ${DNNL_CPU_RUNTIME} MATCHES "^(OMP|TBB|SEQ)$")
+if(NOT "${DNNL_CPU_RUNTIME}" MATCHES "^(OMP|TBB|SEQ|THREADPOOL)$")
     message(FATAL_ERROR "Unsupported CPU runtime: ${DNNL_CPU_RUNTIME}")
 endif()
 
+set(_DNNL_TEST_THREADPOOL_IMPL "STANDALONE" CACHE STRING
+    "specifies which threadpool implementation to use when
+    DNNL_CPU_RUNTIME=THREADPOOL is selected. Valid values: STANDALONE, EIGEN,
+    TBB")
+if(NOT "${_DNNL_TEST_THREADPOOL_IMPL}" MATCHES "^(STANDALONE|TBB|EIGEN)$")
+    message(FATAL_ERROR
+        "Unsupported threadpool implementation: ${_DNNL_TEST_THREADPOOL_IMPL}")
+endif()
+
 set(TBBROOT "" CACHE STRING
-    "path to Intel(R) Thread Building Blocks (Intel(R) TBB).
-    Use this option to specify Intel(R) TBB installation locaton.")
+    "path to Thread Building Blocks (TBB).
+    Use this option to specify TBB installation locaton.")
 
 set(DNNL_GPU_RUNTIME "NONE" CACHE STRING
     "specifies the runtime to use for GPU engines.
@@ -129,12 +138,12 @@ set(DNNL_GPU_RUNTIME "NONE" CACHE STRING
 
     Using OpenCL for GPU requires setting OPENCLROOT if the libraries are
     installed in a non-standard location.")
-if(NOT ${DNNL_GPU_RUNTIME} MATCHES "^(OCL|NONE)$")
+if(NOT "${DNNL_GPU_RUNTIME}" MATCHES "^(OCL|NONE)$")
     message(FATAL_ERROR "Unsupported GPU runtime: ${DNNL_GPU_RUNTIME}")
 endif()
 
 set(OPENCLROOT "" CACHE STRING
-    "path to Intel(R) SDK for OpenCL(TM).
+    "path to Intel SDK for OpenCL applications.
     Use this option to specify custom location for OpenCL.")
 
 # =============

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -132,29 +132,16 @@ struct jit_avx512_core_bf16_convolution_bwd_data_t : public primitive_impl_t {
                             || expect_data_types(data_type::bf16,
                                     data_type::bf16, data_type::undef,
                                     data_type::bf16, data_type::undef))
-                    && attr()->has_default_values() && !has_zero_dim_memory()
-                    && set_default_formats();
+                    && attr()->has_default_values() && !has_zero_dim_memory();
             if (!ok) return status::unimplemented;
 
             status_t status = jit_avx512_core_bf16_bwd_data_kernel::init_conf(
-                    jcp_, *desc(), *diff_src_md(), *weights_md(),
-                    *diff_dst_md(), dnnl_get_max_threads());
+                    jcp_, *desc(), diff_src_md_, weights_md_, diff_dst_md_,
+                    dnnl_get_max_threads());
             return status;
         }
 
         jit_conv_conf_t jcp_;
-
-    protected:
-        bool set_default_formats() {
-            using namespace format_tag;
-
-            auto dat_tag = utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c);
-            auto wei_tag = utils::pick(2 * ndims() - 6 + with_groups(),
-                    OIw8o16i2o, gOIw8o16i2o, OIhw8o16i2o, gOIhw8o16i2o,
-                    OIdhw8o16i2o, gOIdhw8o16i2o);
-
-            return set_default_formats_common(dat_tag, wei_tag, dat_tag);
-        }
     };
 
     jit_avx512_core_bf16_convolution_bwd_data_t(const pd_t *apd)
@@ -206,15 +193,15 @@ struct jit_avx512_core_bf16_convolution_bwd_weights_t
                                     data_type::f32, data_type::undef,
                                     data_type::bf16, data_type::undef))
                     && IMPLICATION(with_bias(),
-                            utils::one_of(diff_weights_md(1)->data_type,
+                            utils::one_of(diff_bias_md_.data_type,
                                     data_type::f32, data_type::bf16))
-                    && attr()->has_default_values() && !has_zero_dim_memory()
-                    && set_default_formats();
+                    && attr()->has_default_values() && !has_zero_dim_memory();
             if (!ok) return status::unimplemented;
 
             status_t status = jit_avx512_core_bf16_conv_bwd_weights_kernel_f32::
-                    init_conf(jcp_, *desc(), *src_md(), *diff_weights_md(0),
-                            *diff_weights_md(1), *diff_dst_md());
+                    init_conf(jcp_, *desc(), src_md_, diff_weights_md_,
+                            diff_bias_md_, diff_dst_md_,
+                            dnnl_get_max_threads());
             if (status != status::success) return status;
 
             init_balancers();
@@ -231,18 +218,6 @@ struct jit_avx512_core_bf16_convolution_bwd_weights_t
 
         jit_conv_conf_t jcp_;
         typename cpu_reducer_t<data_type::f32>::conf_t reducer_bia_conf_;
-
-    protected:
-        bool set_default_formats() {
-            using namespace format_tag;
-
-            auto dat_tag = utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c);
-            auto wei_tag = utils::pick(2 * ndims() - 6 + with_groups(),
-                    OIw16i16o, gOIw16i16o, OIhw16i16o, gOIhw16i16o, OIdhw16i16o,
-                    gOIdhw16i16o);
-
-            return set_default_formats_common(dat_tag, wei_tag, dat_tag);
-        }
 
     private:
         void init_balancers() {
@@ -276,11 +251,20 @@ private:
     void execute_backward_weights(const exec_ctx_t &ctx) const;
     void prepare_scratchpad_data(const exec_ctx_t &ctx) const;
     struct thread_info_t;
+    void compute_diff_weights_2d(const thread_info_t *) const;
+    void compute_diff_weights_3d(const thread_info_t *) const;
     void compute_diff_weights(const thread_info_t *) const;
     void reduce_and_convert_diff_weights(const thread_info_t *) const;
     void compute_diff_bias(const thread_info_t *, const exec_ctx_t &ctx) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
+
+    size_t tr_src_buf_number(const thread_info_t *ti, int g, int ic) const;
+    size_t tr_diff_dst_buf_number(const thread_info_t *ti, int g, int oc) const;
+    void trans_src(
+            src_data_t *tr_src1, const src_data_t *src1, int my_work) const;
+    void trans_dst(diff_dst_data_t *tr_diff_dst1,
+            const diff_dst_data_t *diff_dst1, int my_work) const;
 
     int nthr_, nthr_mb_, nthr_g_, nthr_oc_b_, nthr_ic_b_;
 

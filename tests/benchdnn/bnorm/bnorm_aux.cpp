@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ const char *check_alg2str(check_alg_t alg) {
 }
 
 flags_t str2flags(const char *str) {
-    flags_t flags = (flags_t)0;
+    flags_t flags = NONE;
     while (str && *str) {
         if (*str == 'G') flags |= GLOB_STATS;
         if (*str == 'S') flags |= USE_SCALESHIFT;
@@ -66,7 +66,6 @@ int str2desc(desc_t *desc, const char *str) {
     desc_t d {0};
     d.mb = 2;
     d.eps = 1.f / 16;
-    d.ndims = 5;
 
     const char *s = str;
     assert(s);
@@ -108,26 +107,7 @@ int str2desc(desc_t *desc, const char *str) {
 
     if (d.ic == 0) return FAIL;
 
-    if (d.id == 0) { d.ndims--; }
-    if (d.ih == 0) {
-        if (d.id == 0) {
-            d.ndims--;
-        } else { // square shape
-            d.ih = d.id;
-        }
-    }
-    if (d.iw == 0) {
-        if (d.ih == 0) {
-            d.ndims--;
-        } else { // square shape
-            d.iw = d.ih;
-        }
-    }
-
-    // to keep logic when treating unspecified dimension as it's of length 1.
-    if (d.id == 0) d.id = 1;
-    if (d.ih == 0) d.ih = 1;
-    if (d.iw == 0) d.iw = 1;
+    if (sanitize_desc(d.ndims, {d.id}, {d.ih}, {d.iw}, {1}) != OK) return FAIL;
 
     *desc = d;
 
@@ -135,14 +115,8 @@ int str2desc(desc_t *desc, const char *str) {
 }
 
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
-    const bool square_form = (d.ih == d.iw);
-    const bool cubic_form = square_form && (d.id == d.ih);
-
-    const bool print_d = d.ndims == 5;
-    const bool print_h
-            = d.ndims == 4 || (d.ndims > 4 && (!cubic_form || canonical));
-    const bool print_w
-            = d.ndims == 3 || (d.ndims > 3 && (!square_form || canonical));
+    bool print_d = true, print_h = true, print_w = true;
+    print_dhw(print_d, print_h, print_w, d.ndims, {d.id}, {d.ih}, {d.iw});
 
     if (canonical || d.mb != 2) s << "mb" << d.mb;
 
@@ -161,17 +135,17 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
     dump_global_params(s);
+    settings_t def;
 
-    if (canonical || p.dir != FWD_D) s << "--dir=" << dir2str(p.dir) << " ";
-    if (canonical || p.dt != dnnl_f32) s << "--dt=" << dt2str(p.dt) << " ";
-    if (canonical || p.tag != dnnl_nchw)
-        s << "--tag=" << fmt_tag2str(p.tag) << " ";
-    if (canonical || p.flags != (flags_t)0)
+    if (canonical || p.dir != def.dir[0]) s << "--dir=" << p.dir << " ";
+    if (canonical || p.dt != def.dt[0]) s << "--dt=" << p.dt << " ";
+    if (canonical || p.tag != def.tag[0]) s << "--tag=" << p.tag << " ";
+    if (canonical || p.flags != def.flags[0])
         s << "--flags=" << flags2str(p.flags) << " ";
-    if (canonical || p.check_alg != ALG_AUTO)
+    if (canonical || p.check_alg != def.check_alg)
         s << "--check-alg=" << check_alg2str(p.check_alg) << " ";
     if (canonical || !p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
-    if (canonical || p.inplace != true)
+    if (canonical || p.inplace != def.inplace[0])
         s << "--inplace=" << bool2str(p.inplace) << " ";
 
     s << static_cast<const desc_t &>(p);

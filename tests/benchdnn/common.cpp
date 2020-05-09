@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include <fstream>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -151,10 +152,10 @@ benchdnn_timer_t &benchdnn_timer_t::operator=(const benchdnn_timer_t &rhs) {
 /* result structure */
 const char *state2str(res_state_t state, bool allow_unimpl) {
     if (state == UNIMPLEMENTED && !allow_unimpl) return "UNIMPLEMENTED_FAILED";
+    if (state == UNTESTED) return "UNTESTED_FAILED"; // for easier fail search
 
 #define CASE(x) \
     if (state == x) return STRINGIFY(x)
-    CASE(UNTESTED);
     CASE(PASSED);
     CASE(SKIPPED);
     CASE(MISTRUSTED);
@@ -180,36 +181,36 @@ void parse_result(res_t &res, bool &want_perf_report, bool allow_unimpl,
         case FAILED:
             assert(status == FAIL);
             bs.failed++;
-            print(0, "%d:%s (errors:%lu total:%lu) __REPRO: %s\n", bs.tests,
-                    state, (unsigned long)res.errors, (unsigned long)res.total,
-                    pstr);
+            BENCHDNN_PRINT(0, "%d:%s (errors:%lu total:%lu) __REPRO: %s\n",
+                    bs.tests, state, (unsigned long)res.errors,
+                    (unsigned long)res.total, pstr);
             break;
         case SKIPPED:
             assert(status == OK);
-            print(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             bs.skipped++;
             break;
         case UNIMPLEMENTED:
             assert(status == OK);
-            print(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             bs.unimplemented++;
             bs.failed += !allow_unimpl;
             break;
         case MISTRUSTED:
             assert(status == OK);
             bs.mistrusted++;
-            print(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             // bs.failed++; /* temporal workaround for some tests */
             break;
         case PASSED:
             assert(status == OK);
-            print(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             want_perf_report = true;
             bs.passed++;
             break;
         case LISTED:
             assert(status == OK);
-            print(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             want_perf_report = false;
             bs.listed++;
             break;
@@ -360,28 +361,27 @@ bool match_regex(const char *str, const char *pattern) {
 }
 #endif /* _WIN32 */
 
-bool maybe_skip(const char *skip_impl, const char *impl_str) {
-    if (skip_impl == NULL || *skip_impl == '\0') return false;
+bool maybe_skip(const char *impl_str) {
+    if (skip_impl.empty()) return false;
 
     const std::string impl(impl_str);
+    size_t start_pos = 0, end_pos = 0;
+    if (skip_impl[0] == '"' || skip_impl[0] == '\'') start_pos++;
 
-    const char *s_start = skip_impl;
-    while (1) {
-        if (*s_start == '"' || *s_start == '\'') ++s_start;
-
-        const char *s_end = strchr(s_start, ':');
-        size_t len = s_end ? s_end - s_start : strlen(s_start);
-
-        if (s_start[len - 1] == '"' || s_start[len - 1] == '\'') --len;
-
-        const std::string what(s_start, s_start + len);
-        if (impl.find(what) != std::string::npos) return true;
-
-        if (s_end == NULL) break;
-
-        s_start = s_end + 1;
-        if (*s_start == '\0') break;
-    }
+    do {
+        const size_t delim_pos = skip_impl.find_first_of(':', start_pos);
+        // rows below to identify quotes at the end and deal with them
+        end_pos = MIN2(skip_impl.size(), delim_pos);
+        size_t len = end_pos - start_pos;
+        if (skip_impl[end_pos - 1] == '"' || skip_impl[end_pos - 1] == '\'')
+            len--;
+        std::string sub_skip_impl = skip_impl.substr(start_pos, len);
+        // even incomplete match leads to skipping
+        if (!sub_skip_impl.empty()
+                && impl.find(sub_skip_impl) != std::string::npos)
+            return true;
+        start_pos = end_pos + 1;
+    } while (end_pos < skip_impl.size());
 
     return false;
 }
@@ -397,10 +397,8 @@ static char *dirname(char *path) {
                     ? OK
                     : FAIL);
     path[0] = '\0';
-    if (drive != NULL)
-        SAFE_V(strncat_s(path, PATH_MAX, drive, _MAX_DRIVE) == 0 ? OK : FAIL);
-    if (dir != NULL)
-        SAFE_V(strncat_s(path, PATH_MAX, dir, _MAX_DIR) == 0 ? OK : FAIL);
+    SAFE_V(strncat_s(path, PATH_MAX, drive, _MAX_DRIVE) == 0 ? OK : FAIL);
+    SAFE_V(strncat_s(path, PATH_MAX, dir, _MAX_DIR) == 0 ? OK : FAIL);
     if (path[0] == '\0') {
         path[0] = '.';
         path[1] = '\0';
@@ -452,7 +450,7 @@ std::string locate_batch_file(const std::string &fname) {
         const std::string fullname = search_paths[n] + "/" + fname;
         ifs.open(fullname);
         if (ifs.is_open()) {
-            print(50, "batch file used: %s\n", fullname.c_str());
+            BENCHDNN_PRINT(50, "batch file used: %s\n", fullname.c_str());
             return fullname;
         }
     }
@@ -474,7 +472,7 @@ std::string locate_batch_file(const std::string &fname) {
             ifs.open(fullname);
             if (ifs.is_open()) {
                 search_paths[n_paths++] = std::move(fdir);
-                print(50, "batch file used: %s\n", fullname.c_str());
+                BENCHDNN_PRINT(50, "batch file used: %s\n", fullname.c_str());
                 return fullname;
             }
         }
@@ -559,4 +557,69 @@ void gemm(const char *layout, const char *transa, const char *transb, int64_t m,
         dnnl_sgemm(
                 *transb, *transa, n, m, k, alpha, b, ldb, a, lda, beta, c, ldc);
     }
+}
+
+int sanitize_desc(int &ndims, std::vector<std::reference_wrapper<int64_t>> d,
+        std::vector<std::reference_wrapper<int64_t>> h,
+        std::vector<std::reference_wrapper<int64_t>> w,
+        const std::vector<int64_t> &def_values, bool must_have_spatial) {
+    size_t N = d.size();
+    assert(h.size() == N && w.size() == N && def_values.size() == N);
+
+    ndims = 5;
+
+    // check output spatial values
+    const bool no_d = d[0].get() == 0;
+    const bool no_h = h[0].get() == 0;
+    const bool no_w = w[0].get() == 0;
+
+    if (no_d) ndims--;
+    if (no_d && no_h) ndims--;
+    if (no_d && no_h && no_w) ndims--;
+    if (must_have_spatial && ndims <= 2) return FAIL;
+
+    if (ndims == 5) {
+        if (no_h && no_w) {
+            // User specified values for the d dimension but not values for h
+            // and w dimensions. Propagate d values to h and w dimensions.
+            for (size_t n = 0; n < N; ++n)
+                w[n].get() = h[n].get() = d[n].get();
+        } else if (!no_h && !no_w) {
+            // User specified them all, good to go.
+        } else {
+            // Problem is not cubic and one of h or w dimension is missing.
+            return FAIL;
+        }
+    } else if (ndims == 4 && no_w) {
+        // User specified values for the h dimension but not values for the w
+        // dimension. Propagate h values to the w dimension.
+        for (size_t n = 0; n < N; ++n)
+            w[n].get() = h[n].get();
+    }
+
+    for (size_t n = 0; n < N; ++n) {
+        if (ndims < 5) d[n].get() = def_values[n];
+        if (ndims < 4) h[n].get() = def_values[n];
+        if (ndims < 3) w[n].get() = def_values[n];
+    }
+
+    return OK;
+}
+
+void print_dhw(bool &print_d, bool &print_h, bool &print_w, int ndims,
+        const std::vector<int64_t> &d, const std::vector<int64_t> &h,
+        const std::vector<int64_t> &w) {
+    size_t N = d.size();
+    assert(h.size() == N && w.size() == N);
+
+    bool square_shape = true, cubic_shape = true;
+    for (size_t n = 0; n < N; ++n) {
+        square_shape = square_shape && h[n] == w[n];
+        cubic_shape = cubic_shape && d[n] == h[n] && h[n] == w[n];
+    }
+
+    print_d = ndims == 5;
+    print_h = ndims == 4 || (ndims == 5 && (!cubic_shape || canonical));
+    print_w = ndims == 3 || (ndims == 5 && (!cubic_shape || canonical))
+            || (ndims == 4 && (!square_shape || canonical));
 }

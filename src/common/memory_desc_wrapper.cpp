@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -139,6 +139,7 @@ status_t memory_desc_wrapper::compute_blocking(
         C(abcd, {0, 1, 2, 3}, {}, {});
         C(abcde, {0, 1, 2, 3, 4}, {}, {});
         C(abcdef, {0, 1, 2, 3, 4, 5}, {}, {});
+        C(abdc, {0, 1, 3, 2}, {}, {});
         C(abdec, {0, 1, 3, 4, 2}, {}, {});
         C(acb, {0, 2, 1}, {}, {});
         C(acbde, {0, 2, 1, 3, 4}, {}, {});
@@ -153,6 +154,7 @@ status_t memory_desc_wrapper::compute_blocking(
         C(bcdea, {1, 2, 3, 4, 0}, {}, {});
         C(cba, {2, 1, 0}, {}, {});
         C(cdba, {2, 3, 1, 0}, {}, {});
+        C(dcab, {3, 2, 0, 1}, {}, {});
         C(cdeba, {2, 3, 4, 1, 0}, {}, {});
         C(decab, {3, 4, 2, 0, 1}, {}, {});
         C(defcab, {3, 4, 5, 2, 0, 1}, {}, {});
@@ -279,12 +281,26 @@ status_t memory_desc_wrapper::compute_blocking(
         C(aBCde2b8c8b2c, {0, 1, 2, 3, 4}, {2, 8, 8, 2}, {1, 2, 1, 2});
         C(aBdec32b, {0, 1, 3, 4, 2}, {32}, {1});
         C(aCBdef16c16b, {0, 2, 1, 3, 4, 5}, {16, 16}, {2, 1});
+        C(aCBdef16b16c, {0, 2, 1, 3, 4, 5}, {16, 16}, {1, 2});
         C(Abcdef16a, {0, 1, 2, 3, 4, 5}, {16}, {0});
         C(aCBd16c16b, {0, 2, 1, 3}, {16, 16}, {2, 1});
         C(aCBde16c16b, {0, 2, 1, 3, 4}, {16, 16}, {2, 1});
         C(Acdb32a, {0, 2, 3, 1}, {32}, {0});
         C(BAcd16b16a, {1, 0, 2, 3}, {16, 16}, {1, 0});
+        C(BAcde16a16b, {1, 0, 2, 3, 4}, {16, 16}, {0, 1});
         C(BAc16b16a, {1, 0, 2}, {16, 16}, {1, 0});
+        C(aBCd2b4c2b, {0, 1, 2, 3}, {2, 4, 2}, {1, 2, 1});
+        C(aBCde2b4c2b, {0, 1, 2, 3, 4}, {2, 4, 2}, {1, 2, 1});
+        C(aBCdef2b4c2b, {0, 1, 2, 3, 4, 5}, {2, 4, 2}, {1, 2, 1});
+        C(aBCd2c4b2c, {0, 1, 2, 3}, {2, 4, 2}, {2, 1, 2});
+        C(aBCde2c4b2c, {0, 1, 2, 3, 4}, {2, 4, 2}, {2, 1, 2});
+        C(aBCdef2c4b2c, {0, 1, 2, 3, 4, 5}, {2, 4, 2}, {2, 1, 2});
+        C(aBCd4b8c2b, {0, 1, 2, 3}, {4, 8, 2}, {1, 2, 1});
+        C(aBCde4b8c2b, {0, 1, 2, 3, 4}, {4, 8, 2}, {1, 2, 1});
+        C(aBCdef4b8c2b, {0, 1, 2, 3, 4, 5}, {4, 8, 2}, {1, 2, 1});
+        C(aBCd4c8b2c, {0, 1, 2, 3}, {4, 8, 2}, {2, 1, 2});
+        C(aBCde4c8b2c, {0, 1, 2, 3, 4}, {4, 8, 2}, {2, 1, 2});
+        C(aBCdef4c8b2c, {0, 1, 2, 3, 4, 5}, {4, 8, 2}, {2, 1, 2});
         default: break;
     }
 

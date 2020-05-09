@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -63,16 +63,18 @@ template <typename reorder_types>
 class reorder_simple_test
     : public ::testing::TestWithParam<test_simple_params<reorder_types>> {
 protected:
+#ifdef DNNL_TEST_WITH_ENGINE_PARAM
     void Test() {
         test_simple_params<reorder_types> p
                 = ::testing::TestWithParam<decltype(p)>::GetParam();
         catch_expected_failures(
                 [=]() {
-                    engine eng(get_test_engine_kind(), 0);
+                    engine eng = get_test_engine();
                     RunTest(eng, eng);
                 },
                 p.expect_to_fail, p.expected_status);
     }
+#endif
 
     void Test(engine &eng_i, engine &eng_o) {
         test_simple_params<reorder_types> p
@@ -118,7 +120,7 @@ protected:
                 == r_pd.dst_desc());
 
         auto r = reorder(r_pd);
-        auto strm = stream(r_pd.get_engine());
+        auto strm = make_stream(r_pd.get_engine());
         r.execute(strm, src, dst);
         strm.wait();
 

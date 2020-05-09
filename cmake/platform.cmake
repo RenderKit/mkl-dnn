@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2019 Intel Corporation
+# Copyright 2016-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,9 @@ set(platform_cmake_included true)
 
 include("cmake/utils.cmake")
 
-add_definitions(-DDNNL_DLL -DDNNL_DLL_EXPORTS)
+if (DNNL_LIBRARY_TYPE STREQUAL "SHARED")
+    add_definitions(-DDNNL_DLL)
+endif()
 
 # UNIT8_MAX-like macros are a part of the C99 standard and not a part of the
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
@@ -35,7 +37,7 @@ set(CMAKE_CCXX_NOWARN_FLAGS)
 set(CMAKE_CCXX_NOEXCEPT_FLAGS)
 set(DEF_ARCH_OPT_FLAGS)
 
-# Compatibility with MKL-DNN
+# Compatibility with Intel MKL-DNN
 if($ENV{MKLDNN_WERROR})
     set(DNNL_WERROR $ENV{MKLDNN_WERROR})
 endif()
@@ -73,6 +75,8 @@ if(MSVC)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:15009")
         # disable: disabling user-directed function packaging (COMDATs)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:11031")
+        # disable: decorated name length exceeded, name was truncated
+        append(CMAKE_CCXX_NOWARN_FLAGS "-Qdiag-disable:2586")
         # disable: disabling optimization; runtime debug checks enabled
         append(CMAKE_CXX_FLAGS_DEBUG "-Qdiag-disable:10182")
     endif()
@@ -135,7 +139,13 @@ elseif(UNIX OR MINGW)
             append(CMAKE_CCXX_SANITIZER_FLAGS "-g -fno-omit-frame-pointer")
         endif()
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-        set(DEF_ARCH_OPT_FLAGS "-msse4.1")
+        if(TARGET_ARCH STREQUAL "AARCH64")
+             set(DEF_ARCH_OPT_FLAGS "-O3 -mcpu=native")
+             set(DNNL_ENABLE_JIT_PROFILING CACHE BOOL "OFF" FORCE)
+             message(WARNING "AArch64 build, DNNL_ENABLE_JIT_PROFILING is OFF")
+        else()
+             set(DEF_ARCH_OPT_FLAGS "-msse4.1")
+        endif()
         # suppress warning on assumptions made regarding overflow (#146)
         append(CMAKE_CCXX_NOWARN_FLAGS "-Wno-strict-overflow")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")

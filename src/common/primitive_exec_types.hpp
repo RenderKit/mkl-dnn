@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ struct exec_ctx_t {
     // Note: fully defined memory descriptor mentioned above is a synonym to
     //       `mdw::has_runtime_dims_or_strides() == false`.
     //
-    // XXX: revisit this behavior in DNNL 2.0. It would be more consistent to
+    // XXX: revisit this behavior in oneDNN v2.0. It would be more consistent to
     //      take memory description from the incoming argument. This will
     //      require a sub-memory object, though...
     memory_desc_wrapper memory_mdw(int arg,

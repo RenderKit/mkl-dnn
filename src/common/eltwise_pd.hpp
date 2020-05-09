@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -74,6 +74,17 @@ struct eltwise_pd_t : public primitive_desc_t {
         return memory_desc_wrapper(desc_.data_desc).has_zero_dim();
     }
 
+    bool use_dst() const {
+        using namespace alg_kind;
+        return !is_fwd()
+                && utils::one_of(desc_.alg_kind, eltwise_relu_use_dst_for_bwd,
+                        eltwise_tanh_use_dst_for_bwd,
+                        eltwise_elu_use_dst_for_bwd,
+                        eltwise_sqrt_use_dst_for_bwd,
+                        eltwise_logistic_use_dst_for_bwd,
+                        eltwise_exp_use_dst_for_bwd);
+    }
+
 protected:
     eltwise_desc_t desc_;
     const eltwise_fwd_pd_t *hint_fwd_pd_;
@@ -134,9 +145,10 @@ struct eltwise_bwd_pd_t : public eltwise_pd_t {
         , diff_data_md_(desc_.diff_data_desc) {}
 
     virtual arg_usage_t arg_usage(int arg) const override {
-        if (utils::one_of(arg, DNNL_ARG_SRC, DNNL_ARG_DIFF_DST))
+        if (use_dst() ? arg == DNNL_ARG_DST : arg == DNNL_ARG_SRC)
             return arg_usage_t::input;
 
+        if (arg == DNNL_ARG_DIFF_DST) return arg_usage_t::input;
         if (arg == DNNL_ARG_DIFF_SRC) return arg_usage_t::output;
 
         return primitive_desc_t::arg_usage(arg);
@@ -145,6 +157,7 @@ struct eltwise_bwd_pd_t : public eltwise_pd_t {
     virtual const memory_desc_t *arg_md(int arg) const override {
         switch (arg) {
             case DNNL_ARG_SRC: return src_md(0);
+            case DNNL_ARG_DST: return dst_md(0);
             case DNNL_ARG_DIFF_SRC: return diff_src_md(0);
             case DNNL_ARG_DIFF_DST: return diff_dst_md(0);
             default: return eltwise_pd_t::arg_md(arg);
@@ -152,6 +165,9 @@ struct eltwise_bwd_pd_t : public eltwise_pd_t {
     }
 
     virtual const memory_desc_t *src_md(int index = 0) const override {
+        return index == 0 ? &data_md_ : &glob_zero_md;
+    }
+    virtual const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 ? &data_md_ : &glob_zero_md;
     }
     virtual const memory_desc_t *diff_dst_md(int index = 0) const override {
@@ -164,7 +180,10 @@ struct eltwise_bwd_pd_t : public eltwise_pd_t {
     virtual int n_inputs() const override { return 2; }
     virtual int n_outputs() const override { return 1; }
 
-    bool is_zero_preserved() const { return true; }
+    bool is_zero_preserved() const {
+        return math::eltwise_bwd_preserves_zero(
+                desc_.alg_kind, desc_.alpha, desc_.beta);
+    }
 
 protected:
     memory_desc_t diff_data_md_;

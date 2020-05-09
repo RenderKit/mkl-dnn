@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #define GEMM_PACK_STORAGE_HPP
 
 #include <cstdint>
+#include "dnnl_thread.hpp"
 #include "gemm_threading.hpp"
 #include "utils.hpp"
 
@@ -118,14 +119,14 @@ struct gemm_pack_storage_t {
         return matrix<data_type>(0);
     }
 
-    bool get_nocopy(int ithr, dim_t &ld, dim_t &td) const {
+    bool get_nocopy(int ithr, int &trans, dim_t &ld, dim_t &td) const {
         auto id = thread_to_slice(ithr);
-        return matrix_header->slice[id].get_nocopy(ld, td);
+        return matrix_header->slice[id].get_nocopy(trans, ld, td);
     }
 
-    bool get_nocopy(dim_t &ld, dim_t &td) const {
+    bool get_nocopy(int &trans, dim_t &ld, dim_t &td) const {
         if (!single_nocopy()) return false;
-        return get_nocopy(0, ld, td);
+        return get_nocopy(0, trans, ld, td);
     }
 
     void get_blocking(int ithr, dim_t &block_r, dim_t &block_c) const {
@@ -148,9 +149,9 @@ struct gemm_pack_storage_t {
             sums_header->slice[id].set_blocking(nblk_r, nblk_c, 1, block_c);
     }
 
-    void set_nocopy(int ithr, dim_t ld, dim_t td) {
+    void set_nocopy(int ithr, int trans, dim_t ld, dim_t td) {
         auto id = thread_to_slice(ithr);
-        matrix_header->slice[id].set_nocopy(ld, td);
+        matrix_header->slice[id].set_nocopy(trans, ld, td);
     }
 
     void setup(int max_nthr, bool has_row_sums = false,
@@ -206,6 +207,7 @@ protected:
 
     struct slice_header_t {
         bool packed;
+        int trans;
         int nblk_r, nblk_c;
         dim_t block_r, block_c;
         size_t off_data;
@@ -242,8 +244,9 @@ protected:
             block_c = block_c_;
         }
 
-        void set_nocopy(dim_t ld, dim_t td) {
+        void set_nocopy(int trans_, dim_t ld, dim_t td) {
             packed = false;
+            trans = trans_;
             block_r = ld;
             block_c = td;
             nblk_r = 1;
@@ -255,8 +258,9 @@ protected:
             block_c_ = block_c;
         }
 
-        bool get_nocopy(dim_t &ld, dim_t &td) const {
+        bool get_nocopy(int &trans_, dim_t &ld, dim_t &td) const {
             if (!packed) {
+                trans_ = trans;
                 ld = block_r;
                 td = block_c;
             }
@@ -277,8 +281,30 @@ protected:
 
         template <typename data_type>
         void finalize(size_t &cur_off, int nslices) {
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+            // This, I hope, is a temporary workaround...
+            // The reason for this special case is that in case of threadpool
+            // threading this function may be called to estimate the amount of
+            // memory needed when no threading information is actually
+            // available. Hence, it needs to provide an upper bound.
+            size_t max_off = cur_off;
+            for (int id = 0; id < nslices; id++) {
+                slice[id].finalize<data_type>(cur_off);
+                if (id == 0) {
+                    // Assume that slice[0] is the largest one.
+                    size_t slice0_size = cur_off - max_off;
+                    max_off += slice0_size * dnnl_get_max_threads();
+                }
+            }
+            if (!threadpool_utils::get_active_threadpool() && nslices)
+                // The std::max is a paranoid check for the case when slice[0]
+                // is not actually the largest one. Probably a crash will
+                // happen anyways...
+                cur_off = std::max(cur_off, max_off);
+#else
             for (int id = 0; id < nslices; id++)
                 slice[id].finalize<data_type>(cur_off);
+#endif
         }
     } * matrix_header, *sums_header;
 

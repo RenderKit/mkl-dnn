@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ protected:
 
         ASSERT_EQ(p.aprop_kind, prop_kind::forward);
         ASSERT_EQ(p.aalgorithm, algorithm::convolution_direct);
-        auto eng = engine(get_test_engine_kind(), 0);
+        auto eng = get_test_engine();
         memory::data_type data_type = data_traits<data_t>::data_type;
         ASSERT_EQ(data_type, dnnl::memory::data_type::f32);
 

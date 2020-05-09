@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,14 +20,41 @@
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
 
-// Engine kind used to run DNNL primitives for testing
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+#include "../testing_threadpool.hpp"
+#endif
+
+float round_to_nearest_representable(dnnl_data_type_t dt, float value) {
+    switch (dt) {
+        case dnnl_f32: break;
+        case dnnl_bf16: value = (float)dnnl::impl::bfloat16_t(value); break;
+        case dnnl_f16: value = (float)dnnl::impl::float16_t(value); break;
+        case dnnl_s32:
+        case dnnl_s8:
+        case dnnl_u8: value = maybe_saturate(dt, mxcsr_round(value)); break;
+        default: SAFE_V(FAIL);
+    }
+
+    return value;
+}
+
+// Engine kind used to run oneDNN primitives for testing
 dnnl_engine_kind_t engine_tgt_kind = dnnl_cpu;
 
-// Engine used to run DNNL primitives for testing
+// Engine used to run oneDNN primitives for testing
 dnnl_engine_t engine_tgt;
 
 // Stream for target engine
 dnnl_stream_t stream_tgt;
+
+// Scratchpad mode for oneDNN
+dnnl_scratchpad_mode_t scratchpad_mode;
+
+// Engine used to run reference implementations (fast-ref-gpu option)
+dnnl_engine_t engine_cpu;
+
+// Stream for CPU engine
+dnnl_stream_t stream_cpu;
 
 args_t &args_t::set(int arg, const dnn_mem_t &mem) {
     args_.push_back(std::make_pair(arg, &mem));
@@ -178,10 +205,10 @@ void maybe_prepare_runtime_zero_points(dnn_mem_t &zero_points_m,
 }
 
 bool check_md_consistency_with_tag(
-        const dnnl_memory_desc_t &md, dnnl_format_tag_t tag) {
+        const dnnl_memory_desc_t &md, const std::string &tag) {
     dnnl_memory_desc_t md_new_tag;
-    DNN_SAFE(dnnl_memory_desc_init_by_tag(
-                     &md_new_tag, md.ndims, md.dims, md.data_type, tag),
+    DNN_SAFE(dnnl_memory_desc_init_by_tag(&md_new_tag, md.ndims, md.dims,
+                     md.data_type, convert_tag(tag, md.ndims)),
             WARN);
     return dnnl_memory_desc_equal(&md_new_tag, &md);
 }

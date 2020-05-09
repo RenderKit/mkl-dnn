@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,10 @@
 
 #include "gtest/gtest.h"
 
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+#include "../testing_threadpool.hpp"
+#endif
+
 using namespace testing;
 
 static std::atomic<bool> g_is_current_test_failed(false);
@@ -44,6 +48,12 @@ protected:
     }
 };
 
+class dnnl_environment_t : public ::testing::Environment {
+public:
+    void SetUp() override;
+    void TearDown() override;
+};
+
 static void test_init(int argc, char *argv[]);
 
 int main(int argc, char *argv[]) {
@@ -51,13 +61,15 @@ int main(int argc, char *argv[]) {
     {
         ::testing::InitGoogleTest(&argc, argv);
 
-        // Parse DNNL command line arguments
+        // Parse oneDNN command line arguments
         test_init(argc, argv);
 
         TestEventListeners &listeners = UnitTest::GetInstance()->listeners();
 
         auto *fail_handler = new assert_fail_handler_t();
         listeners.Append(fail_handler);
+
+        ::testing::AddGlobalTestEnvironment(new dnnl_environment_t());
 
 #if _WIN32
         // Safety cleanup.
@@ -97,7 +109,7 @@ static std::string find_cmd_option(
     return {};
 }
 
-static dnnl::engine::kind to_engine_kind(const std::string &str) {
+inline dnnl::engine::kind to_engine_kind(const std::string &str) {
     if (str.empty() || str == "cpu") return dnnl::engine::kind::cpu;
 
     if (str == "gpu") return dnnl::engine::kind::gpu;
@@ -106,20 +118,37 @@ static dnnl::engine::kind to_engine_kind(const std::string &str) {
     return dnnl::engine::kind::cpu;
 }
 
+// test_engine can be accessed only from tests compiled with
+// DNNL_TEST_WITH_ENGINE_PARAM macro
+#ifdef DNNL_TEST_WITH_ENGINE_PARAM
 static dnnl::engine::kind test_engine_kind;
+static std::unique_ptr<dnnl::engine> test_engine;
+
 dnnl::engine::kind get_test_engine_kind() {
     return test_engine_kind;
 }
 
+dnnl::engine get_test_engine() {
+    return *test_engine;
+}
+
+void dnnl_environment_t::SetUp() {
+    test_engine.reset(new dnnl::engine(get_test_engine_kind(), 0));
+}
+
+void dnnl_environment_t::TearDown() {
+    test_engine.reset();
+}
+#else
+void dnnl_environment_t::SetUp() {}
+void dnnl_environment_t::TearDown() {}
+#endif
+
 void test_init(int argc, char *argv[]) {
     auto engine_str = find_cmd_option(argv, argv + argc, "--engine=");
-#ifndef DNNL_TEST_WITH_ENGINE_PARAM
-    assert(engine_str.empty()
-            && "--engine parameter is not supported by this test");
-#endif
+#ifdef DNNL_TEST_WITH_ENGINE_PARAM
     test_engine_kind = to_engine_kind(engine_str);
 
-#ifdef DNNL_TEST_WITH_ENGINE_PARAM
     std::string filter_str = ::testing::GTEST_FLAG(filter);
     if (test_engine_kind == dnnl::engine::kind::cpu) {
         // Exclude non-CPU tests
@@ -128,5 +157,8 @@ void test_init(int argc, char *argv[]) {
         // Exclude non-GPU tests
         ::testing::GTEST_FLAG(filter) = filter_str + ":-*_CPU*";
     }
+#else
+    assert(engine_str.empty()
+            && "--engine parameter is not supported by this test");
 #endif
 }

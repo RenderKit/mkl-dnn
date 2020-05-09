@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -367,8 +367,10 @@ bool jit_sse41_conv_fwd_kernel_f32::post_ops_ok(
 status_t jit_sse41_conv_fwd_kernel_f32::init_conf(jit_conv_conf_t &jcp,
         const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
         const memory_desc_wrapper &weights_d, const memory_desc_wrapper &dst_d,
-        const primitive_attr_t &attr) {
+        const primitive_attr_t &attr, int nthreads) {
     if (!mayiuse(sse41)) return status::unimplemented;
+
+    jcp.nthr = nthreads;
 
     jcp.prop_kind = cd.prop_kind;
 

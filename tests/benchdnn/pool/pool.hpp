@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -75,11 +75,38 @@ typedef struct dt_conf_t {
 extern const _dt_conf_t conf_f32;
 
 const dt_conf_t *str2cfg(const char *str);
-const char *cfg2str(const dt_conf_t *cfg);
+std::ostream &operator<<(std::ostream &s, const dt_conf_t *cfg);
+
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    desc_t desc;
+
+    std::vector<dir_t> dir {FWD_D};
+    std::vector<const dt_conf_t *> cfg {conf_f32};
+    std::vector<std::string> tag {tag::abx};
+    std::vector<alg_t> alg {MAX};
+    std::vector<int64_t> mb {0};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%name%,%dir%,%cfg%,%tag%,%alg%,%DESC%,%-time%,%"
+              "0time%";
+    const char *perf_template_def
+            = "perf,%engine%,%name%,%prb%,%-time%,%0time%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
 
 struct prb_t : public desc_t {
     prb_t(const desc_t &desc, dir_t dir, const dt_conf_t *cfg,
-            dnnl_format_tag_t tag, alg_t alg, int64_t mb = 0)
+            const std::string &tag, alg_t alg, int64_t mb = 0)
         : desc_t(desc), dir(dir), cfg(cfg), tag(tag), alg(alg) {
         if (mb) this->mb = mb;
     }
@@ -87,7 +114,7 @@ struct prb_t : public desc_t {
 
     dir_t dir;
     const dt_conf_t *cfg;
-    dnnl_format_tag_t tag;
+    std::string tag;
     alg_t alg;
 
     BENCHDNN_DISALLOW_COPY_AND_ASSIGN(prb_t);
@@ -106,9 +133,7 @@ struct perf_report_t : public base_perf_report_t {
         s << alg2str(p_->alg);
     }
 
-    virtual void dump_cfg(std::ostream &s) const override {
-        s << cfg2str(p_->cfg);
-    }
+    virtual void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
 
     virtual void dump_desc(std::ostream &s) const override {
         s << static_cast<const desc_t &>(*p_);
@@ -130,14 +155,13 @@ struct perf_report_t : public base_perf_report_t {
 
     virtual const char *name() const override { return p_->name; }
     virtual const dir_t *dir() const override { return &p_->dir; }
-    virtual const dnnl_format_tag_t *tag() const override { return &p_->tag; }
+    virtual const std::string *tag() const override { return &p_->tag; }
 
 private:
     const prb_t *p_ = NULL;
 };
 
 /* some extra control parameters which shouldn't be placed in prb_t */
-extern const char *skip_impl; /* NULL or "" means do not skip anything */
 extern bool allow_unimpl; /* true means do not treat unimplemented as error */
 
 inline int64_t src_off_f(const prb_t *p, int64_t mb, int64_t ic, int64_t id,

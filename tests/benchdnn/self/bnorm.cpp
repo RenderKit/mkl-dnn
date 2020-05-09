@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ using namespace bnorm;
 namespace self {
 
 static int check_flags() {
-    CHECK_CASE_CPP_STR_EQ(flags2str((flags_t)0), "");
+    CHECK_CASE_CPP_STR_EQ(flags2str(NONE), "");
     CHECK_CASE_CPP_STR_EQ(flags2str(GLOB_STATS), "G");
     CHECK_CASE_CPP_STR_EQ(flags2str(USE_SCALESHIFT), "S");
     CHECK_CASE_CPP_STR_EQ(flags2str(FUSE_NORM_RELU), "R");
@@ -35,7 +35,7 @@ static int check_flags() {
     CHECK_CASE_CPP_STR_EQ(
             flags2str(GLOB_STATS | USE_SCALESHIFT | FUSE_NORM_RELU), "GSR");
 
-    CHECK_EQ(str2flags(""), 0);
+    CHECK_EQ(str2flags(""), NONE);
     CHECK_EQ(str2flags("G"), GLOB_STATS);
     CHECK_EQ(str2flags("S"), USE_SCALESHIFT);
     CHECK_EQ(str2flags("R"), FUSE_NORM_RELU);
@@ -61,7 +61,10 @@ static int check_desc() {
     d.mb = 2;
     d.iw = d.ih;
     d.eps = 1.f / 16;
-    CHECK_PRINT_EQ(d, "ic4ih5iw5ntest");
+    CHECK_PRINT_EQ(d, "ic4ih5ntest");
+
+    canonical = true;
+    CHECK_PRINT_EQ(d, "mb2ic4ih5iw5eps0.0625ntest");
 
 #define CHECK_D(_mb, _ic, _ih, _iw, _eps, _name) \
     CHECK_EQ(d.mb, _mb); \

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -124,8 +124,8 @@ protected:
             ASSERT_TRUE(src_dim_sum == p.dst_cds[p.concat_dimension]);
         }
 
-        auto eng = engine(get_test_engine_kind(), 0);
-        auto strm = stream(eng);
+        auto eng = get_test_engine();
+        auto strm = make_stream(eng);
         memory::data_type data_type = data_traits<data_t>::data_type;
 
         std::vector<memory::desc> srcs_md;

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -205,15 +205,112 @@ struct jit_uni_reorder_kernel_f32 : public kernel_t, public jit_generator {
     }
 
     void tr8x8_avx2(int i_off, int o_off) {
+        using namespace data_type;
+
+        auto cvt2ps = [=](const Ymm &dst, const Operand &src, data_type_t idt) {
+            switch (idt) {
+                case f32:
+                    if (src.isMEM() || src.getIdx() != dst.getIdx())
+                        vmovups(dst, src);
+                    break;
+                case bf16:
+                    vpmovzxwd(dst, src);
+                    vpslld(dst, dst, 0x10);
+                    break;
+                case s32: vcvtdq2ps(dst, src); break;
+                case s8:
+                    vpmovsxbd(dst, src);
+                    vcvtdq2ps(dst, dst);
+                    break;
+                case u8:
+                    vpmovzxbd(dst, src);
+                    vcvtdq2ps(dst, dst);
+                    break;
+                default: assert(!"unreachable");
+            }
+        };
+
+        auto cvt2odt = [=](const Ymm &ymm, data_type_t odt, data_type_t idt) {
+            Xmm xmm = Xmm(ymm.getIdx());
+            switch (odt) {
+                case bf16:
+                    if (idt == f32) {
+                        if (mayiuse(avx512_core_bf16)) {
+                            vcvtneps2bf16(Xmm(ymm.getIdx()), ymm);
+                        } else {
+                            bf16_emu_->vcvtneps2bf16(
+                                    Ymm(ymm.getIdx()), Zmm(ymm.getIdx()));
+                        }
+                    }
+                    break;
+                case s32:
+                    if (idt == f32)
+                        vcvtps2dq(ymm, ymm);
+                    else if (idt == s8)
+                        vpmovsxbd(ymm, ymm);
+                    else if (idt == u8)
+                        vpmovzxbd(ymm, ymm);
+                    break;
+                case s8:
+                    if (idt == f32) vcvtps2dq(ymm, ymm);
+                    if (idt == f32 || idt == s32) {
+                        if (mayiuse(avx512_core)) {
+                            vpmovsdb(xmm, ymm);
+                        } else {
+                            vpackssdw(ymm, ymm, ymm_zero);
+                            vpermq(ymm, ymm, 0x58);
+                            vpacksswb(ymm, ymm, ymm_zero);
+                        }
+                    }
+                    if (idt == u8) vpminub(ymm, ymm, ymm_8x127b);
+                    break;
+                case u8:
+                    if (idt == f32) vcvtps2dq(ymm, ymm);
+                    if (idt == f32 || idt == s32) {
+                        if (mayiuse(avx512_core)) {
+                            vpmaxsd(ymm, ymm, ymm_zero);
+                            vpmovusdb(xmm, ymm);
+                        } else {
+                            vpackssdw(ymm, ymm, ymm_zero);
+                            vpermq(ymm, ymm, 0x58);
+                            vpackuswb(ymm, ymm, ymm_zero);
+                        }
+                    }
+                    if (idt == s8) vpmaxsb(ymm, ymm, ymm_zero);
+                    break;
+                default: assert(!"unreachable");
+            }
+        };
+
+        auto load = [=](const Ymm &ymm, const Address &addr, int size) {
+            Xmm xmm = Xmm(ymm.getIdx());
+            switch (size) {
+                case 32: vmovups(ymm, addr); break;
+                case 16: vmovups(xmm, addr); break;
+                case 8: vmovsd(xmm, addr); break;
+                default: assert(!"unreachable");
+            }
+        };
+
+        auto store = [=](const Address &addr, const Ymm &ymm, int size) {
+            Xmm xmm = Xmm(ymm.getIdx());
+            switch (size) {
+                case 32: vmovups(addr, ymm); break;
+                case 16: vmovups(addr, xmm); break;
+                case 8: vmovsd(addr, xmm); break;
+                default: assert(!"unreachable");
+            }
+        };
+
+        const bool interim_f32 = (prb_.itype != f32)
+                || utils::one_of(f32, prb_.itype, prb_.otype);
+
         for (int i = 0; i < 8; i++) {
             using namespace data_type;
 
-            if (prb_.itype == s32 && prb_.otype == f32)
-                vcvtdq2ps(Ymm(i), i_addr(i_off + i * 8));
-            else if (prb_.itype == f32 && prb_.otype == s32)
-                vcvtps2dq(Ymm(i), i_addr(i_off + i * 8));
-            else
-                vmovups(Ymm(i), i_addr(i_off + i * 8));
+            load(Ymm(i), i_addr(i_off + i * is(0)), 8 * itype_sz);
+
+            if (interim_f32) cvt2ps(Ymm(i), Ymm(i), prb_.itype);
         }
 
         for (int i = 0; i < 8 / 2; i++) {
@@ -237,16 +334,20 @@ struct jit_uni_reorder_kernel_f32 : public kernel_t, public jit_generator {
         for (int i = 8 / 2; i < 8; i++)
             vperm2f128(Ymm(i), Ymm(i), Ymm(8 / 2 + i), uquad);
 
-        for (int i = 0; i < 8; i++)
-            vmovups(o_addr(o_off + i * 8), Ymm(i));
+        for (int i = 0; i < 8; i++) {
+            if (prb_.otype != f32)
+                cvt2odt(Ymm(i), prb_.otype, interim_f32 ? f32 : prb_.itype);
+            store(o_addr(o_off + i * os(1)), Ymm(i), 8 * otype_sz);
+        }
     }
 
     bool process_unroll_tr8x8(int len) {
+        using namespace data_type;
         bool can_do = true && mayiuse(avx2) && prb_.ndims >= 2
-                && utils::everyone_is(4, itype_sz, otype_sz)
+                && ((utils::one_of(prb_.itype, u8, s8, s32, f32, bf16)
+                        && utils::one_of(prb_.otype, u8, s8, s32, f32, bf16)))
                 && utils::everyone_is(8, n(0), n(1))
                 && utils::everyone_is(1, os(0), is(1))
-                && utils::everyone_is(8, os(1), is(0))
                 && prb_.scale_type == scale_type_t::NONE && prb_.beta == 0.f;
         if (!can_do) return false;
 
@@ -706,7 +807,14 @@ struct jit_uni_reorder_kernel_f32 : public kernel_t, public jit_generator {
         mov(reg_ptr_out, PARAM(out));
 #undef PARAM
 
-        if (mayiuse(avx)) {
+        if (mayiuse(avx2)) {
+            vxorps(ymm_zero, ymm_zero, ymm_zero);
+
+            if (prb_.itype == data_type::u8 && prb_.otype == data_type::s8) {
+                mov(reg_tmp, 0x7f7f7f7f7f7f7f7f);
+                movq(Xmm(ymm_8x127b.getIdx()), reg_tmp);
+            }
+        } else if (mayiuse(avx)) {
             vxorps(xmm_zero, xmm_zero, xmm_zero);
 
             if (prb_.itype == data_type::u8 && prb_.otype == data_type::s8) {
@@ -738,7 +846,9 @@ private:
 
     Xmm xmm_scale = xmm15;
     Xmm xmm_zero = xmm14;
-    Xmm xmm_4x127b = xmm13; // TODO: unite with xmm_zero
+    Xmm xmm_4x127b = xmm13; // TODO: unite with ymm_zero
+    Ymm ymm_zero = ymm14;
+    Ymm ymm_8x127b = ymm13;
     Xmm xmm_tmp = xmm12;
 
     /* bf16 support on SKX */
@@ -840,15 +950,16 @@ static void prb_block_for_cache(tr::prb_t &prb) {
 /** finds the maximum number of dimension the kernel should process and
  * optionally splits one of the dimension to achieve better balance between
  * parallel driver and the kernel. */
-static void prb_thread_kernel_balance(tr::prb_t &prb, int &ndims_ker_max) {
+static void prb_thread_kernel_balance(
+        tr::prb_t &prb, int &ndims_ker_max, int nthr) {
     size_t sz_total = 1;
     for (int d = 0; d < prb.ndims; ++d)
         sz_total *= prb.nodes[d].n;
 
     /* sz_drv_min is the minimal size for the parallel
      * driver required for good parallelization */
-    const size_t sz_drv_min = nstl::min<size_t>(
-            16 * dnnl_get_max_threads(), utils::div_up(sz_total, 1024));
+    const size_t sz_drv_min
+            = nstl::min<size_t>(16 * nthr, utils::div_up(sz_total, 1024));
 
     /* kdims -- # of dimensions processed by a kernel
      * sz_ker_cur -- product of the dimension processed by a kernel
@@ -954,7 +1065,8 @@ struct jit_uni_reorder_t : public primitive_impl_t {
             });
 
             int ndims_ker_max;
-            prb_thread_kernel_balance(prb, ndims_ker_max);
+            int nthr = dnnl_get_max_threads();
+            prb_thread_kernel_balance(prb, ndims_ker_max, nthr);
 
             tr::kernel_t::desc_t ker_desc;
             status_t ker_init_status
@@ -980,11 +1092,13 @@ struct jit_uni_reorder_t : public primitive_impl_t {
             _pd->prb_ = prb;
             _pd->ker_desc_ = ker_desc;
             _pd->init_scratchpad_md();
+            _pd->nthr_ = nthr;
             return safe_ptr_assign<reorder_pd_t>(*reorder_pd, _pd);
         }
 
         tr::prb_t prb_;
         tr::kernel_t::desc_t ker_desc_;
+        int nthr_;
     };
 
     jit_uni_reorder_t(const pd_t *apd) : primitive_impl_t(apd) {
@@ -1088,7 +1202,7 @@ struct jit_uni_reorder_t : public primitive_impl_t {
         if (ndims - ndims_ker == 0) {
             omp_driver_0d(ndims_ker, in, out, scale);
         } else {
-            parallel(0, [&](const int ithr, const int nthr) {
+            parallel(pd()->nthr_, [&](const int ithr, const int nthr) {
                 switch (ndims - ndims_ker) {
                     case 1:
                         omp_driver_1d(ithr, nthr, ndims_ker, in, out, scale);

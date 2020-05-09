@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@
 #include "gemm_info.hpp"
 #include "gemm_partition.hpp"
 #include "gemm_threading.hpp"
+#include "gemm_utils.hpp"
 #include "gemv_driver.hpp"
 #include "jit_generator.hpp"
 #include "nstl.hpp"
@@ -125,11 +126,6 @@ static inline void add_results(const dim_t m, const dim_t n, const float alpha,
             }
         }
     }
-}
-
-template <typename T>
-static inline dim_t get_ld_padd(const dim_t x) {
-    return utils::rnd_up(x, 2048 / sizeof(T)) + (64 / sizeof(T));
 }
 
 template <typename a_type, typename b_type, typename c_type>
@@ -272,96 +268,16 @@ static void sum_k_blocks(
     }
 }
 
-void prep_ref_gemm_s8u8s32_pack(
-        bool do_a, dim_t rows, dim_t cols, gemm_pack_storage_t *pack_dst) {
-
-    auto ld = get_ld_padd<int8_t>(rows);
-
-    pack_dst->which() = do_a ? matrix_id::a : matrix_id::b;
-    pack_dst->setup(1);
-    pack_dst->threading().copy = copy_type::no_copy;
-    pack_dst->threading().nthrs_m = 1;
-    pack_dst->threading().nthrs_n = 1;
-    pack_dst->threading().nthrs_k = 1;
-    pack_dst->set_nocopy(0, ld, cols);
-    pack_dst->finalize<int8_t, int32_t>();
-}
-
-dnnl_status_t ref_gemm_s8u8s32_pack(const void *src_void, dim_t ld_src,
-        dim_t rows, dim_t cols, int trans, gemm_pack_storage_t *dst_pack) {
-
-    auto src = reinterpret_cast<const int8_t *>(src_void);
-    auto dst = dst_pack->matrix<int8_t>(0);
-    dim_t ld_dst, td_dst;
-
-    if (!dst_pack->get_nocopy(0, ld_dst, td_dst)) return dnnl_invalid_arguments;
-
-    if (!trans) {
-        parallel_nd(cols, [=](int j) {
-            auto src_col = src + j * ld_src;
-            auto dst_col = dst + j * ld_dst;
-
-            PRAGMA_OMP_SIMD()
-            for (int i = 0; i < rows; i++)
-                dst_col[i] = src_col[i];
-        });
-    } else {
-        parallel_nd(cols, [=](int j) {
-            auto src_col = src + j;
-            auto dst_col = dst + j * ld_dst;
-
-            PRAGMA_OMP_SIMD()
-            for (int i = 0; i < rows; i++)
-                dst_col[i] = src_col[i * ld_src];
-        });
-    }
-
-    return dnnl_success;
-}
-
-template <typename data_type>
-static dnnl_status_t pack_no_copy(const data_type *src, dim_t ld_src,
-        dim_t rows, dim_t cols, int trans, float alpha,
-        gemm_pack_storage_t *dst_pack) {
-
-    auto dst = dst_pack->matrix<data_type>(0);
-    dim_t ld_dst, td_dst;
-
-    if (!dst_pack->get_nocopy(0, ld_dst, td_dst)) return dnnl_invalid_arguments;
-
-    if (!trans) {
-        parallel_nd(cols, [=](int j) {
-            auto src_col = src + j * ld_src;
-            auto dst_col = dst + j * ld_dst;
-
-            PRAGMA_OMP_SIMD()
-            for (int i = 0; i < rows; i++)
-                dst_col[i] = alpha * src_col[i];
-        });
-    } else {
-        // Naive code for now.
-        parallel_nd(cols, [=](int j) {
-            auto src_col = src + j;
-            auto dst_col = dst + j * ld_dst;
-
-            PRAGMA_OMP_SIMD()
-            for (int i = 0; i < rows; i++)
-                dst_col[i] = alpha * src_col[i * ld_src];
-        });
-    }
-
-    return dnnl_success;
-}
-
 template <typename a_type, typename b_type, typename c_type>
 static dnnl_status_t pack_no_copy(gemm_info_t<a_type, b_type, c_type> *arg) {
 
-    if (arg->packing == pack_type::pack_a)
-        return pack_no_copy(arg->a, arg->lda, arg->m, arg->k, arg->transa,
-                arg->alpha, arg->pack_dst);
-    else
-        return pack_no_copy(arg->b, arg->ldb, arg->k, arg->n, arg->transb,
-                arg->alpha, arg->pack_dst);
+    if (arg->packing == pack_type::pack_a) {
+        return gemm_utils::pack_no_copy(arg->a, arg->lda, arg->m, arg->k,
+                arg->transa, arg->alpha, arg->pack_dst);
+    } else {
+        return gemm_utils::pack_no_copy(arg->b, arg->ldb, arg->k, arg->n,
+                arg->transb, arg->alpha, arg->pack_dst);
+    }
 }
 
 template <typename a_type, typename b_type, typename c_type>
@@ -575,7 +491,7 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
     dim_t n_padd = get_n_padd(ithr, n, k, arg);
 
     // Padding for temporary buffer for C
-    dim_t ldc_buf = get_ld_padd<c_type>(m_padd);
+    dim_t ldc_buf = gemm_utils::get_ld_padd<c_type>(m_padd);
 
     dim_t strideAm = (arg->transa == no_trans) ? 1 : lda;
     dim_t strideAn = (arg->transa != no_trans) ? 1 : lda;
@@ -764,7 +680,7 @@ static dnnl_status_t kernel_driver_parallel_acopiedbcopy(int ithr, dim_t m,
     dim_t n_padd = get_n_padd(ithr, n, k, arg);
 
     // Padding for temporary buffer for C
-    dim_t ldc_buf = get_ld_padd<c_type>(m);
+    dim_t ldc_buf = gemm_utils::get_ld_padd<c_type>(m);
 
     dim_t strideBn = (arg->transb != 0) ? 1 : ldb;
 
@@ -981,7 +897,7 @@ static inline bool nocopy_checker(
 }
 
 template <typename a_type, typename b_type, typename c_type>
-static inline void set_thread_opts_nopack(int nthrs,
+static inline void set_thread_opts_nopack(int nthrs, int nthrs_spawn,
         gemm_threading_t &thread_info,
         const gemm_info_t<a_type, b_type, c_type> *arg) {
 
@@ -1088,7 +1004,7 @@ static inline void set_thread_opts_nopack(int nthrs,
         thread_info.copy = copy_type::shared_a;
         thread_info.partition = partition_type::col_1d;
         thread_info.nthrs_m = 1;
-        thread_info.nthrs_n = nthrs;
+        thread_info.nthrs_n = nthrs_spawn; // Using all spawned threads.
     } else {
         auto veclen = get_vector_length<c_type>();
 
@@ -1143,8 +1059,8 @@ static inline void set_thread_opts_pack(int nthrs,
     thread_info.partition = partition_type::mnk_3d;
 
     auto choose_blocking
-            = [](dim_t size_z, dim_t &thread_z, int &nthr_z, int block_z_init,
-                      int &block_z, int block_align) {
+            = [](dim_t size_z, dim_t &thread_z, int &nthr_z, dim_t block_z_init,
+                      dim_t &block_z, dim_t block_align) {
                   thread_z = utils::div_up(size_z, nthr_z);
                   auto num_blk = utils::div_up(thread_z, block_z_init);
                   block_z = utils::div_up(thread_z, num_blk);
@@ -1155,7 +1071,7 @@ static inline void set_thread_opts_pack(int nthrs,
               };
 
     auto choose_m_blocking = [&]() {
-        auto align = is_int8 ? 16 : get_vector_length<a_type>();
+        auto align = get_vector_length<c_type>();
         align = do_m_blocking_only ? arg->um : align;
         choose_blocking(m, thread_m, nthr_m, arg->bm, block_m, align);
     };
@@ -1189,8 +1105,9 @@ static inline void set_thread_opts_pack(int nthrs,
     min_mblk = do_m_blocking_only ? arg->um : min_mblk;
     auto min_nblk = do_n_blocking ? NBLK / 2 : n;
 
-    std::tie(nthr_m, nthr_n) = partition_2d_minblk(
-            m, n, MBLK, NBLK, min_mblk, min_nblk, nthrs / nthr_k);
+    std::tie(nthr_m, nthr_n) = partition_2d_minblk(m, n, MBLK, NBLK, min_mblk,
+            min_nblk, arg->um, arg->un, nthrs / nthr_k,
+            do_m_blocking && do_n_blocking && do_k_blocking);
 
     auto nthr_m_init = nthr_m, nthr_n_init = nthr_n;
 
@@ -1215,7 +1132,8 @@ static inline void set_thread_opts_pack(int nthrs,
 }
 
 template <typename a_type, typename b_type, typename c_type>
-static inline int set_thread_opts(int nthrs, gemm_threading_t &thread_info,
+static inline int set_thread_opts(int nthrs, int nthrs_spawn,
+        gemm_threading_t &thread_info,
         const gemm_info_t<a_type, b_type, c_type> *arg) {
 
     thread_info.block_m = thread_info.block_n = thread_info.block_k = -1;
@@ -1223,6 +1141,7 @@ static inline int set_thread_opts(int nthrs, gemm_threading_t &thread_info,
 
     constexpr bool is_int8 = utils::one_of(
             data_traits<a_type>::data_type, data_type::s8, data_type::u8);
+    constexpr bool is_bf16 = data_traits<a_type>::data_type == data_type::bf16;
 
     if (nocopy_checker(nthrs, arg)) {
         thread_info.copy = copy_type::no_copy;
@@ -1230,9 +1149,9 @@ static inline int set_thread_opts(int nthrs, gemm_threading_t &thread_info,
         int nthrs_m = 0;
         int nthrs_n = 0;
         int nthrs_k = 0;
-        int BM = 0;
-        int BN = 0;
-        int BK = 0;
+        dim_t BM = 0;
+        dim_t BN = 0;
+        dim_t BK = 0;
         auto m = arg->m, n = arg->n, k = arg->k;
 
         if (mayiuse(avx512_core)) {
@@ -1249,10 +1168,10 @@ static inline int set_thread_opts(int nthrs, gemm_threading_t &thread_info,
         thread_info.nthrs_n = nthrs_n;
         thread_info.nthrs_k = nthrs_k;
     } else {
-        if (arg->packing != pack_type::none && is_int8)
+        if (arg->packing != pack_type::none && (is_int8 || is_bf16))
             set_thread_opts_pack(nthrs, thread_info, arg);
         else
-            set_thread_opts_nopack(nthrs, thread_info, arg);
+            set_thread_opts_nopack(nthrs, nthrs_spawn, thread_info, arg);
     }
 
     return thread_info.nthrs_m * thread_info.nthrs_n * thread_info.nthrs_k;
@@ -1499,25 +1418,19 @@ static dnnl_status_t call_no_copy_sgemm(
         gemm_info_t<a_type, b_type, c_type> *arg) {
 
     if (arg->packing == pack_type::none) {
-        int m_s32 = (int)arg->m;
-        int n_s32 = (int)arg->n;
-        int k_s32 = (int)arg->k;
-        int lda_s32 = (int)arg->lda;
-        int ldb_s32 = (int)arg->ldb;
-        int ldc_s32 = (int)arg->ldc;
         auto transa_char = (arg->transa != do_trans) ? "N" : "T";
         auto transb_char = (arg->transb != do_trans) ? "N" : "T";
 
         if (mayiuse(avx512_core))
-            return jit_avx512_common_gemm_f32(transa_char, transb_char, &m_s32,
-                    &n_s32, &k_s32, &arg->alpha, (float *)arg->a, &lda_s32,
-                    (float *)arg->b, &ldb_s32, &arg->beta, (float *)arg->c,
-                    &ldc_s32, (float *)arg->co);
+            return jit_avx512_common_gemm_f32(transa_char, transb_char, &arg->m,
+                    &arg->n, &arg->k, &arg->alpha, (float *)arg->a, &arg->lda,
+                    (float *)arg->b, &arg->ldb, &arg->beta, (float *)arg->c,
+                    &arg->ldc, (float *)arg->co);
         else
-            return jit_avx_gemm_f32(transa_char, transb_char, &m_s32, &n_s32,
-                    &k_s32, &arg->alpha, (float *)arg->a, &lda_s32,
-                    (float *)arg->b, &ldb_s32, &arg->beta, (float *)arg->c,
-                    &ldc_s32, (float *)arg->co);
+            return jit_avx_gemm_f32(transa_char, transb_char, &arg->m, &arg->n,
+                    &arg->k, &arg->alpha, (float *)arg->a, &arg->lda,
+                    (float *)arg->b, &arg->ldb, &arg->beta, (float *)arg->c,
+                    &arg->ldc, (float *)arg->co);
     } else
         return pack_no_copy(arg);
 }
@@ -1531,15 +1444,14 @@ static dnnl_status_t gemm_threading_driver(
     auto is_b_packed = (arg->transb == packed);
     constexpr bool is_int8 = utils::one_of(
             data_traits<a_type>::data_type, data_type::s8, data_type::u8);
+    constexpr bool is_bf16 = data_traits<a_type>::data_type == data_type::bf16;
 
     if ((arg->m <= 0) || (arg->n <= 0)) return dnnl_success;
 
-    if (!is_a_packed && !is_b_packed && (arg->packing == pack_type::none)
-            && jump_to_gemv_s8x8s32(arg))
+    if (!is_a_packed && !is_b_packed && jump_to_gemv_s8x8s32(arg))
         return dnnl_success;
 
-    if (!is_a_packed && !is_b_packed && (arg->packing == pack_type::none)
-            && jump_to_gemv(arg) == dnnl_success)
+    if (!is_a_packed && !is_b_packed && jump_to_gemv(arg) == dnnl_success)
         return dnnl_success;
 
     if (is_a_packed && arg->bo != 0)
@@ -1569,9 +1481,14 @@ static dnnl_status_t gemm_threading_driver(
             force_threading = &arg->a_packed->threading();
         else if (is_b_packed)
             force_threading = &arg->b_packed->threading();
-        else
-                // Use k-partitioning if necessary.
-                if (arg->n <= 128 && arg->k >= 3072 && is_int8) {
+        else if (arg->m <= 768 && arg->n <= 768 && arg->k >= 2048 && is_bf16) {
+            // Try k-partitioning.
+            set_thread_opts_pack(nthr_goal, force_k_decomp, arg);
+
+            // Decide partition type later if no partitions in k-dimension.
+            if (force_k_decomp.nthrs_k > 1) force_threading = &force_k_decomp;
+        } else if (arg->n <= 128 && arg->k >= 3072 && is_int8) {
+            // Use k-partitioning if necessary.
             // Use 3D decomposition from pack api without n-partitioning.
             set_thread_opts_pack(
                     nthr_goal, force_k_decomp, arg, true, true, false);
@@ -1596,7 +1513,7 @@ static dnnl_status_t gemm_threading_driver(
         auto &thread_info = pack_dst->threading();
         force_threading = &thread_info;
 
-        nthr_goal = set_thread_opts(nthr_goal, thread_info, arg);
+        nthr_goal = set_thread_opts(nthr_goal, nthr_max, thread_info, arg);
         arg->update_blocking(thread_info);
 
         if (thread_info.copy != copy_type::no_copy) {
@@ -1619,10 +1536,10 @@ static dnnl_status_t gemm_threading_driver(
                      : pack_dst->set_blocking(ithr, k, n, k_padd, n_padd);
             }
         } else {
-            auto ld = do_a ? get_ld_padd<a_type>(arg->m)
-                           : get_ld_padd<b_type>(arg->k);
+            auto ld = do_a ? gemm_utils::get_ld_padd<a_type>(arg->m)
+                           : gemm_utils::get_ld_padd<b_type>(arg->k);
 
-            pack_dst->set_nocopy(0, ld, do_a ? arg->k : arg->n);
+            pack_dst->set_nocopy(0, no_trans, ld, do_a ? arg->k : arg->n);
         }
 
         do_a ? pack_dst->finalize<a_type, c_type>()
@@ -1641,12 +1558,12 @@ static dnnl_status_t gemm_threading_driver(
     bool k_summing = k_blocking && !packing;
 
     auto *thread_arg = (gemm_per_thread_t<c_type> *)malloc(
-            sizeof(gemm_per_thread_t<c_type>) * nthr_goal, PAGE_4K);
+            sizeof(gemm_per_thread_t<c_type>) * nthr_max, PAGE_4K);
 
     if (!thread_arg) return dnnl_out_of_memory;
 
     dim_t max_mt = 0, max_nt = 0;
-    for (int ithr = 0; ithr < nthr_goal; ithr++) {
+    for (int ithr = 0; ithr < nthr_max; ithr++) {
         thread_arg[ithr].result = dnnl_success;
         thread_arg[ithr].compute_done = false;
         thread_arg[ithr].c_local = thread_arg[ithr].c_global = nullptr;
@@ -1670,10 +1587,15 @@ static dnnl_status_t gemm_threading_driver(
     // Create temporary C buffers for k blocking if needed.
     c_type *c_local_storage = nullptr;
     if (k_summing) {
-        dim_t ldc_local = get_ld_padd<c_type>(max_mt);
+        dim_t ldc_local = gemm_utils::get_ld_padd<c_type>(max_mt);
         dim_t c_local_stride = ldc_local * max_nt;
         c_local_storage = (c_type *)malloc(
                 sizeof(c_type) * c_local_stride * nthr_goal, PAGE_4K);
+
+        if (!c_local_storage) {
+            free(thread_arg);
+            return dnnl_out_of_memory;
+        }
 
         for (int ithr = 0; ithr < nthr_goal; ithr++) {
             thread_arg[ithr].c_local = c_local_storage + ithr * c_local_stride;
@@ -1683,9 +1605,9 @@ static dnnl_status_t gemm_threading_driver(
 
     char *shared_mem = NULL;
 
-    // For active force_threading, always use the maximum number of threads
-    // to avoid OMP overhead that can occur due to changing thread counts.
-    int nthr_spawn = force_threading ? nthr_max : nthr_goal;
+    // Always use the maximum number of threads to avoid OMP overhead that can
+    // occur due to change thread counts.
+    int nthr_spawn = dnnl_thr_syncable() ? nthr_max : nthr_goal;
 
     parallel(nthr_spawn, [&](int ithr, int nthr) {
         int nthr_eff = force_threading ? nthr_goal : nstl::min(nthr_goal, nthr);
@@ -1700,9 +1622,10 @@ static dnnl_status_t gemm_threading_driver(
             if (force_threading)
                 thread_info = *force_threading;
             else {
-                nthr_eff = set_thread_opts(nthr_eff, thread_info, arg);
-                thread_arg[ithr].slice = thread_info.get_thread_slice(
-                        ithr, arg->m, arg->n, arg->k);
+                nthr_eff = set_thread_opts(nthr_eff, nthr, thread_info, arg);
+                if (ithr < nthr_eff)
+                    thread_arg[ithr].slice = thread_info.get_thread_slice(
+                            ithr, arg->m, arg->n, arg->k);
             }
 
             for (; ithr < nthr_eff; ithr += nthr) {
@@ -1789,7 +1712,7 @@ static dnnl_status_t gemm_threading_driver(
     });
 
     dnnl_status_t result = dnnl_success; // Initialize to success
-    for (int ithr = 0; ithr < nthr_goal; ithr++) {
+    for (int ithr = 0; ithr < nthr_max; ithr++) {
         if (thread_arg[ithr].result != dnnl_success) {
             result = static_cast<dnnl_status_t>(thread_arg[ithr].result);
             break;
@@ -1812,10 +1735,10 @@ static dnnl_status_t gemm_threading_driver(
 
 template <typename a_type, typename b_type, typename c_type>
 dnnl_status_t gemm_driver(const char *transA, const char *transB,
-        const char *offsetC, const int *m, const int *n, const int *k,
-        const float *alpha, const a_type *a, const int *lda, const a_type *oa,
-        const b_type *b, const int *ldb, const b_type *ob, const float *beta,
-        c_type *c, const int *ldc, const c_type *oc, const bool force_nocopy,
+        const char *offsetC, const dim_t *m, const dim_t *n, const dim_t *k,
+        const float *alpha, const a_type *a, const dim_t *lda, const a_type *oa,
+        const b_type *b, const dim_t *ldb, const b_type *ob, const float *beta,
+        c_type *c, const dim_t *ldc, const c_type *oc, const bool force_nocopy,
         pack_type packing, gemm_pack_storage_t *pack_dst, bool measure_only) {
 
     constexpr bool is_int8 = utils::one_of(
@@ -1827,9 +1750,9 @@ dnnl_status_t gemm_driver(const char *transA, const char *transB,
     assert(IMPLICATION(data_traits<a_type>::data_type == data_type::bf16,
             mayiuse(avx512_core) && !force_nocopy));
 
-    // gemm_driver supports 8-bit integer Intel AVX512, Intel AVX2 and
-    // Intel DL Boost.
-    assert(IMPLICATION(is_int8, mayiuse(avx2) && !mayiuse(avx512_mic)));
+    // gemm_driver supports 8-bit integer Intel AVX512, Intel AVX2, Intel AVX,
+    // Intel SSE4.1 and Intel DL Boost.
+    assert(IMPLICATION(is_int8, mayiuse(sse41) && !mayiuse(avx512_mic)));
 
     // gemm_driver supports sgemm for Intel AVX512, Intel AVX2, Intel AVX,
     // and Intel SSE4.1
@@ -1857,45 +1780,46 @@ dnnl_status_t gemm_driver(const char *transA, const char *transB,
 template // Instantiate gemm_bf16bf16f32
         dnnl_status_t
         gemm_driver<bfloat16_t, bfloat16_t, float>(const char *transA,
-                const char *transB, const char *offsetC, const int *m,
-                const int *n, const int *k, const float *alpha,
-                const bfloat16_t *a, const int *lda, const bfloat16_t *oa,
-                const bfloat16_t *b, const int *ldb, const bfloat16_t *ob,
-                const float *beta, float *c, const int *ldc, const float *oc,
+                const char *transB, const char *offsetC, const dim_t *m,
+                const dim_t *n, const dim_t *k, const float *alpha,
+                const bfloat16_t *a, const dim_t *lda, const bfloat16_t *oa,
+                const bfloat16_t *b, const dim_t *ldb, const bfloat16_t *ob,
+                const float *beta, float *c, const dim_t *ldc, const float *oc,
                 const bool force_nocopy, pack_type packing,
                 gemm_pack_storage_t *pack_dst, bool measure_only);
 
 template // Instantiate gemm_s8s8s32
         dnnl_status_t
         gemm_driver<int8_t, int8_t, int32_t>(const char *transA,
-                const char *transB, const char *offsetC, const int *m,
-                const int *n, const int *k, const float *alpha, const int8_t *a,
-                const int *lda, const int8_t *oa, const int8_t *b,
-                const int *ldb, const int8_t *ob, const float *beta, int32_t *c,
-                const int *ldc, const int32_t *oc, const bool force_nocopy,
-                pack_type packing, gemm_pack_storage_t *pack_dst,
-                bool measure_only);
+                const char *transB, const char *offsetC, const dim_t *m,
+                const dim_t *n, const dim_t *k, const float *alpha,
+                const int8_t *a, const dim_t *lda, const int8_t *oa,
+                const int8_t *b, const dim_t *ldb, const int8_t *ob,
+                const float *beta, int32_t *c, const dim_t *ldc,
+                const int32_t *oc, const bool force_nocopy, pack_type packing,
+                gemm_pack_storage_t *pack_dst, bool measure_only);
 
 template // Instantiate gemm_s8u8s32
         dnnl_status_t
         gemm_driver<int8_t, uint8_t, int32_t>(const char *transA,
-                const char *transB, const char *offsetC, const int *m,
-                const int *n, const int *k, const float *alpha, const int8_t *a,
-                const int *lda, const int8_t *oa, const uint8_t *b,
-                const int *ldb, const uint8_t *ob, const float *beta,
-                int32_t *c, const int *ldc, const int32_t *oc,
-                const bool force_nocopy, pack_type packing,
+                const char *transB, const char *offsetC, const dim_t *m,
+                const dim_t *n, const dim_t *k, const float *alpha,
+                const int8_t *a, const dim_t *lda, const int8_t *oa,
+                const uint8_t *b, const dim_t *ldb, const uint8_t *ob,
+                const float *beta, int32_t *c, const dim_t *ldc,
+                const int32_t *oc, const bool force_nocopy, pack_type packing,
                 gemm_pack_storage_t *pack_dst, bool measure_only);
 
 template // Instantiate sgemm
         dnnl_status_t
         gemm_driver<float, float, float>(const char *transA, const char *transB,
-                const char *offsetC, const int *m, const int *n, const int *k,
-                const float *alpha, const float *a, const int *lda,
-                const float *oa, const float *b, const int *ldb,
-                const float *ob, const float *beta, float *c, const int *ldc,
-                const float *oc, const bool force_nocopy, pack_type packing,
-                gemm_pack_storage_t *pack_dst, bool measure_only);
+                const char *offsetC, const dim_t *m, const dim_t *n,
+                const dim_t *k, const float *alpha, const float *a,
+                const dim_t *lda, const float *oa, const float *b,
+                const dim_t *ldb, const float *ob, const float *beta, float *c,
+                const dim_t *ldc, const float *oc, const bool force_nocopy,
+                pack_type packing, gemm_pack_storage_t *pack_dst,
+                bool measure_only);
 
 } // namespace cpu
 } // namespace impl

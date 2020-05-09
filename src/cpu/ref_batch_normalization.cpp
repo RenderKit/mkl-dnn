@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -124,7 +124,7 @@ void ref_batch_normalization_fwd_t<d_type>::execute_forward(
     // auto data_offset(const memory_desc_wrapper &, int, int, int, int, int)
     DECLARE_DATA_OFFSET;
 
-    parallel_nd(C, [&](int c) {
+    parallel_nd(C, [&](dim_t c) {
         acc_data_t v_mean = calculate_stats ? 0 : mean[c];
         acc_data_t v_variance = calculate_stats ? 0 : variance[c];
 

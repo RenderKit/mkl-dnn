@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@
 /// > Example code: @ref memory_format_propagation.cpp
 ///
 /// Format propagation is one of the central notions that needs to be
-/// well-understood to use DNNL correctly.
+/// well-understood to use oneDNN correctly.
 ///
 /// Convolution and inner product primitives choose the memory format when you
 /// create them with the placeholder memory format
@@ -41,7 +41,7 @@
 ///
 /// Other primitives, such as Elementwise, LRN, batch normalization and other,
 /// on forward propagation should use the same memory format as the preceding
-/// layer thus propagating the memory format through multiple DNNL primitives.
+/// layer thus propagating the memory format through multiple oneDNN primitives.
 /// This avoids unnecessary reorders which may be expensive and should be
 /// avoided unless a compute-intensive primitive requires a different format.
 /// For performance reasons, backward computations of such primitives requires
@@ -62,14 +62,14 @@
 /// computations when running training workloads. This topic is covered in
 /// [Training-Specific Aspects](@ref dev_guide_inference_and_training_aspects_training).
 ///
-/// For better understanding of the architecture and design of DNNL
+/// For better understanding of the architecture and design of oneDNN
 /// as well as the concepts used in the library, please refer to @ref
 /// dev_guide_understanding_memory_formats.
 ///
 /// @section memory_format_propagation_intro Introduction to the tutorial
 ///
 /// This C++ API example demonstrates how to use optimized memory formats
-/// supported by DNNL:
+/// supported by oneDNN:
 /// - How to configure primitives to use optimized memory formats.
 /// - How to determine whether data needs to be reordered from/to optimized
 ///   memory formats.
@@ -147,7 +147,7 @@ void memory_format_propagation_tutorial(engine::kind engine_kind) {
     /// Next, we pass the memory descriptors to primitive descriptors
     /// constructors.
     ///
-    // @snippet memory_format_propagation.cpp Create convolution and pooling primitive descriptors
+    /// @snippet memory_format_propagation.cpp Create convolution and pooling primitive descriptors
     // [Create convolution and pooling primitive descriptors]
     auto conv_pd = convolution_forward::primitive_desc(
             {prop_kind::forward_inference, algorithm::convolution_auto,
@@ -169,7 +169,7 @@ void memory_format_propagation_tutorial(engine::kind engine_kind) {
     ///
     /// We assume that the 'user' source and destination memory format is
     /// NCHW. Since there is no result validation in this tutorial, we do not
-    /// bother with filling the data with some values and let DNNL
+    /// bother with filling the data with some values and let oneDNN
     /// allocate the memory.
     ///
     /// @snippet memory_format_propagation.cpp Create source and destination memory objects
@@ -322,12 +322,11 @@ int main(int argc, char **argv) {
 ///
 /// It may be interesting to check what really happens during the run. We can
 /// use `DNNL_VERBOSE` environment variable for that (see also @ref
-/// dev_guide_verbose). Here's example output on a system that has an Intel(R)
-/// AVX2-capable processor (line breaks added for readability):
+/// dev_guide_verbose). Here's an example output:
 ///
 /// ~~~sh
 /// $ DNNL_VERBOSE=1 ./memory-format-propagation-cpp
-/// dnnl_verbose,info,DNNL <ver> (Git Hash <hash>),Intel(R) Advanced Vector Extensions 2 (Intel(R) AVX2)
+/// dnnl_verbose,info,oneDNN <ver> (Git Hash <hash>),Intel(R) Advanced Vector Extensions 2 (Intel(R) AVX2)
 /// dnnl_verbose,exec,reorder,jit:uni,undef,
 ///     src_f32::blocked:abcd:f0 dst_f32::blocked:aBcd8b:f0,num:1,1x256x14x14,1.03101
 /// dnnl_verbose,exec,reorder,jit:uni,undef,

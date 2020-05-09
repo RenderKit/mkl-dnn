@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -47,10 +47,10 @@
 #include "sum_pd.hpp"
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-#include "ocl/verbose.hpp"
+#include "gpu/ocl/verbose.hpp"
 #endif
 
-/* DNNL CPU ISA info */
+/* oneDNN CPU ISA info */
 #define ISA_ANY "Intel 64"
 #define SSE41 "Intel SSE4.1"
 #define AVX "Intel AVX"
@@ -73,14 +73,16 @@ static setting_t<int> verbose {0};
 int get_verbose() {
 #if !defined(DISABLE_VERBOSE)
     if (!verbose.initialized()) {
+        // Assumes that all threads see the same environment
         const int len = 2;
         char val[len] = {0};
         if (getenv("MKLDNN_VERBOSE", val, len) == 1) verbose.set(atoi(val));
         if (getenv("DNNL_VERBOSE", val, len) == 1) verbose.set(atoi(val));
+        if (!verbose.initialized()) verbose.set(0);
     }
     static bool version_printed = false;
     if (!version_printed && verbose.get() > 0) {
-        printf("dnnl_verbose,info,DNNL v%d.%d.%d (commit %s)\n",
+        printf("dnnl_verbose,info,oneDNN v%d.%d.%d (commit %s)\n",
                 dnnl_version()->major, dnnl_version()->minor,
                 dnnl_version()->patch, dnnl_version()->hash);
         printf("dnnl_verbose,info,cpu,runtime:%s\n",
@@ -89,7 +91,7 @@ int get_verbose() {
         printf("dnnl_verbose,info,gpu,runtime:%s\n",
                 dnnl_runtime2str(dnnl_version()->gpu_runtime));
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-        ocl::print_verbose_header();
+        gpu::ocl::print_verbose_header();
 #endif
         version_printed = true;
     }
@@ -208,6 +210,13 @@ void format_prb_desc_str(
 }
 
 void attr2str(char *str, int len, int written, const primitive_attr_t *attr) {
+    // scratchpad mode is not a part of has_default_values(). Check it first.
+    const scratchpad_mode_t &spm = attr->scratchpad_mode_;
+    if (spm != scratchpad_mode_t::dnnl_scratchpad_mode_library) {
+        DPRINT(str, len, written, "scratchpad_mode:%s;",
+                dnnl_scratchpad_mode2str(spm));
+    }
+
     if (attr->has_default_values()) return;
 
     const scales_t &os = attr->output_scales_;
@@ -223,12 +232,37 @@ void attr2str(char *str, int len, int written, const primitive_attr_t *attr) {
         DPRINT(str, len, written, "scales:'");
         for (const auto &map_entry : as.scales_) {
             const auto &val = map_entry.second;
-            if (!val.has_default_values()) {
-                DPRINT(str, len, written, "%ssrc:%d", delim, val.mask_);
-                if (val.mask_ == 0)
-                    DPRINT(str, len, written, ":%g", val.scales_[0]);
-                delim = "_";
+            if (val.has_default_values()) continue;
+
+            DPRINT(str, len, written, "%ssrc:%d", delim, val.mask_);
+            if (val.mask_ == 0)
+                DPRINT(str, len, written, ":%g", val.scales_[0]);
+            delim = "_";
+        }
+        DPRINT(str, len, written, "';");
+    }
+
+    const zero_points_t &zp = attr->zero_points_;
+    if (!zp.has_default_values()) {
+        const char *delim = "";
+        DPRINT(str, len, written, "zero_points:'");
+        for (const auto &arg : {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST}) {
+            if (zp.has_default_values(arg)) continue;
+
+            int mask = 0;
+            const int *zpp = nullptr;
+            zp.get(arg, nullptr, &mask, &zpp);
+            const char *arg_name = arg == DNNL_ARG_SRC
+                    ? "src"
+                    : arg == DNNL_ARG_WEIGHTS ? "wei" : "dst";
+            DPRINT(str, len, written, "%s%s:%d", delim, arg_name, mask);
+            if (mask == 0) {
+                if (is_runtime_value(*zpp))
+                    DPRINT(str, len, written, ":*");
+                else
+                    DPRINT(str, len, written, ":%d", *zpp);
             }
+            delim = "_";
         }
         DPRINT(str, len, written, "';");
     }
@@ -263,11 +297,6 @@ void attr2str(char *str, int len, int written, const primitive_attr_t *attr) {
             }
         }
         DPRINT(str, len, written, "';");
-    }
-
-    const scratchpad_mode_t &spm = attr->scratchpad_mode_;
-    if (spm != scratchpad_mode_t::dnnl_scratchpad_mode_library) {
-        DPRINT(str, len, written, "scratchpad_mode:%d;", (int)spm);
     }
 
     const rnn_data_qparams_t &rnn_qp = attr->rnn_data_qparams_;
@@ -506,12 +535,10 @@ static void init_info_gemm(pd_t *s, char *buffer) {
     attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
 
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, dat_written,
-            "m" DFMT "n" DFMT "k" DFMT
-            "a_dt:%sb_dt:%sc_dt:%sacc_dt:%salpha%fbeta%f",
+            "m" DFMT "n" DFMT "k" DFMT "a_dt:%s b_dt:%s c_dt:%s acc_dt:%s",
             s->desc()->m, s->desc()->n, s->desc()->k,
             dnnl_dt2str(s->desc()->a_type), dnnl_dt2str(s->desc()->b_type),
-            dnnl_dt2str(s->desc()->c_type), dnnl_dt2str(s->desc()->acc_type),
-            s->desc()->alpha, s->desc()->beta);
+            dnnl_dt2str(s->desc()->c_type), dnnl_dt2str(s->desc()->acc_type));
 
     verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
             dat_str, attr_str, aux_str, prb_str);
@@ -787,8 +814,14 @@ static void init_info_rnn(pd_t *s, char *buffer) {
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_layer_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
+    if (s->is_lstm_peephole()) { // wei_peephole
+        auto md = s->arg_md(s->is_fwd() ? DNNL_ARG_WEIGHTS_PEEPHOLE
+                                        : DNNL_ARG_DIFF_WEIGHTS_PEEPHOLE);
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_peephole_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+    }
     { // bias
-        auto md = s->is_fwd() ? s->weights_md(2) : s->diff_weights_md(2);
+        auto md = s->arg_md(s->is_fwd() ? DNNL_ARG_BIAS : DNNL_ARG_DIFF_BIAS);
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " bias_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
@@ -812,9 +845,9 @@ static void init_info_rnn(pd_t *s, char *buffer) {
             dnnl_alg_kind2str(s->activation_kind()));
 
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
-            "l" DFMT "t" DFMT "mb" DFMT "sic" DFMT "slc" DFMT "dic" DFMT
+            "l" DFMT "t" DFMT "mb" DFMT "sic" DFMT "slc" DFMT "dhc" DFMT
             "dlc" DFMT,
-            s->L(), s->T(), s->MB(), s->SIC(), s->SLC(), s->DIC(), s->DLC());
+            s->L(), s->T(), s->MB(), s->SIC(), s->SLC(), s->DHC(), s->DLC());
 
     verbose_templ(buffer, s->engine(), s->kind(), s->name(),
             s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);

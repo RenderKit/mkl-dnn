@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -55,8 +55,8 @@ protected:
         using pd_t = softmax_forward::primitive_desc;
         allows_attr_t aa {0}; // doesn't support anything
 
-        auto eng = engine(get_test_engine_kind(), 0);
-        auto strm = stream(eng);
+        auto eng = get_test_engine();
+        auto strm = make_stream(eng);
         prop_kind pk = p.aprop_kind == prop_kind::backward_data
                 ? prop_kind::forward_training
                 : p.aprop_kind;
@@ -137,8 +137,8 @@ protected:
         using hint_pd_t = softmax_forward::primitive_desc;
         allows_attr_t aa {0}; // doesn't support anything
 
-        auto eng = engine(get_test_engine_kind(), 0);
-        auto strm = stream(eng);
+        auto eng = get_test_engine();
+        auto strm = make_stream(eng);
         auto prec = data_traits<data_t>::data_type;
         auto mem_desc = memory::desc(p.dims, prec, p.memory_format);
         auto diff_mem_desc = memory::desc(p.dims, prec, p.diff_memory_format);

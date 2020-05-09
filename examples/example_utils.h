@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@
 
 #define COMPLAIN_DNNL_ERROR_AND_EXIT(what, status) \
     do { \
-        printf("[%s:%d] `%s` returns DNNL error: %s.\n", __FILE__, __LINE__, \
+        printf("[%s:%d] `%s` returns oneDNN error: %s.\n", __FILE__, __LINE__, \
                 what, dnnl_status2str(status)); \
         printf("Example failed.\n"); \
         exit(1); \

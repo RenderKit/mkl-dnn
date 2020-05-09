@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,26 +20,32 @@
 namespace sum {
 
 std::ostream &operator<<(std::ostream &s, const std::vector<float> &scales) {
+    bool has_single_scale = true;
+    for (size_t d = 0; d < scales.size() - 1; ++d)
+        has_single_scale = has_single_scale && scales[d] == scales[d + 1];
+
     s << scales[0];
-    for (int i = 1; i < (int)scales.size(); ++i)
-        s << ":" << scales[i];
+    if (!has_single_scale)
+        for (size_t d = 1; d < scales.size(); ++d)
+            s << ":" << scales[d];
     return s;
 }
 
 std::ostream &operator<<(std::ostream &s, const prb_t &p) {
-    dump_global_params(s);
+    using ::operator<<;
+    using sum::operator<<;
 
-    if (canonical
-            || !(p.n_inputs() == 2 && p.sdt[0] == dnnl_f32
-                    && p.sdt[1] == dnnl_f32))
-        s << "--sdt=" << p.sdt << " ";
-    if (canonical || p.ddt != dnnl_f32) s << "--ddt=" << dt2str(p.ddt) << " ";
-    if (canonical
-            || !(p.n_inputs() == 2 && p.stag[0] == dnnl_nchw
-                    && p.stag[1] == dnnl_nchw))
-        s << "--stag=" << p.stag << " ";
-    if (canonical || p.dtag != dnnl_format_tag_undef)
-        s << "--dtag=" << fmt_tag2str(p.dtag) << " ";
+    dump_global_params(s);
+    settings_t def;
+
+    bool has_default_tags = true;
+    for (const auto &i_stag : p.stag)
+        has_default_tags = has_default_tags && i_stag == tag::abx;
+
+    if (canonical || p.sdt != def.sdt[0]) s << "--sdt=" << p.sdt << " ";
+    if (canonical || p.ddt != def.ddt[0]) s << "--ddt=" << p.ddt << " ";
+    if (canonical || !has_default_tags) s << "--stag=" << p.stag << " ";
+    if (canonical || p.dtag != def.dtag[0]) s << "--dtag=" << p.dtag << " ";
     s << "--scales=" << p.scales << " ";
 
     s << p.dims;

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,26 +41,39 @@ typedef enum {
 typedef enum { action_copy = 0, action_sum, action_concat } rnn_action_t;
 
 dnnl_status_t init_rnn_fwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
-        dnnl_prop_kind_t prop_kind, dnnl_memory_desc_t *src_layer_d,
-        dnnl_memory_desc_t *src_iter_d, dnnl_memory_desc_t *src_iter_c_d,
-        dnnl_memory_desc_t *weights_layer_d, dnnl_memory_desc_t *weights_iter_d,
-        dnnl_memory_desc_t *bias_d, dnnl_memory_desc_t *dst_layer_d,
-        dnnl_memory_desc_t *dst_iter_d, dnnl_memory_desc_t *dst_iter_c_d);
+        dnnl_prop_kind_t prop_kind, const dnnl_memory_desc_t *src_layer_d,
+        const dnnl_memory_desc_t *src_iter_d,
+        const dnnl_memory_desc_t *src_iter_c_d,
+        const dnnl_memory_desc_t *weights_layer_d,
+        const dnnl_memory_desc_t *weights_iter_d,
+        const dnnl_memory_desc_t *weights_peephole_d,
+        const dnnl_memory_desc_t *weights_projection_d,
+        const dnnl_memory_desc_t *bias_d, const dnnl_memory_desc_t *dst_layer_d,
+        const dnnl_memory_desc_t *dst_iter_d,
+        const dnnl_memory_desc_t *dst_iter_c_d);
 
 dnnl_status_t init_rnn_bwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
-        dnnl_prop_kind_t prop_kind, dnnl_memory_desc_t *src_layer_d,
-        dnnl_memory_desc_t *src_iter_d, dnnl_memory_desc_t *src_iter_c_d,
-        dnnl_memory_desc_t *weights_layer_d, dnnl_memory_desc_t *weights_iter_d,
-        dnnl_memory_desc_t *bias_d, dnnl_memory_desc_t *dst_layer_d,
-        dnnl_memory_desc_t *dst_iter_d, dnnl_memory_desc_t *dst_iter_c_d,
-        dnnl_memory_desc_t *diff_src_layer_d,
-        dnnl_memory_desc_t *diff_src_iter_d,
-        dnnl_memory_desc_t *diff_src_iter_c_d,
-        dnnl_memory_desc_t *diff_weights_layer_d,
-        dnnl_memory_desc_t *diff_weights_iter_d,
-        dnnl_memory_desc_t *diff_bias_d, dnnl_memory_desc_t *diff_dst_layer_d,
-        dnnl_memory_desc_t *diff_dst_iter_d,
-        dnnl_memory_desc_t *diff_dst_iter_c_d);
+        dnnl_prop_kind_t prop_kind, const dnnl_memory_desc_t *src_layer_d,
+        const dnnl_memory_desc_t *src_iter_d,
+        const dnnl_memory_desc_t *src_iter_c_d,
+        const dnnl_memory_desc_t *weights_layer_d,
+        const dnnl_memory_desc_t *weights_iter_d,
+        const dnnl_memory_desc_t *weights_peephole_d,
+        const dnnl_memory_desc_t *weights_projection_d,
+        const dnnl_memory_desc_t *bias_d, const dnnl_memory_desc_t *dst_layer_d,
+        const dnnl_memory_desc_t *dst_iter_d,
+        const dnnl_memory_desc_t *dst_iter_c_d,
+        const dnnl_memory_desc_t *diff_src_layer_d,
+        const dnnl_memory_desc_t *diff_src_iter_d,
+        const dnnl_memory_desc_t *diff_src_iter_c_d,
+        const dnnl_memory_desc_t *diff_weights_layer_d,
+        const dnnl_memory_desc_t *diff_weights_iter_d,
+        const dnnl_memory_desc_t *diff_weights_peephole_d,
+        const dnnl_memory_desc_t *diff_weights_projection_d,
+        const dnnl_memory_desc_t *diff_bias_d,
+        const dnnl_memory_desc_t *diff_dst_layer_d,
+        const dnnl_memory_desc_t *diff_dst_iter_d,
+        const dnnl_memory_desc_t *diff_dst_iter_c_d);
 
 void init_buffer(float *buf, int64_t size, float value);
 
@@ -81,25 +94,9 @@ void data_deq10n(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_,
         float data_scale, float data_shift);
 void gates_reduction(const prb_t &p, const float *b_gates_, float *diff_bias_);
 
-int compare_dat(const prb_t &p, rnn_data_kind_t kind, dnn_mem_t &mem_dt,
+int compare_dat(const prb_t &p, data_kind_t kind, dnn_mem_t &mem_dt,
         dnn_mem_t &mem_fp, res_t *r, bool final_compare);
 
-int compare_input(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        res_t *r, bool final_compare);
-int compare_states(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        res_t *r, bool final_compare);
-int compare_weights_input(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        res_t *r, bool final_compare);
-int compare_weights_states(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        res_t *r, bool final_compare);
-int compare_bias(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp, res_t *r,
-        bool final_compare);
-int compare_dst_last_layer(const prb_t &p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        res_t *r, bool final_compare);
-int compare_dst_last_iteration(const prb_t &p, dnn_mem_t &mem_dt,
-        dnn_mem_t &mem_fp, res_t *r, bool final_compare);
-int compare_dst_c_last_iteration(const prb_t &p, dnn_mem_t &mem_dt,
-        dnn_mem_t &mem_fp, res_t *r, bool final_compare);
 }; // namespace rnn
 
 #endif

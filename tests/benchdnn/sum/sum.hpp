@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,16 +29,42 @@
 
 namespace sum {
 
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    dims_t dims;
+
+    std::vector<std::vector<dnnl_data_type_t>> sdt {{dnnl_f32, dnnl_f32}};
+    std::vector<dnnl_data_type_t> ddt {dnnl_f32};
+    std::vector<std::vector<std::string>> stag;
+    std::vector<std::string> dtag {tag::undef};
+    std::vector<std::vector<float>> scales {{0.25}, {1}, {4}};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%DESC%,%-time%,%0time%";
+    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
+
 struct prb_t {
     prb_t(const dims_t &dims, const std::vector<dnnl_data_type_t> &sdt,
-            dnnl_data_type_t ddt, const std::vector<dnnl_format_tag_t> &stag,
-            dnnl_format_tag_t dtag, const std::vector<float> &scales)
+            dnnl_data_type_t ddt, const std::vector<std::string> &stag,
+            const std::string &dtag, const std::vector<float> &scales)
         : dims(dims)
         , sdt(sdt)
         , ddt(ddt)
         , stag(stag)
         , dtag(dtag)
-        , scales(sdt.size()) {
+        , scales(sdt.size())
+        , ndims((int)dims.size()) {
         // if there is a single scale then broadcast it
         for (int i_input = 0; i_input < n_inputs(); i_input++)
             this->scales[i_input]
@@ -49,9 +75,10 @@ struct prb_t {
     dims_t dims;
     std::vector<dnnl_data_type_t> sdt;
     dnnl_data_type_t ddt;
-    std::vector<dnnl_format_tag_t> stag;
-    dnnl_format_tag_t dtag;
+    std::vector<std::string> stag;
+    std::string dtag;
     std::vector<float> scales;
+    int ndims;
 
     int n_inputs() const { return (int)sdt.size(); }
 };
@@ -75,10 +102,10 @@ struct perf_report_t : public base_perf_report_t {
         return &p_->sdt;
     }
     virtual const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
-    virtual const std::vector<dnnl_format_tag_t> *stag() const override {
+    virtual const std::vector<std::string> *stag() const override {
         return &p_->stag;
     }
-    virtual const dnnl_format_tag_t *dtag() const override { return &p_->dtag; }
+    virtual const std::string *dtag() const override { return &p_->dtag; }
 
 private:
     const prb_t *p_ = NULL;

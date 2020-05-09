@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ struct ref_softmax_fwd_t : public primitive_impl_t {
             if (in_s > 1) {
                 auto scratchpad = scratchpad_registry().registrar();
                 scratchpad.book(memory_tracking::names::key_softmax_reduction,
-                        sizeof(data_t) * 2 * in_s * ou_s);
+                        sizeof(float) * 2 * in_s * ou_s);
             }
         }
     };

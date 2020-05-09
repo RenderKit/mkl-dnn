@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2019 Intel Corporation
+# Copyright 2016-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,26 +39,18 @@ append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
 # include "src/common/dnnl_thread.hpp"
 include_directories(${PROJECT_SOURCE_DIR})
 
-if(UNIX OR MINGW)
-    # workaround for Intel Compiler 16.0 that doesn't suppress warning on
-    # deprecation with "-Wno-deprecated" compiler flag
-    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel"
-            AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")
-        append(CMAKE_TEST_CCXX_NOWARN_FLAGS "-diag-disable:1478")
-    else()
-        append(CMAKE_TEST_CCXX_NOWARN_FLAGS "-Wno-deprecated-declarations")
-    endif()
-elseif(WIN32 AND NOT MINGW)
+if(WIN32 AND NOT MINGW)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
-        # 1478, 1786: deprecated functions
-        append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/Qdiag-disable:1478")
-        append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/Qdiag-disable:1786")
         # 2415: unused variable
         append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/Qdiag-disable:2415")
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
         # c4244: conversion with possible loss of data
         # c4996: unsafe / deprecated functions
         append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/wd4996 /wd4244")
+        if ("${DNNL_CPU_THREADING_RUNTIME}" STREQUAL "THREADPOOL" AND Eigen3_FOUND)
+            # c4267: conversion with possible loss of data
+            append(CMAKE_TEST_CCXX_NOWARN_FLAGS "/wd4267")
+        endif()
     endif()
 endif()
 
@@ -72,7 +64,7 @@ if(UNIX OR MINGW)
     set(test_c_symbols "${CMAKE_CURRENT_BINARY_DIR}/test_c_symbols.c")
     add_custom_command(
         OUTPUT ${test_c_symbols}
-        COMMAND /bin/bash ${CMAKE_CURRENT_SOURCE_DIR}/generate_c_symbols_refs.sh
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/generate_c_symbols_refs.sh
         ${CMAKE_CURRENT_SOURCE_DIR}/.. ${test_c_symbols} ${include_dirs}
     )
     register_exe(test_c_symbols-c ${test_c_symbols} "test")
@@ -83,4 +75,7 @@ endif()
 add_subdirectory(gtests)
 add_subdirectory(benchdnn)
 add_subdirectory(mkldnn_compat)
-add_subdirectory(noexcept)
+if(UNIX OR MINGW)
+    add_subdirectory(noexcept)
+endif()
+

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -32,18 +32,51 @@
 
 namespace shuffle {
 
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    dims_t dims;
+
+    std::vector<dir_t> dir {FWD_D};
+    std::vector<dnnl_data_type_t> dt {dnnl_f32};
+    std::vector<std::string> tag {tag::abx};
+    std::vector<int64_t> group {1};
+    std::vector<int> axis {1};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%dir%,%dt%,%tag%,%group%,%axis%,%DESC%,%-time%,%"
+              "0time%";
+    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
+
 struct prb_t {
     prb_t(const dims_t &dims, dir_t dir, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, int axis, int64_t group)
-        : dims(dims), dir(dir), dt(dt), tag(tag), axis(axis), group(group) {}
+            const std::string &tag, int axis, int64_t group)
+        : dims(dims)
+        , dir(dir)
+        , dt(dt)
+        , tag(tag)
+        , axis(axis)
+        , group(group)
+        , ndims((int)dims.size()) {}
     ~prb_t() {}
 
     dims_t dims;
     dir_t dir;
     dnnl_data_type_t dt;
-    dnnl_format_tag_t tag;
+    std::string tag;
     int axis;
     int64_t group;
+    int ndims;
 };
 std::ostream &operator<<(std::ostream &s, const prb_t &p);
 
@@ -65,7 +98,7 @@ struct perf_report_t : public base_perf_report_t {
     virtual const int64_t *group() const override { return &p_->group; }
     virtual const dir_t *dir() const override { return &p_->dir; }
     virtual const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    virtual const dnnl_format_tag_t *tag() const override { return &p_->tag; }
+    virtual const std::string *tag() const override { return &p_->tag; }
 
 private:
     const prb_t *p_ = NULL;

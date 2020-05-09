@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include "cpu_isa_traits.hpp"
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
@@ -35,7 +36,7 @@ TEST_F(attr_test, TestScratchpadMode) {
 }
 
 TEST_F(attr_test, TestScratchpadModeEx) {
-    engine eng(get_test_engine_kind(), 0);
+    engine eng = get_test_engine();
 
     const memory::dim N = 2, C = 2, W = 2;
 
@@ -220,6 +221,97 @@ TEST_F(attr_test, TestPostOps) {
     ASSERT_EQ(alg, algorithm::eltwise_bounded_relu);
     ASSERT_FLOAT_EQ(alpha, 3.3f);
     ASSERT_FLOAT_EQ(beta, 4.4f);
+}
+
+TEST_F(attr_test, DepthwiseFusionPostop) {
+    dnnl::primitive_attr attr;
+    dnnl::post_ops ops;
+
+    int scales_mask;
+    std::vector<float> scales_in, scales_out;
+    memory::data_type wei_dt, bias_dt, dst_dt;
+
+    ASSERT_EQ(ops.len(), 0);
+    ASSERT_EQ(attr.get_post_ops().len(), 0);
+
+    scales_in = {3};
+    ops.append_dw_k3s1p1(memory::data_type::s8, memory::data_type::f32,
+            memory::data_type::u8, 0, scales_in);
+    attr.set_post_ops(ops);
+
+    ASSERT_EQ(attr.get_post_ops().kind(0), primitive::kind::convolution);
+    attr.get_post_ops().get_params_dw_k3s1p1(
+            0, wei_dt, bias_dt, dst_dt, scales_mask, scales_out);
+    ASSERT_EQ(wei_dt, memory::data_type::s8);
+    ASSERT_EQ(bias_dt, memory::data_type::f32);
+    ASSERT_EQ(dst_dt, memory::data_type::u8);
+    ASSERT_EQ(scales_mask, 0);
+    ASSERT_EQ(scales_in, scales_out);
+
+    scales_in = {1., 2., 3.};
+    ops.append_dw_k3s2p1(memory::data_type::u8, memory::data_type::s32,
+            memory::data_type::f32, 1 << 1, scales_in);
+    attr.set_post_ops(ops);
+
+    ASSERT_EQ(attr.get_post_ops().kind(0), primitive::kind::convolution);
+    ASSERT_EQ(attr.get_post_ops().kind(1), primitive::kind::convolution);
+
+    attr.get_post_ops().get_params_dw_k3s2p1(
+            1, wei_dt, bias_dt, dst_dt, scales_mask, scales_out);
+
+    ASSERT_EQ(wei_dt, memory::data_type::u8);
+    ASSERT_EQ(bias_dt, memory::data_type::s32);
+    ASSERT_EQ(dst_dt, memory::data_type::f32);
+    ASSERT_EQ(scales_mask, 1 << 1);
+    ASSERT_EQ(scales_in, scales_out);
+}
+
+TEST_F(attr_test, DepthwiseFusion) {
+
+    auto engine_kind = get_test_engine_kind();
+    SKIP_IF(engine_kind != engine::kind::cpu,
+            "Depthwise fusion is only supported on CPU engine");
+
+    engine e {engine_kind, 0};
+
+    std::vector<float> scales {3};
+    std::vector<memory::data_type> test_dts {
+            memory::data_type::f32, memory::data_type::s8};
+
+    if (impl::cpu::mayiuse(impl::cpu::avx512_core))
+        test_dts.push_back(memory::data_type::bf16);
+
+    for (auto dt : test_dts) {
+
+        memory::desc dat_md {
+                {1024, 512, 512, 512}, dt, memory::format_tag::any};
+        memory::desc wht_md {{512, 512, 1, 1}, dt, memory::format_tag::any};
+
+        auto cd_desc = convolution_forward::desc(prop_kind::forward_inference,
+                algorithm::convolution_auto, dat_md, wht_md, dat_md, {1, 1},
+                {0, 0}, {0, 0});
+
+        std::string impl_info_unfused;
+        ASSERT_NO_THROW(
+                auto pd = convolution_forward::primitive_desc(cd_desc, e);
+                impl_info_unfused = pd.impl_info_str(););
+
+        // skip if above unfused impl is not jitted.
+        if (impl_info_unfused.compare(0, 3, "jit") != 0) continue;
+
+        dnnl::primitive_attr attr;
+        dnnl::post_ops ops;
+        ops.append_dw_k3s1p1(dt, dt, dt, 1 << 1, scales);
+        attr.set_post_ops(ops);
+
+        std::string impl_info_fused;
+        ASSERT_NO_THROW(
+                auto pd = convolution_forward::primitive_desc(cd_desc, attr, e);
+                impl_info_fused = pd.impl_info_str(););
+
+        // Make sure ref fused impl is not deployed.
+        ASSERT_EQ(impl_info_fused, impl_info_unfused);
+    }
 }
 
 } // namespace dnnl

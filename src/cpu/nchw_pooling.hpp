@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -168,7 +168,7 @@ struct nchw_pooling_bwd_t : public primitive_impl_t {
             dim_t src_sz_ = ID() * IH() * IW();
             dim_t nthrs = dnnl_get_max_threads();
             dim_t C_per_thr = nstl::min(MB() * C() / nthrs, C());
-            const dim_t max_block_size = get_cache_size(1, true) / 2;
+            const dim_t max_block_size = get_per_core_cache_size(1) / 2;
             dim_t data_size_per_ch = (dst_sz_ + src_sz_) * 6; // f32 + bf16
             channel_block_size_ = nstl::max(
                     nstl::min(C_per_thr, max_block_size / data_size_per_ch),

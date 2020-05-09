@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -163,7 +163,7 @@ private:
         // scale
         Xmm xmm_tmp = Xmm(ymm_src.getIdx());
         mov(reg_tmp, float2int(C_));
-        movq(xmm_tmp, reg_tmp);
+        uni_vmovq(xmm_tmp, reg_tmp);
         divss(Xmm(0), xmm_tmp);
     };
 
@@ -544,7 +544,7 @@ private:
 #undef PARAM_OFF
 
         mov(reg_tmp, float2int(C_));
-        movq(xmm_tmp, reg_tmp);
+        uni_vmovq(xmm_tmp, reg_tmp);
         uni_vbroadcastss(ymm_C, xmm_tmp);
 
         const int C_vecs = C_ / simd_w_;

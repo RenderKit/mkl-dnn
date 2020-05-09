@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2019 Intel Corporation
+# Copyright 2016-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/common
     )
+
+if (DNNL_LIBRARY_TYPE STREQUAL "SHARED")
+    add_definitions(-DDNNL_DLL_EXPORTS)
+endif()
 
 # propagate SRC specific flags
 append(CMAKE_C_FLAGS "${CMAKE_SRC_CCXX_FLAGS}")
@@ -73,15 +77,15 @@ if(WIN32)
 endif()
 
 add_subdirectory(common)
-add_subdirectory(compute)
 add_subdirectory(cpu)
 
-if(DNNL_GPU_RUNTIME STREQUAL "OCL")
-    add_subdirectory(ocl)
+if(NOT DNNL_GPU_RUNTIME STREQUAL "NONE")
+    add_subdirectory(gpu)
 endif()
 
+get_property(LIB_DEPS GLOBAL PROPERTY DNNL_LIB_DEPS)
 add_library(${LIB_NAME} ${DNNL_LIBRARY_TYPE}
-    ${VERSION_RESOURCE_FILE} ${HEADERS} ${${LIB_NAME}_SUB_OBJS})
+    ${VERSION_RESOURCE_FILE} ${HEADERS} ${LIB_DEPS})
 
 set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${DNNL_VERSION_MAJOR}.${DNNL_VERSION_MINOR}")
 set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "${DNNL_VERSION_MAJOR}")
@@ -131,12 +135,12 @@ install(EXPORT ${LIB_EXPORT_NAME}
     NAMESPACE ${LIB_NAMESPACE}
     DESTINATION ${LIB_CONFIG_INSTALL_DIR})
 
-# MKL-DNN compat cmake files
+# Intel MKL-DNN compat cmake files
 install(CODE "execute_process(COMMAND ${CMAKE_COMMAND}
     -DDIR=${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake
     -P ${PROJECT_SOURCE_DIR}/cmake/gen_mkldnn_compat_cmakes.cmake)")
 
-# MKL-DNN compat libraries
+# Intel MKL-DNN compat libraries
 if (WIN32)
     if (NOT MINGW)
         set(prefix "")

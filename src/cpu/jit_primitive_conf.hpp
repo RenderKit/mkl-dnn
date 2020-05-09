@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -58,7 +58,8 @@ enum conv_kernel_kind_t { embd_bcast, expl_bcast };
 enum conv_harness_t {
     harness_2d_reduction,
     harness_3d_reduction,
-    harness_mb_reduction
+    harness_mb_reduction,
+    harness_compute_full_spatial
 };
 
 enum {
@@ -82,6 +83,8 @@ enum {
                                     pass */
 };
 
+enum jit_pool_tag_kind_t { jptg_blocked, jptg_ncsp, jptg_nspc };
+
 struct jit_conv_conf_t {
     prop_kind_t prop_kind;
     conv_version_t ver;
@@ -102,6 +105,8 @@ struct jit_conv_conf_t {
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
+    bool is_fused_conv;
+    int dw_conv_buffer_oc;
 
     post_ops_t::entry_t::eltwise_t eltwise;
 
@@ -127,8 +132,15 @@ struct jit_conv_conf_t {
     /* fma avx512_core */
     conv_kernel_kind_t kernel_kind;
     /* 4fma */
-    int tr_iw;
+    int tr_iw, tr_ih;
+    int tr_kw, tr_kh;
     int tr_src_num_guard_elems;
+
+    // Transpose buffer management
+    size_t tr_src_buf_size, tr_src_buf_count;
+    size_t tr_diff_dst_buf_size, tr_diff_dst_buf_count;
+    int nthr_mb_work;
+
     /* 1st conv: 4fma */
     int tr_ld;
     int kh_step;
@@ -153,7 +165,7 @@ struct jit_conv_conf_t {
     int src_offsets[28];
     int src_count;
     bool expl_bcast;
-    bool large_spatial;
+    bool large_spatial, large_w_filter;
     int is_oc_scale;
     int max_regs_ur; // maximum accumulation registers
     // dw conv
@@ -167,11 +179,14 @@ struct jit_conv_conf_t {
     float wei_adj_scale;
 
     bool uses_permw_transposition;
+    bool transpose_src;
+    bool transpose_dst;
     int ic_block_step;
 
     cpu_isa_t isa;
     // bf16 bwdw conv
     int tr_ow;
+    bool is_hw_transp; // spatial dim height-width transposed
 };
 
 // calculates filter size taking into account dilation
@@ -424,6 +439,7 @@ struct jit_1x1_conv_conf_t {
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
+    bool with_dw_conv;
 
     post_ops_t::entry_t::eltwise_t eltwise;
 
@@ -465,6 +481,7 @@ struct jit_1x1_conv_conf_t {
     float wei_adj_scale;
 
     cpu_isa_t isa;
+    bool uses_permw_transposition;
 };
 
 struct jit_gemm_conv_conf_t {
@@ -502,6 +519,7 @@ struct jit_1x1_conv_call_s {
     const void *acc_s32;
     const void *scales;
     const void *compensation;
+    const void *store_buffer;
 
     size_t load_dim;
     size_t bcast_dim;
@@ -514,7 +532,7 @@ struct jit_1x1_conv_call_s {
 
 struct jit_pool_conf_t {
     int ndims;
-    int mb, c;
+    int mb, c, c_without_padding;
     int id, ih, iw, od, oh, ow;
     int stride_d, stride_h, stride_w;
     int kd, kh, kw;
@@ -537,6 +555,10 @@ struct jit_pool_conf_t {
 
     int dt_size;
     bool is_bf16;
+    jit_pool_tag_kind_t tag_kind;
+    bool is_plain() const {
+        return (tag_kind == jptg_ncsp || tag_kind == jptg_nspc);
+    }
 
     cpu_isa_t isa;
 };

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <cassert>
 #include <functional>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <stdlib.h>
 #include <string>
@@ -28,6 +29,26 @@
 
 #include "dnnl.hpp"
 #include "dnnl_debug.h"
+
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_OMP
+
+#ifdef _MSC_VER
+#define PRAGMA_MACRo(x) __pragma(x)
+#define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
+#else
+#define PRAGMA_MACRo(x) _Pragma(#x)
+#define PRAGMA_MACRO(x) PRAGMA_MACRo(x)
+#endif
+
+// MSVC doesn't support collapse clause in omp parallel
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(__INTEL_COMPILER)
+#define collapse(x)
+#endif
+
+#define PRAGMA_OMP_PARALLEL_FOR_COLLAPSE(n) PRAGMA_MACRO(omp parallel for collapse(n))
+#else // DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_OMP
+#define PRAGMA_OMP_PARALLEL_FOR_COLLAPSE(n)
+#endif
 
 // Exception class to indicate that the example uses a feature that is not
 // available on the current systems. It is not treated as an error then, but
@@ -42,7 +63,7 @@ struct example_allows_unimplemented : public std::exception {
 inline const char *engine_kind2str_upper(dnnl::engine::kind kind);
 
 // Runs example function with signature void() and catches errors.
-// Returns `0` on success, `1` or DNNL error, and `2` on example error.
+// Returns `0` on success, `1` or oneDNN error, and `2` on example error.
 inline int handle_example_errors(
         std::initializer_list<dnnl::engine::kind> engine_kinds,
         std::function<void()> example) {
@@ -54,7 +75,7 @@ inline int handle_example_errors(
         std::cout << e.message << std::endl;
         exit_code = 0;
     } catch (dnnl::error &e) {
-        std::cout << "DNNL error caught: " << std::endl
+        std::cout << "oneDNN error caught: " << std::endl
                   << "\tStatus: " << dnnl_status2str(e.status) << std::endl
                   << "\tMessage: " << e.what() << std::endl;
         exit_code = 1;
@@ -125,6 +146,11 @@ inline const char *engine_kind2str_upper(dnnl::engine::kind kind) {
     if (kind == dnnl::engine::kind::gpu) return "GPU";
     assert(!"not expected");
     return "<Unknown engine>";
+}
+
+inline dnnl::memory::dim product(const dnnl::memory::dims &dims) {
+    return std::accumulate(dims.begin(), dims.end(), (dnnl::memory::dim)1,
+            std::multiplies<dnnl::memory::dim>());
 }
 
 // Read from memory, write to handle

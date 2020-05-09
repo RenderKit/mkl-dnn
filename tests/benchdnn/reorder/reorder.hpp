@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -43,18 +43,12 @@ struct dt_conf_s {
     int range;
 };
 typedef const dt_conf_s *dt_conf_t;
-
-extern const dt_conf_t conf_f32;
-extern const dt_conf_t conf_s8;
-extern const dt_conf_t conf_u8;
-extern const dt_conf_t conf_s32;
-
 dt_conf_t dt2cfg(dnnl_data_type_t dt);
 dnnl_data_type_t cfg2dt(dt_conf_t cfg);
 
 struct reorder_conf_t {
     dims_t dims;
-    dnnl_format_tag_t tag_in, tag_out;
+    std::string tag_in, tag_out;
 };
 
 struct q10n_conf_t {
@@ -63,6 +57,35 @@ struct q10n_conf_t {
     /* TODO: add attrs */
     attr_t::scale_t::policy_t policy;
     float scale;
+};
+
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    dims_t dims;
+
+    std::vector<dnnl_data_type_t> sdt {dnnl_f32}, ddt {dnnl_f32};
+    std::vector<std::string> stag {tag::abx}, dtag {tag::abx};
+    std::vector<float> def_scale {0.125, 0.25, 0.5, 1, 2, 4, 8};
+    std::vector<flag_t> oflag {FLAG_NONE};
+    std::vector<unsigned> runtime_dim_mask {0};
+    alg_t alg = ALG_REF;
+    attr_t attr = {};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%flags%,%attr%,%DESC%,"
+              "%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+    const char *perf_template_def
+            = "perf,%engine%,%prb%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
 };
 
 struct prb_t {
@@ -76,7 +99,8 @@ struct prb_t {
         , alg(alg)
         , oflag(oflag)
         , runtime_dim_mask(runtime_dim_mask)
-        , ops(0) {
+        , ops(0)
+        , ndims((int)reorder.dims.size()) {
         if (scale != 0.f) this->attr.oscale.scale = scale;
         count_ops();
     }
@@ -89,12 +113,13 @@ struct prb_t {
     flag_t oflag;
     unsigned runtime_dim_mask;
     double ops;
+    int ndims;
 
     void count_ops() {
         if (ops > 0) return;
 
         ops = 1;
-        for (size_t d = 0; d < reorder.dims.size(); ++d)
+        for (int d = 0; d < ndims; ++d)
             ops *= reorder.dims[d];
     };
 };
@@ -129,10 +154,10 @@ struct perf_report_t : public base_perf_report_t {
         return &sdt_;
     }
     virtual const dnnl_data_type_t *ddt() const override { return &ddt_; }
-    virtual const std::vector<dnnl_format_tag_t> *stag() const override {
+    virtual const std::vector<std::string> *stag() const override {
         return &stag_;
     }
-    virtual const dnnl_format_tag_t *dtag() const override {
+    virtual const std::string *dtag() const override {
         return &p_->reorder.tag_out;
     }
 
@@ -140,7 +165,7 @@ private:
     const prb_t *p_ = NULL;
     std::vector<dnnl_data_type_t> sdt_;
     dnnl_data_type_t ddt_;
-    std::vector<dnnl_format_tag_t> stag_;
+    std::vector<std::string> stag_;
 };
 
 int doit(const prb_t *p, res_t *res);

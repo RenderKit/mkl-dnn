@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -36,26 +36,32 @@ namespace dnnl {
 namespace impl {
 namespace cpu {
 
-template <typename src_data_t, typename acc_data_t>
-void gates_reduction(const rnn_utils::rnn_conf_t &rnn,
-        const src_data_t *ws_gates_, acc_data_t *diff_bias_) {
+namespace {
+template <typename gates_t, typename acc_t>
+// The loop body needs to be put in a function as some versions of icc have
+// an issue with lambdas & macros inside omp simd loops
+inline void body_loop(int i, int k, const gates_t *ws_gates, acc_t *diff_bias,
+        const rnn_utils::rnn_conf_t &rnn) {
+    for (int j = 0; j < rnn.mb; j++)
+        diff_bias[i * rnn.dhc + k]
+                += ws_gates[j * rnn.scratch_gates_ld + i * rnn.dhc + k];
+}
+} // namespace
 
-    // The loop body needs to be inlined as some versions of icc have
-    // an issue with lambdas inside omp simd loops
-#define body_loop(i, k) \
-    for (int j = 0; j < rnn.mb; j++) \
-        diff_bias_[i * rnn.dic + k] \
-                += ws_gates_[j * rnn.gates_ws_ld + i * rnn.dic + k];
+template <typename gates_t, typename acc_t>
+void gates_reduction(const rnn_utils::rnn_conf_t &rnn, const gates_t *ws_gates_,
+        acc_t *diff_bias_) {
 
     // @todo block k on simd-width to enable vectorization in
     // parallel_nd path
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_OMP && _OPENMP >= 201307
 #pragma omp parallel for simd collapse(2)
     for (int i = 0; i < rnn.n_gates; i++)
-        for (int k = 0; k < rnn.dic; k++)
-            body_loop(i, k);
+        for (int k = 0; k < rnn.dhc; k++)
+            body_loop(i, k, ws_gates_, diff_bias_, rnn);
 #else
-    parallel_nd(rnn.n_gates, rnn.dic, [&](int i, int k) { body_loop(i, k); });
+    parallel_nd(rnn.n_gates, rnn.dhc,
+            [&](int i, int k) { body_loop(i, k, ws_gates_, diff_bias_, rnn); });
 #endif
 
 #undef body_loop
@@ -67,10 +73,17 @@ struct _ref_rnn_common_t : public primitive_impl_t {
     static constexpr impl::data_type_t scratch_type
             = aprop == prop_kind::forward ? acc_type : src_type;
 
-    typedef typename prec_traits<src_type>::type src_data_t;
-    typedef typename prec_traits<weights_type>::type weights_data_t;
-    typedef typename prec_traits<acc_type>::type acc_data_t;
-    typedef typename prec_traits<scratch_type>::type scratch_data_t;
+    /* These types are defined for each element in the cell execution */
+    typedef typename prec_traits<src_type>::type src_layer_t;
+    typedef typename prec_traits<src_type>::type src_iter_t;
+    typedef typename prec_traits<src_type>::type dst_layer_t;
+    typedef typename prec_traits<src_type>::type dst_iter_t;
+    typedef typename prec_traits<weights_type>::type weights_t;
+    typedef typename prec_traits<src_type>::type gemm_data_t;
+    typedef typename prec_traits<acc_type>::type gemm_acc_t;
+    typedef typename prec_traits<scratch_type>::type scratch_t;
+    typedef typename prec_traits<src_type>::type ht_t;
+    typedef typename prec_traits<src_type>::type gates_t;
 
     using class_name
             = _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>;
@@ -121,10 +134,11 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                     && this->with_bias();
             if (!ok) return status::unimplemented;
 
-            ok = init_conf(rnn_, *this->desc(), this->src_md(0),
+            ok = init_conf<class_name>(rnn_, *this->desc(), this->src_md(0),
                     this->src_md(1), this->src_md(2), this->weights_md(0),
-                    this->weights_md(1), this->dst_md(0), this->dst_md(1),
-                    this->dst_md(2));
+                    this->weights_md(1),
+                    this->arg_md(DNNL_ARG_WEIGHTS_PROJECTION), this->dst_md(0),
+                    this->dst_md(1), this->dst_md(2));
             if (!ok) return status::unimplemented;
 
             /* check that only supported attr have been passed */
@@ -139,7 +153,8 @@ struct _ref_rnn_common_t : public primitive_impl_t {
 
             // Set weights descriptors to desired format
             memory_desc_t new_weights_layer_md = *this->weights_md(0);
-            CHECK(set_expected_desc(rnn_, new_weights_layer_md, false));
+            CHECK(set_expected_desc(rnn_, new_weights_layer_md,
+                    rnn_utils::weights_type_t::layer));
             if (this->weights_layer_md_.format_kind == format_kind::any) {
                 this->weights_layer_md_ = new_weights_layer_md;
             } else if (this->weights_layer_md_.format_kind
@@ -149,7 +164,8 @@ struct _ref_rnn_common_t : public primitive_impl_t {
             }
 
             memory_desc_t new_weights_iter_md = *this->weights_md(1);
-            CHECK(set_expected_desc(rnn_, new_weights_iter_md, true));
+            CHECK(set_expected_desc(rnn_, new_weights_iter_md,
+                    rnn_utils::weights_type_t::iter));
             if (this->weights_iter_md_.format_kind == format_kind::any) {
                 this->weights_iter_md_ = new_weights_iter_md;
             } else if (this->weights_iter_md_.format_kind
@@ -158,11 +174,29 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                     return status::unimplemented;
             }
 
+            if (rnn_.is_lstm_projection) {
+                memory_desc_t new_weights_projection_md
+                        = *this->arg_md(DNNL_ARG_WEIGHTS_PROJECTION);
+                CHECK(set_expected_desc(rnn_, new_weights_projection_md,
+                        rnn_utils::weights_type_t::projection));
+                if (this->weights_projection_md_.format_kind
+                        == format_kind::any) {
+                    this->weights_projection_md_ = new_weights_projection_md;
+                } else if (this->weights_projection_md_.format_kind
+                        == format_kind::rnn_packed) {
+                    if (this->weights_projection_md_
+                            != new_weights_projection_md)
+                        return status::unimplemented;
+                }
+            }
+
             CHECK(this->check_layout_consistency());
 
-            set_conf(rnn_, *this->desc(), this->weights_md(0),
-                    this->weights_md(1), this->diff_weights_md(0),
-                    this->diff_weights_md(1));
+            set_conf<class_name>(rnn_, *this->desc(), this->weights_md(0),
+                    this->weights_md(1),
+                    this->arg_md(DNNL_ARG_WEIGHTS_PROJECTION),
+                    this->diff_weights_md(0), this->diff_weights_md(1),
+                    this->arg_md(DNNL_ARG_DIFF_WEIGHTS_PROJECTION));
 
             size_t scratchpad_sz {0}, ws_sz {0};
             get_scratchpad_and_workspace_sizes(rnn_, scratchpad_sz, ws_sz);
@@ -193,18 +227,23 @@ struct _ref_rnn_common_t : public primitive_impl_t {
                     key_rnn_ptrs_wei_layer, sizeof(float *) * ptr_wei_sz);
             scratchpad.book(
                     key_rnn_ptrs_wei_iter, sizeof(float *) * ptr_wei_sz);
-            scratchpad.book(key_rnn_ptrs_bia, sizeof(float *) * ptr_wei_sz);
-            scratchpad.book(key_rnn_gates,
-                    sizeof(scratch_data_t) * rnn_.scratch_gates_size);
             scratchpad.book(
-                    key_rnn_cell, sizeof(acc_data_t) * rnn_.scratch_cell_size);
+                    key_rnn_ptrs_wei_projection, sizeof(float *) * ptr_wei_sz);
+            scratchpad.book(key_rnn_ptrs_bia, sizeof(float *) * ptr_wei_sz);
+            scratchpad.book(
+                    key_rnn_gates, sizeof(scratch_t) * rnn_.scratch_gates_size);
+            scratchpad.book(key_rnn_ht, sizeof(ht_t) * rnn_.scratch_ht_size);
+            scratchpad.book(key_rnn_diff_ht,
+                    sizeof(gemm_acc_t) * rnn_.scratch_diff_ht_size);
+            scratchpad.book(
+                    key_rnn_cell, sizeof(scratch_t) * rnn_.scratch_cell_size);
         }
     };
 
     _ref_rnn_common_t(const pd_t *apd)
         : primitive_impl_t(apd), rnn_postgemm_(nullptr) {
         /// @todo set max_feature_size assuming that we limit the number of
-        /// iterations and layer to one if slc != dic and sic != dic
+        /// iterations and layer to one if slc != dhc and sic != dhc
         /// respectively
 
         bias_preparation_func = &class_name::bias_prepare;
@@ -226,9 +265,13 @@ struct _ref_rnn_common_t : public primitive_impl_t {
         set_gemm_funcs(pd()->rnn_.use_layer_packed_gemm, gemm_layer_func,
                 weights_layer_assign_func);
 
-        rnn_postgemm_
-                = new rnn_postgemm_dispatcher<aprop, src_type, scratch_type>(
-                        pd()->rnn_, pd());
+        if (pd()->rnn_.is_lstm_projection) {
+            set_gemm_funcs(pd()->rnn_.use_projection_packed_gemm,
+                    gemm_projection_func, weights_projection_assign_func);
+        }
+
+        rnn_postgemm_ = new rnn_postgemm_dispatcher<aprop, src_type,
+                scratch_type, acc_type>(pd()->rnn_, pd());
         assert(rnn_postgemm_ != nullptr);
         switch (pd()->cell_kind()) {
             case alg_kind::vanilla_rnn:
@@ -247,15 +290,16 @@ struct _ref_rnn_common_t : public primitive_impl_t {
         grid_computation = &class_name::linear_execution;
 
         size_t scratchpad_size, workspace_size;
-        rnn_utils::set_offsets(pd()->rnn_, ws_gates_offset_, ws_states_offset_,
-                ws_c_states_offset_, ws_diff_states_offset_,
+        rnn_utils::set_offsets(pd()->rnn_, ws_gates_offset_, ws_ht_offset_,
+                ws_states_layer_offset_, ws_states_iter_offset_,
+                ws_states_iter_c_offset_, ws_diff_states_layer_offset_,
+                ws_diff_states_iter_offset_, ws_diff_states_iter_c_offset_,
                 ws_grid_comp_offset_, ws_bias_offset_, scratch_gates_offset_,
+                scratch_ht_offset_, scratch_diff_ht_offset_,
                 scratch_cell_offset_, scratchpad_size, workspace_size);
     }
 
     ~_ref_rnn_common_t() { delete rnn_postgemm_; }
-
-    // typedef typename prec_traits::type data_t;
 
     virtual status_t execute(const exec_ctx_t &ctx) const override {
         execute_(ctx);
@@ -278,40 +322,50 @@ private:
     float (*activation_func)(float s, float alpha, float cliping);
 
     void copy_init_layer(const rnn_utils::rnn_conf_t &rnn,
-            src_data_t *ws_states_, acc_data_t *ws_diff_states_,
-            const src_data_t *xt_, const acc_data_t *diff_dst_layer) const;
+            src_layer_t *ws_states_layer_, gemm_acc_t *ws_diff_states_layer_,
+            const src_layer_t *xt_, const gemm_acc_t *diff_dst_layer) const;
 
-    template <typename input_data_t>
+    template <typename input_t>
     void copy_init_iter(const rnn_utils::rnn_conf_t &rnn,
-            src_data_t *ws_states_, float *ws_c_states_,
-            acc_data_t *ws_diff_states_, const input_data_t *firstit_states_,
-            const float *firstit_c_states_, const acc_data_t *diff_dst_iter_,
+            src_iter_t *ws_states_iter_, float *ws_states_iter_c_,
+            gemm_acc_t *ws_diff_states_iter_,
+            gemm_acc_t *ws_diff_states_iter_c_, const input_t *src_iter_,
+            const float *src_iter_c_, const gemm_acc_t *diff_dst_iter_,
             const float *diff_dst_iter_c_) const;
 
     template <typename dst_layer_dt, typename dst_iter_dt>
     void copy_res_layer(const rnn_utils::rnn_conf_t &rnn,
-            dst_layer_dt *dst_layer_, acc_data_t *diff_src_layer_,
-            const dst_iter_dt *dst_iter_, const src_data_t *ws_states_,
-            const acc_data_t *ws_diff_states_) const;
+            dst_layer_dt *dst_layer_, gemm_acc_t *diff_src_layer_,
+            const dst_iter_dt *dst_iter_, const src_layer_t *ws_states_layer_,
+            const gemm_acc_t *ws_diff_states_layer_) const;
 
-    template <typename output_data_t, typename dst_data_t>
+    template <typename prim_dst_iter_t, typename prim_dst_layer_t>
     void copy_res_iter(const rnn_utils::rnn_conf_t &rnn,
-            output_data_t *dst_iter_, float *dst_iter_c_,
-            acc_data_t *diff_src_iter_, float *diff_src_iter_c_,
-            const dst_data_t *dst_layer_, const src_data_t *ws_states_,
-            const float *ws_c_states, const acc_data_t *ws_diff_states_) const;
+            prim_dst_iter_t *dst_iter_, float *dst_iter_c_,
+            gemm_acc_t *diff_src_iter_, float *diff_src_iter_c_,
+            const prim_dst_layer_t *dst_layer_,
+            const src_iter_t *ws_states_iter_, const float *ws_states_iter_c,
+            const gemm_acc_t *ws_diff_states_iter_,
+            const gemm_acc_t *ws_diff_states_iter_c_) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
 
     size_t ws_gates_offset_;
-    size_t ws_states_offset_;
-    size_t ws_c_states_offset_;
+    size_t ws_ht_offset_;
+    size_t ws_states_layer_offset_;
+    size_t ws_states_iter_offset_;
+    size_t ws_states_iter_c_offset_;
     size_t ws_bias_offset_;
-    size_t ws_diff_states_offset_;
+    size_t ws_diff_states_layer_offset_;
+    size_t ws_diff_states_iter_offset_;
+    size_t ws_diff_states_iter_c_offset_;
     size_t ws_grid_comp_offset_;
     size_t scratch_gates_offset_;
+    size_t scratch_ht_offset_;
+    size_t scratch_diff_ht_offset_;
     size_t scratch_cell_offset_;
-    rnn_postgemm_dispatcher<aprop, src_type, scratch_type> *rnn_postgemm_;
+    rnn_postgemm_dispatcher<aprop, src_type, scratch_type, acc_type>
+            *rnn_postgemm_;
 
     grid_execution_f grid_computation;
     cell_execution_f cell_func;
@@ -320,9 +374,11 @@ private:
     bias_finalize_t bias_finalization_func;
     weights_assign_t weights_layer_assign_func;
     weights_assign_t weights_iter_assign_func;
+    weights_assign_t weights_projection_assign_func;
 
     gemm_t gemm_layer_func;
     gemm_t gemm_iter_func;
+    gemm_t gemm_projection_func;
 };
 
 using ref_rnn_fwd_f32_t = _ref_rnn_common_t<prop_kind::forward, data_type::f32,

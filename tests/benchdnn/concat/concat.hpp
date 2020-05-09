@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,11 +29,42 @@
 
 namespace concat {
 
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    std::vector<dims_t> sdims;
+
+    std::vector<dnnl_data_type_t> sdt {dnnl_f32}, ddt {dnnl_f32};
+    std::vector<std::vector<std::string>> stag;
+    std::vector<std::string> dtag {tag::undef};
+    std::vector<int> axis {1};
+    bool allow_unimpl = false;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%axis%,%DESC%,%-time%,%"
+              "0time%";
+    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
+
 struct prb_t {
     prb_t(const std::vector<dims_t> &sdims, dnnl_data_type_t sdt,
-            dnnl_data_type_t ddt, const std::vector<dnnl_format_tag_t> &stag,
-            dnnl_format_tag_t dtag, int axis)
-        : sdims(sdims), sdt(sdt), ddt(ddt), stag(stag), dtag(dtag), axis(axis) {
+            dnnl_data_type_t ddt, const std::vector<std::string> &stag,
+            const std::string &dtag, int axis)
+        : sdims(sdims)
+        , sdt(sdt)
+        , ddt(ddt)
+        , stag(stag)
+        , dtag(dtag)
+        , axis(axis)
+        , ndims((int)sdims[0].size()) {
         generate_ddims();
     }
     ~prb_t() {}
@@ -41,9 +72,10 @@ struct prb_t {
     std::vector<dims_t> sdims;
     dims_t ddims;
     dnnl_data_type_t sdt, ddt;
-    std::vector<dnnl_format_tag_t> stag;
-    dnnl_format_tag_t dtag;
+    std::vector<std::string> stag;
+    std::string dtag;
     int axis;
+    int ndims;
 
     int n_inputs() const { return (int)sdims.size(); }
 
@@ -56,8 +88,6 @@ struct prb_t {
 
     void generate_ddims() {
         const dims_t &sdims0 = sdims[0];
-        const int ndims = (int)sdims0.size();
-
         ddims.resize(ndims);
 
         for (int i = 0; i < ndims; ++i)
@@ -87,10 +117,10 @@ struct perf_report_t : public base_perf_report_t {
         return &sdt_;
     }
     virtual const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
-    virtual const std::vector<dnnl_format_tag_t> *stag() const override {
+    virtual const std::vector<std::string> *stag() const override {
         return &p_->stag;
     }
-    virtual const dnnl_format_tag_t *dtag() const override { return &p_->dtag; }
+    virtual const std::string *dtag() const override { return &p_->dtag; }
 
 private:
     const prb_t *p_ = NULL;

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,6 +26,9 @@
 #include <string.h>
 
 #include <cinttypes>
+#include <functional>
+#include <string>
+#include <vector>
 
 #include "src/common/z_magic.hpp"
 
@@ -96,8 +99,10 @@ enum { CRIT = 1, WARN = 2 };
 
 extern int verbose;
 extern bool canonical;
+extern bool mem_check;
+extern std::string skip_impl; /* empty or "" means skip nothing */
 
-#define print(v, fmt, ...) \
+#define BENCHDNN_PRINT(v, fmt, ...) \
     do { \
         if (verbose >= v) { \
             printf(fmt, __VA_ARGS__); \
@@ -109,28 +114,6 @@ extern bool canonical;
 #define BENCHDNN_DISALLOW_COPY_AND_ASSIGN(T) \
     T(const T &) = delete; \
     T &operator=(const T &) = delete;
-
-enum prim_t {
-    SELF,
-    CONV,
-    DECONV,
-    IP,
-    SHUFFLE,
-    REORDER,
-    LNORM,
-    BNORM,
-    RNN,
-    SOFTMAX,
-    POOL,
-    SUM,
-    ELTWISE,
-    CONCAT,
-    LRN,
-    BINARY,
-    MATMUL,
-    RESAMPLING,
-    DEF = CONV,
-};
 
 enum bench_mode_t {
     MODE_UNDEF = 0x0,
@@ -230,7 +213,7 @@ const char *bool2str(bool value);
 
 /* TODO: why two functions??? */
 bool match_regex(const char *str, const char *pattern);
-bool maybe_skip(const char *skip_impl, const char *impl_str);
+bool maybe_skip(const char *impl_str);
 
 typedef int (*bench_f)(int argc, char **argv);
 int batch(const char *fname, bench_f bench);
@@ -252,4 +235,14 @@ void gemm(const char *layout, const char *transa, const char *transb, int64_t m,
         int64_t n, int64_t k, const float alpha, const float *a,
         const int64_t lda, const float *b, const int64_t ldb, const float beta,
         float *c, const int64_t ldc);
+
+int sanitize_desc(int &ndims, std::vector<std::reference_wrapper<int64_t>> d,
+        std::vector<std::reference_wrapper<int64_t>> h,
+        std::vector<std::reference_wrapper<int64_t>> w,
+        const std::vector<int64_t> &def_values, bool must_have_spatial = false);
+
+void print_dhw(bool &print_d, bool &print_h, bool &print_w, int ndims,
+        const std::vector<int64_t> &d, const std::vector<int64_t> &h,
+        const std::vector<int64_t> &w);
+
 #endif

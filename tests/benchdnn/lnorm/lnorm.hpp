@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -37,15 +37,47 @@ namespace lnorm {
 
 using check_alg_t = bnorm::check_alg_t;
 using flags_t = bnorm::flags_t;
+const flags_t NONE = bnorm::NONE;
 const flags_t GLOB_STATS = bnorm::GLOB_STATS;
 const flags_t USE_SCALESHIFT = bnorm::USE_SCALESHIFT;
 const auto flags2str = bnorm::flags2str;
 flags_t str2flags(const char *str);
 
+struct settings_t {
+    settings_t() = default;
+
+    // ctor to save certain fields from resetting
+    settings_t(const char *perf_template) : settings_t() {
+        this->perf_template = perf_template;
+    }
+
+    dims_t dims;
+
+    std::vector<dir_t> dir {FWD_D};
+    std::vector<dnnl_data_type_t> dt {dnnl_f32};
+    std::vector<std::string> tag {tag::abx}, stat_tag {tag::any};
+    std::vector<flags_t> flags {NONE};
+    std::vector<bool> inplace {true};
+    check_alg_t check_alg = check_alg_t::ALG_AUTO;
+    attr_t attr = {};
+    bool allow_unimpl = false;
+    const char *pattern = NULL;
+
+    const char *perf_template_csv
+            = "perf,%engine%,%dir%,%dt%,%tag%,%stat_tag%,%flags%,%DESC%,"
+              "%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+    const char *perf_template_def
+            = "perf,%engine%,%prb%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+    const char *perf_template = perf_template_def;
+
+    void reset() { *this = settings_t(perf_template); }
+};
+
 struct prb_t {
-    prb_t(const dims_t &dims, dnnl_format_tag_t tag, dnnl_format_tag_t stat_tag,
-            dir_t dir, dnnl_data_type_t dt, flags_t flags, bool inplace,
-            const attr_t &attr, check_alg_t check_alg)
+    prb_t(const dims_t &dims, const std::string &tag,
+            const std::string &stat_tag, dir_t dir, dnnl_data_type_t dt,
+            flags_t flags, bool inplace, const attr_t &attr,
+            check_alg_t check_alg)
         : check_alg(check_alg)
         , dims(dims)
         , tag(tag)
@@ -55,10 +87,11 @@ struct prb_t {
         , flags(flags)
         , inplace(inplace)
         , attr(attr)
-        , ops(0) {
+        , ops(0)
+        , ndims((int)dims.size()) {
         n = std::accumulate(
                 dims.begin(), dims.end() - 1, 1, std::multiplies<int64_t>());
-        c = dims[dims.size() - 1];
+        c = dims[ndims - 1];
         eps = 1.f / 16;
         count_ops();
     }
@@ -67,7 +100,7 @@ struct prb_t {
     check_alg_t check_alg;
     int64_t n, c;
     dims_t dims;
-    dnnl_format_tag_t tag, stat_tag;
+    std::string tag, stat_tag;
     dir_t dir;
     dnnl_data_type_t dt;
     flags_t flags;
@@ -75,6 +108,7 @@ struct prb_t {
     attr_t attr;
     float eps;
     double ops;
+    int ndims;
 
     void count_ops() {
         if (ops > 0) return;
@@ -114,16 +148,14 @@ struct perf_report_t : public base_perf_report_t {
     virtual const attr_t *attr() const override { return &p_->attr; }
     virtual const dir_t *dir() const override { return &p_->dir; }
     virtual const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    virtual const dnnl_format_tag_t *tag() const override { return &p_->tag; }
-    virtual const dnnl_format_tag_t *stat_tag() const override {
+    virtual const std::string *tag() const override { return &p_->tag; }
+    virtual const std::string *stat_tag() const override {
         return &p_->stat_tag;
     }
 
 private:
     const prb_t *p_ = NULL;
 };
-
-extern const char *skip_impl; /* NULL or "" means do not skip anything */
 
 void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &mean,
         dnn_mem_t &var, const dnn_mem_t &ss, dnn_mem_t &dst);

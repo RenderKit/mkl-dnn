@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -74,7 +74,9 @@ inline void book_acc_scratchpad(
     if (!params.dst_is_acc_ && !is_runtime_dims) {
         auto scratchpad = pd.scratchpad_registry().registrar();
         scratchpad.book(memory_tracking::names::key_matmul_dst_in_acc_dt,
-                sizeof_acc_data * pd.batch() * pd.M() * pd.N());
+                sizeof_acc_data
+                        * nstl::min(pd.batch(), (dim_t)dnnl_get_max_threads())
+                        * pd.M() * pd.N());
     }
 }
 

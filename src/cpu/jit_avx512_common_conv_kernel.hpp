@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2019 Intel Corporation
+* Copyright 2016-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@
 #include "c_types_map.hpp"
 #include "memory_tracking.hpp"
 
+#include "eltwise/jit_uni_eltwise_injector.hpp"
 #include "jit_generator.hpp"
 #include "jit_primitive_conf.hpp"
-#include "jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -178,13 +178,22 @@ struct jit_avx512_common_conv_fwd_kernel {
 
     jit_avx512_common_conv_fwd_kernel(
             const jit_conv_conf_t ajcp, const primitive_attr_t &attr)
-        : jit_ker(nullptr), zmm_kernel_(nullptr), xmm_kernel_(nullptr) {
+        : jit_ker(nullptr)
+        , zmm_kernel_(nullptr)
+        , ymm_kernel_(nullptr)
+        , xmm_kernel_(nullptr) {
         switch (ajcp.oc_block) {
             case 16:
                 zmm_kernel_
                         = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Zmm>(
                                 ajcp, attr);
                 jit_ker = zmm_kernel_->jit_ker_;
+                return;
+            case 8:
+                ymm_kernel_
+                        = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Ymm>(
+                                ajcp, attr);
+                jit_ker = ymm_kernel_->jit_ker_;
                 return;
             case 4:
                 xmm_kernel_
@@ -197,8 +206,9 @@ struct jit_avx512_common_conv_fwd_kernel {
     }
 
     ~jit_avx512_common_conv_fwd_kernel() {
-        delete xmm_kernel_;
         delete zmm_kernel_;
+        delete ymm_kernel_;
+        delete xmm_kernel_;
     }
 
     enum { typesize = sizeof(float) };
@@ -213,6 +223,7 @@ struct jit_avx512_common_conv_fwd_kernel {
 
     void (*jit_ker)(jit_conv_call_s *);
     _jit_avx512_common_conv_fwd_kernel<Xbyak::Zmm> *zmm_kernel_;
+    _jit_avx512_common_conv_fwd_kernel<Xbyak::Ymm> *ymm_kernel_;
     _jit_avx512_common_conv_fwd_kernel<Xbyak::Xmm> *xmm_kernel_;
 
 private:
@@ -291,8 +302,10 @@ private:
     inline void store_output(int ur_w);
     inline void compute_loop_4fma(int ur_w, int l_overflow, int r_overflow);
     inline void compute_loop_fma(int ur_w, int l_overflow, int r_overflow);
-    inline void compute_loop_fma_core(int ur_w, int l_overflow, int r_overflow);
-    inline void compute_loop(int ur_w, int l_overflow, int r_overflow);
+    inline void compute_loop_fma_core(
+            int ur_w, int l_overflow, int r_overflow, int k_offset);
+    inline void compute_loop(
+            int ur_w, int l_overflow, int r_overflow, int k_offset = 0);
     void generate();
 
     inline int get_iw_start(int ki, int l_overflow) {
@@ -320,12 +333,20 @@ private:
 struct jit_avx512_common_conv_bwd_data_kernel_f32 {
 
     jit_avx512_common_conv_bwd_data_kernel_f32(const jit_conv_conf_t &ajcp)
-        : jit_ker(nullptr), zmm_kernel_(nullptr), xmm_kernel_(nullptr) {
+        : jit_ker(nullptr)
+        , zmm_kernel_(nullptr)
+        , ymm_kernel_(nullptr)
+        , xmm_kernel_(nullptr) {
         switch (ajcp.ic_block) {
             case 16:
                 zmm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
                         Xbyak::Zmm>(ajcp);
                 jit_ker = zmm_kernel_->jit_ker_;
+                return;
+            case 8:
+                ymm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
+                        Xbyak::Ymm>(ajcp);
+                jit_ker = ymm_kernel_->jit_ker_;
                 return;
             case 4:
                 xmm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
@@ -337,8 +358,9 @@ struct jit_avx512_common_conv_bwd_data_kernel_f32 {
     }
 
     ~jit_avx512_common_conv_bwd_data_kernel_f32() {
-        delete xmm_kernel_;
         delete zmm_kernel_;
+        delete ymm_kernel_;
+        delete xmm_kernel_;
     }
 
     enum { typesize = sizeof(float) };
@@ -351,6 +373,7 @@ struct jit_avx512_common_conv_bwd_data_kernel_f32 {
 
     void (*jit_ker)(jit_conv_call_s *);
     _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Zmm> *zmm_kernel_;
+    _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Ymm> *ymm_kernel_;
     _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Xmm> *xmm_kernel_;
 
 private:
@@ -370,7 +393,7 @@ struct jit_avx512_common_conv_bwd_weights_kernel_f32 : public jit_generator {
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, memory_desc_t &src_md,
             memory_desc_t &diff_weights_md, memory_desc_t &diff_bias_md,
-            memory_desc_t &diff_dst_md);
+            memory_desc_t &diff_dst_md, int nthreads);
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
@@ -437,7 +460,7 @@ private:
     void generate();
 
     static void balance(const jit_conv_conf_t &j, int &nthr, int &nthr_mb,
-            int &nthr_g, int &nthr_oc_b, int &nthr_ic_b);
+            int &nthr_g, int &nthr_oc_b, int &nthr_ic_b, int nthreads);
 };
 
 } // namespace cpu

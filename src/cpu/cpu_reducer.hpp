@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2019 Intel Corporation
+* Copyright 2017-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ namespace cpu {
  * master (@sa reduce_balancer_t::master()).
  *
  * If threading driver does not allow sync between sub-group of threads (e.g.
- * Intel(R) TBB) the # of thread per group is enforced to be 1.
+ * TBB) the # of thread per group is enforced to be 1.
  */
 struct reduce_balancer_t {
     reduce_balancer_t() { init(1, 1, 1, 1, 0); } /* trivial balance */

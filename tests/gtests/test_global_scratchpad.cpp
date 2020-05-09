@@ -25,9 +25,11 @@ using dt = memory::data_type;
 using tag = memory::format_tag;
 
 // This test checks that globally defined primitive_t object will be
-// successfully destroyed after finishing the program. The cause was
-// thread-local non-trivially-constructed object in global_scratchpad_t object
-// which got destroyed before global_scratchpad_t causing a crash.
+// successfully destroyed after finishing the program despite the order of
+// internal objects destruction.
+// The cause was thread-local non-trivially-constructed object in
+// global_scratchpad_t object which got destroyed before global_scratchpad_t
+// causing a crash.
 class global_scratchpad : public ::testing::Test {};
 
 struct conv_ctx_t {

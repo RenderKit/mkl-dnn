@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 #include <float.h>
+
+#include "dnnl_thread.hpp" // common
 #include "jit_avx512_core_bf16_sum.hpp" // cpu
 #include "utils.hpp" // common
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2019 Intel Corporation
+* Copyright 2018-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
 ///
 /// > Example code: @ref cnn_inference_int8.cpp
 
-#include <numeric>
 #include <stdexcept>
 
 #include "dnnl.hpp"
@@ -32,11 +31,6 @@
 #include "example_utils.hpp"
 
 using namespace dnnl;
-
-memory::dim product(const memory::dims &dims) {
-    return std::accumulate(dims.begin(), dims.end(), (memory::dim)1,
-            std::multiplies<memory::dim>());
-}
 
 void simple_net_int8(engine::kind engine_kind) {
     using tag = memory::format_tag;
@@ -169,7 +163,7 @@ void simple_net_int8(engine::kind engine_kind) {
     } catch (error &e) {
         if (e.status == dnnl_unimplemented)
             throw example_allows_unimplemented {
-                    "DNNL does not have int8 convolution implementation "
+                    "oneDNN does not have int8 convolution implementation "
                     "that supports this system.\n"
                     "Please refer to the developer guide for details."};
 
@@ -189,7 +183,7 @@ void simple_net_int8(engine::kind engine_kind) {
 
     /// Create a memory for each of the convolution's data input
     /// parameters (source, bias, weights, and destination). Using the convolution
-    /// primitive descriptor as the creation parameter enables DNNL
+    /// primitive descriptor as the creation parameter enables oneDNN
     /// to configure the memory formats for the convolution.
     ///
     /// Scaling parameters are passed to the reorder primitive via the attributes

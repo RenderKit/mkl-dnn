@@ -165,6 +165,7 @@ enum {
     key_conv_int_dat_in_acc_dt,
     key_conv_padded_bias,
     key_conv_rtus_space,
+    key_conv_store_wsp,
     key_conv_tails,
     key_conv_tr_diff_dst,
     key_conv_tr_diff_dst_bctx,
@@ -175,6 +176,8 @@ enum {
     key_conv_wei_bia_reduction_bctx,
     key_eltwise_diff_dst,
     key_eltwise_src,
+    key_fusion_forward_scratchpad,
+    key_fusion_inout_buffer,
     key_iprod_bias_bf16_convert_wsp,
     key_iprod_dst_bf16_convert_wsp,
     key_iprod_int_dat_in_acc_dt,
@@ -184,9 +187,13 @@ enum {
     key_lnorm_reduction,
     key_matmul_dst_in_acc_dt,
     key_pool_dst_bf16cvt,
+    key_pool_dst_plain2blocked_cvt,
+    key_pool_ind_plain2blocked_cvt,
     key_pool_src_bf16cvt,
+    key_pool_src_plain2blocked_cvt,
     key_reducer_space,
     key_reducer_space_bctx,
+    key_reorder_cross_space,
     key_reorder_space,
     key_reorder_scales,
     key_reorder_wino_plain,
@@ -198,9 +205,12 @@ enum {
     key_rnn_space,
     key_rnn_cell,
     key_rnn_gates,
+    key_rnn_ht,
+    key_rnn_diff_ht,
     key_rnn_ptrs_bia,
     key_rnn_ptrs_wei_layer,
     key_rnn_ptrs_wei_iter,
+    key_rnn_ptrs_wei_projection,
     key_softmax_reduction,
     key_sum_reduction,
     key_sum_srcs_cvt,
@@ -211,6 +221,7 @@ enum {
 
 enum {
     prefix_none = 0,
+    prefix_fusion,
     prefix_reducer_bia,
     prefix_reducer_wei,
 };
@@ -280,8 +291,11 @@ struct registry_t {
         if (offset_map_.count(key) != 1) return nullptr;
 
         const auto &e = offset_map_.at(key);
-        assert(e.offset + e.size <= size());
-        return base_mem_storage->get_sub_storage(e.offset, e.size);
+        const size_t aligned_offset
+                = reinterpret_cast<size_t>(utils::align_ptr<char>(
+                        reinterpret_cast<char *>(e.offset), e.alignment));
+        assert(aligned_offset + e.size <= size());
+        return base_mem_storage->get_sub_storage(aligned_offset, e.size);
     }
 
     size_t size() const { return size_; }
@@ -290,7 +304,7 @@ struct registry_t {
     grantor_t grantor(const memory_storage_t *mem_storage) const;
 
 protected:
-    enum { minimal_alignment = 64 };
+    enum { minimal_alignment = 128 };
     struct entry_t {
         size_t offset, size, capacity, alignment;
     };
@@ -300,7 +314,7 @@ protected:
 };
 
 struct registrar_t {
-    enum { default_alignment = 64 };
+    enum { default_alignment = 128 };
 
     registrar_t(registry_t &registry) : registry_(registry), prefix_(0) {}
     registrar_t(registrar_t &parent, const key_t &prefix)

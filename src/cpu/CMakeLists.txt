@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2019 Intel Corporation
+# Copyright 2019-2020 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +26,16 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/xbyak
     )
 
+# Don't enable support for linux_perf and VTune Amplifier if JIT Profiling
+# is disabled.
+# NOTE: On AArch64 builds. DNNL_ENABLE_JIT_PROFILING=OFF by default.
+if(NOT DNNL_ENABLE_JIT_PROFILING)
+    list(REMOVE_ITEM SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/jit_utils/jitprofiling/jitprofiling.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/jit_utils/linux_perf/linux_perf.cpp"
+        )
+endif()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
     # to make computations more stable and to align the jitted code
     # with the reference one use precise division and square root
@@ -35,6 +45,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
     file(GLOB FILES_REQUIRED_PREC_DIV
         ${CMAKE_CURRENT_SOURCE_DIR}/*resampling*.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/*normalization*.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/eltwise/ref_eltwise.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/ref_rnn.cpp)
     if(WIN32)
         set_source_files_properties(${FILES_REQUIRED_PREC_SQRT}
@@ -49,15 +60,25 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
     endif()
 endif()
 
-if(MSVC)
+if(MSVC AND (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_ID STREQUAL "Intel"))
     file(GLOB FILES_REQUIRED_BIGOBJ
         ${CMAKE_CURRENT_SOURCE_DIR}/cpu_engine.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/cpu_reorder.cpp)
     set_source_files_properties(${FILES_REQUIRED_BIGOBJ}
         PROPERTIES COMPILE_FLAGS "/bigobj")
 endif()
+# remove optimizations of files that don't need them for faster build times.
+file(GLOB FILES_WITHOUT_OPT
+    ${CMAKE_CURRENT_SOURCE_DIR}/gemm/*/*_kern_autogen.cpp)
+if(WIN32 AND NOT MINGW)
+    set_source_files_properties(${FILES_WITHOUT_OPT}
+        PROPERTIES COMPILE_FLAGS "/Od")
+else()
+    set_source_files_properties(${FILES_WITHOUT_OPT}
+        PROPERTIES COMPILE_FLAGS "-O0 -U_FORTIFY_SOURCE")
+endif()
 
 set(OBJ_LIB ${LIB_NAME}_cpu)
 add_library(${OBJ_LIB} OBJECT ${SOURCES})
-set(${LIB_NAME}_SUB_OBJS ${${LIB_NAME}_SUB_OBJS}
-    $<TARGET_OBJECTS:${OBJ_LIB}> PARENT_SCOPE)
+set_property(GLOBAL APPEND PROPERTY DNNL_LIB_DEPS
+    $<TARGET_OBJECTS:${OBJ_LIB}>)

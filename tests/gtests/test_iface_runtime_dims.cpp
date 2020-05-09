@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019 Intel Corporation
+* Copyright 2019-2020 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ using tag = memory::format_tag;
 
 class runtime_dim_test : public ::testing::Test {
 protected:
-    engine eng {get_test_engine_kind(), 0};
+    engine eng = get_test_engine();
     virtual void SetUp() {}
 
     template <typename F>
