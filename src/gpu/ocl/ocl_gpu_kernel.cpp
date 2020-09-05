@@ -37,6 +37,7 @@ ocl_gpu_kernel_t::~ocl_gpu_kernel_t() {
 status_t ocl_gpu_kernel_t::parallel_for(stream_t &stream,
         const compute::nd_range_t &range,
         const compute::kernel_arg_list_t &arg_list) const {
+    assert(state_ == state_t::kernel);
 
     auto *ocl_stream = utils::downcast<ocl_stream_t *>(&stream);
     cl_command_queue queue = ocl_stream->queue();
@@ -54,16 +55,42 @@ status_t ocl_gpu_kernel_t::parallel_for(stream_t &stream,
                 auto *ocl_mem_storage
                         = utils::downcast<const ocl_memory_storage_t *>(
                                 mem_storage);
+
+                // Validate that the OpenCL contexts match for execution
+                // context and memory.
+                auto stream_ocl_ctx
+                        = utils::downcast<ocl_gpu_engine_t *>(stream.engine())
+                                  ->context();
+                auto memory_storage_ocl_ctx
+                        = utils::downcast<ocl_gpu_engine_t *>(
+                                ocl_mem_storage->engine())
+                                  ->context();
+                if (stream_ocl_ctx != memory_storage_ocl_ctx) {
+                    MAYBE_REPORT_ERROR(
+                            "mismatched OpenCL context for primitive/memory");
+                    return status::invalid_arguments;
+                }
+
                 ocl_mem = ocl_mem_storage->mem_object();
             }
             set_err = clSetKernelArg(ocl_kernel_, i, sizeof(cl_mem), &ocl_mem);
         } else if (arg.is_local()) {
             set_err = clSetKernelArg(ocl_kernel_, i, arg.size(), arg.value());
+        } else if (arg.is_svm_pointer()) {
+#ifdef CL_VERSION_2_0
+            set_err = clSetKernelArgSVMPointer(ocl_kernel_, i, arg.value());
+#else
+            return status::runtime_error; // SVM is not supported
+#endif // CL_VERSION_2_0
         } else {
             compute::scalar_type_t real_arg_type;
             CHECK(get_ocl_kernel_arg_type(&real_arg_type, ocl_kernel_, i));
             // Convert if types do not match.
-            auto cvt_arg = compute::kernel_arg_t::cast(real_arg_type, arg);
+            typename std::aligned_storage<sizeof(float), sizeof(float)>::type
+                    tmp_storage;
+            void *cast_storage = &tmp_storage;
+            auto cvt_arg = compute::kernel_arg_t::cast(
+                    real_arg_type, arg, cast_storage);
             set_err = clSetKernelArg(
                     ocl_kernel_, i, cvt_arg.size(), cvt_arg.value());
         }
@@ -77,6 +104,31 @@ status_t ocl_gpu_kernel_t::parallel_for(stream_t &stream,
             range.global_range(), range.local_range(), 0, nullptr, nullptr);
     status_t status = convert_to_dnnl(err);
     return status;
+}
+
+status_t ocl_gpu_kernel_t::realize(
+        compute::kernel_t *kernel, engine_t *engine) const {
+    assert(state_ == state_t::binary);
+    if (binary_.size() == 0) return status::success;
+    auto *compute_engine = utils::downcast<ocl_gpu_engine_t *>(engine);
+
+    cl_int err;
+    cl_device_id dev = compute_engine->device();
+    const unsigned char *binary_buffer = binary_.data();
+    size_t binary_size = binary_.size();
+    assert(binary_size > 0);
+
+    auto program = clCreateProgramWithBinary(compute_engine->context(), 1, &dev,
+            &binary_size, &binary_buffer, nullptr, &err);
+    OCL_CHECK(err);
+    err = clBuildProgram(program, 1, &dev, nullptr, nullptr, nullptr);
+    OCL_CHECK(err);
+    cl_kernel ocl_kernel = clCreateKernel(program, name(), &err);
+    OCL_CHECK(err);
+    (*kernel) = compute::kernel_t(new ocl_gpu_kernel_t(ocl_kernel));
+    OCL_CHECK(clReleaseProgram(program));
+
+    return status::success;
 }
 
 } // namespace ocl

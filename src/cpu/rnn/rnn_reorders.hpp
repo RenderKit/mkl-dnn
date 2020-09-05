@@ -14,25 +14,29 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_RNN_REORDERS_HPP
-#define CPU_RNN_REORDERS_HPP
+#ifndef CPU_RNN_RNN_REORDERS_HPP
+#define CPU_RNN_RNN_REORDERS_HPP
 
 #include <assert.h>
 
-#include "bfloat16.hpp"
-#include "cpu_reorder_pd.hpp"
-#include "dnnl_thread.hpp"
-#include "gemm/gemm_pack.hpp"
-#include "simple_q10n.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/bfloat16.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/primitive.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
+
+#include "cpu/cpu_reorder_pd.hpp"
+#include "cpu/platform.hpp"
+#include "cpu/simple_q10n.hpp"
+
+#include "cpu/gemm/gemm_pack.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
 
 template <data_type_t type_i, data_type_t type_o>
-struct rnn_data_reorder_t : public primitive_impl_t {
+struct rnn_data_reorder_t : public primitive_t {
     struct pd_t : public cpu_reorder_pd_t {
         using cpu_reorder_pd_t::cpu_reorder_pd_t;
 
@@ -58,10 +62,10 @@ struct rnn_data_reorder_t : public primitive_impl_t {
                                     && od.matches_tag(format_tag::ldnc));
             if (!args_ok) return invalid_arguments;
 
-            auto _pd = new pd_t(
-                    engine, attr, src_engine, src_md, dst_engine, dst_md);
+            auto _pd = new pd_t(attr, src_engine->kind(), src_md,
+                    dst_engine->kind(), dst_md);
             if (_pd == nullptr) return out_of_memory;
-            if (_pd->init() != success) {
+            if (_pd->init(engine, src_engine, dst_engine) != success) {
                 delete _pd;
                 return unimplemented;
             }
@@ -70,7 +74,7 @@ struct rnn_data_reorder_t : public primitive_impl_t {
         }
     };
 
-    rnn_data_reorder_t(const pd_t *apd) : primitive_impl_t(apd) {}
+    rnn_data_reorder_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
     typedef typename prec_traits<type_i>::type in_data_t;
@@ -102,7 +106,7 @@ private:
         const dim_t inner_dim = input_d.dims()[input_d.ndims() - 1];
 
         parallel(0, [&](const int ithr, const int nthr) {
-            dim_t start, end;
+            dim_t start {0}, end {0};
             balance211(outer_dim, nthr, ithr, start, end);
             for (int i = start; i < end; ++i) {
                 const dim_t off_in = input_d.off_l(i * inner_dim);
@@ -137,7 +141,7 @@ private:
         return status::success;
     }
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t execute(const exec_ctx_t &ctx) const override {
         auto input = CTX_IN_MEM(const in_data_t *, DNNL_ARG_FROM);
         auto output = CTX_OUT_MEM(out_data_t *, DNNL_ARG_TO);
         const float scale = pd()->attr()->rnn_data_qparams_.scale_;
@@ -149,11 +153,11 @@ private:
             return execute_generic(output, input, scale, shift);
     }
 
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 
 template <data_type_t type_i>
-struct rnn_weights_reorder_s8_t : public primitive_impl_t {
+struct rnn_weights_reorder_s8_t : public primitive_t {
     struct pd_t : public cpu_reorder_pd_t {
         using cpu_reorder_pd_t::cpu_reorder_pd_t;
 
@@ -189,11 +193,11 @@ struct rnn_weights_reorder_s8_t : public primitive_impl_t {
             const int mask = attr->rnn_weights_qparams_.mask_;
             if (!utils::one_of(mask, 0, 24)) return unimplemented;
 
-            auto _pd = new pd_t(
-                    engine, attr, src_engine, src_md, dst_engine, dst_md);
+            auto _pd = new pd_t(attr, src_engine->kind(), src_md,
+                    dst_engine->kind(), dst_md);
             if (_pd == nullptr) return out_of_memory;
             _pd->itag_ = itag;
-            if (_pd->init() != success) {
+            if (_pd->init(engine, src_engine, dst_engine) != success) {
                 delete _pd;
                 return unimplemented;
             }
@@ -202,8 +206,10 @@ struct rnn_weights_reorder_s8_t : public primitive_impl_t {
 #undef PD_CHECK_ARG
         }
 
-        status_t init() {
-            status_t status = cpu_reorder_pd_t::init();
+        status_t init(
+                engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+            status_t status
+                    = cpu_reorder_pd_t::init(engine, src_engine, dst_engine);
             if (status != status::success) return status;
 
             init_scratchpad();
@@ -222,22 +228,23 @@ struct rnn_weights_reorder_s8_t : public primitive_impl_t {
 
             using namespace memory_tracking::names;
             auto scratchpad = scratchpad_registry().registrar();
-            size_t quantization_size = sizeof(int8_t) * nelems;
+            size_t quantization_size = nelems;
             // we do not use GO directly, as this can cause false sharing
             // (2 threads writing to the same cache line)
             thr_scratch_comp_sz_ = utils::rnd_up(dims[3] * dims[4], 16);
             size_t reduction_size;
-            reduction_size = itag_ == format_tag::ldigo ? dnnl_get_max_threads()
-                            * sizeof(int32_t) * thr_scratch_comp_sz_
-                                                        : 0;
+            reduction_size = itag_ == format_tag::ldigo
+                    ? dnnl_get_max_threads() * thr_scratch_comp_sz_
+                    : 0;
 
-            scratchpad.book(
+            scratchpad.template book<int8_t>(
                     key_reorder_rnn_weights_quantization, quantization_size);
-            scratchpad.book(key_reorder_rnn_weights_reduction, reduction_size);
+            scratchpad.template book<int32_t>(
+                    key_reorder_rnn_weights_reduction, reduction_size);
         }
     };
 
-    rnn_weights_reorder_s8_t(const pd_t *apd) : primitive_impl_t(apd) {}
+    rnn_weights_reorder_s8_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
     typedef typename prec_traits<type_i>::type in_data_t;
@@ -282,7 +289,7 @@ private:
         const int mask = pd()->attr()->rnn_weights_qparams_.mask_;
 
         parallel(0, [&](const int ithr, const int nthr) {
-            int start, end;
+            int start {0}, end {0};
             balance211(L * D * I, nthr, ithr, start, end);
             for (int ldi = start; ldi < end; ldi++) {
                 for (int go = 0; go < G * O; go++) {
@@ -313,8 +320,7 @@ private:
                 compensation_s32
                         += scratch_quantized[ld * I * G * O + i * G * O + go];
             }
-            compensation[ld * G * O + go]
-                    = math::saturate<float>(compensation_s32);
+            compensation[ld * G * O + go] = saturate<float>(compensation_s32);
         });
     }
 
@@ -350,8 +356,8 @@ private:
                 if (I == 1) {
                     PRAGMA_OMP_SIMD()
                     for (int go = GO_s; go < GO_e; go++)
-                        compensation[ld * G * O + go] = math::saturate<float>(
-                                scratch_quantized[go + I * (ld)]);
+                        compensation[ld * G * O + go] = saturate<float>(
+                                scratch_quantized[ld * I * G * O + go]);
                 } else {
                     // We split the loop on I in three to avoid conditionals or zeroing compensation
                     int i = 0;
@@ -370,7 +376,7 @@ private:
                     PRAGMA_OMP_SIMD()
                     for (int go = GO_s; go < GO_e; go++)
                         compensation[ld * G * O + go]
-                                = math::saturate<float>(compensation_s32[go]
+                                = saturate<float>(compensation_s32[go]
                                         + scratch_quantized[go
                                                 + G * O * (i + I * (ld))]);
                 }
@@ -378,7 +384,7 @@ private:
         });
     }
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t execute(const exec_ctx_t &ctx) const override {
         auto src = CTX_IN_MEM(const in_data_t *, DNNL_ARG_FROM);
         auto dst = CTX_OUT_MEM(char *, DNNL_ARG_TO);
         const memory_desc_wrapper &src_d = pd()->src_md();
@@ -453,21 +459,21 @@ private:
                     dim_t m_p = parts[p] * O;
                     dim_t k_p = I;
                     dim_t lda = (dim_t)G * O;
-                    gemm_s8u8s32_pack("A", "N", "N", &m_p, &n, &k_p, &lda, &ldb,
-                            &scratch_quantized[off_igo(l, d, 0, g, 0)],
-                            to_pack);
+                    CHECK(gemm_s8u8s32_pack("A", "N", "N", &m_p, &n, &k_p, &lda,
+                            &ldb, &scratch_quantized[off_igo(l, d, 0, g, 0)],
+                            to_pack));
                     to_pack += size_packed_cell[p];
                 }
             }
         }
-        return status::success;
+        return dnnl_success;
     }
 
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 
 template <data_type_t type_i, data_type_t type_o>
-struct rnn_weights_reorder_t : public primitive_impl_t {
+struct rnn_weights_reorder_t : public primitive_t {
     struct pd_t : public cpu_reorder_pd_t {
         using cpu_reorder_pd_t::cpu_reorder_pd_t;
 
@@ -480,12 +486,10 @@ struct rnn_weights_reorder_t : public primitive_impl_t {
             using namespace status;
 
             const memory_desc_wrapper id(src_md), od(dst_md);
-            bool args_ok = true
-                    && IMPLICATION(type_o == data_type::bf16
-                                    || type_i == data_type::bf16,
-                            mayiuse(avx512_core))
-                    && id.data_type() == type_i && od.data_type() == type_o
+            bool args_ok = id.data_type() == type_i && od.data_type() == type_o
                     && od.format_kind() == format_kind::rnn_packed
+                    && platform::has_data_type_support(type_i)
+                    && platform::has_data_type_support(type_o)
                     && utils::one_of(od.rnn_packed_desc().format, dnnl_ldigo_p,
                             dnnl_ldgoi_p)
                     && attr->has_default_values();
@@ -495,10 +499,10 @@ struct rnn_weights_reorder_t : public primitive_impl_t {
                     format_tag::ldigo, format_tag::ldgoi);
             if (itag == format_tag::undef) return invalid_arguments;
 
-            auto _pd = new pd_t(
-                    engine, attr, src_engine, src_md, dst_engine, dst_md);
+            auto _pd = new pd_t(attr, src_engine->kind(), src_md,
+                    dst_engine->kind(), dst_md);
             if (_pd == nullptr) return out_of_memory;
-            if (_pd->init() != success) {
+            if (_pd->init(engine, src_engine, dst_engine) != success) {
                 delete _pd;
                 return unimplemented;
             }
@@ -509,8 +513,10 @@ struct rnn_weights_reorder_t : public primitive_impl_t {
 
         format_tag_t itag_;
 
-        status_t init() {
-            status_t status = cpu_reorder_pd_t::init();
+        status_t init(
+                engine_t *engine, engine_t *src_engine, engine_t *dst_engine) {
+            status_t status
+                    = cpu_reorder_pd_t::init(engine, src_engine, dst_engine);
             if (status != status::success) return status;
 
             init_scratchpad();
@@ -533,24 +539,25 @@ struct rnn_weights_reorder_t : public primitive_impl_t {
                             && rnn_pdata.format == rnn_packed_format::ldigo_p),
                     dt_cross_case
                     = type_i == data_type::f32 && type_o == data_type::bf16;
-            size_t sz = id.nelems() * sizeof(out_data_t);
+            size_t sz = id.nelems();
 
             using namespace memory_tracking::names;
             auto scratchpad = scratchpad_registry().registrar();
-            scratchpad.book(key_reorder_rnn_weights_transposition,
+            scratchpad.template book<out_data_t>(
+                    key_reorder_rnn_weights_transposition,
                     layout_cross_case ? sz : 0);
-            scratchpad.book(
+            scratchpad.template book<out_data_t>(
                     key_reorder_rnn_weights_bf16_cvt, dt_cross_case ? sz : 0);
         }
     };
 
-    rnn_weights_reorder_t(const pd_t *apd) : primitive_impl_t(apd) {}
+    rnn_weights_reorder_t(const pd_t *apd) : primitive_t(apd) {}
 
 private:
     typedef typename prec_traits<type_i>::type in_data_t;
     typedef typename prec_traits<type_o>::type out_data_t;
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t execute(const exec_ctx_t &ctx) const override {
         auto input = CTX_IN_MEM(const in_data_t *, DNNL_ARG_FROM);
         auto output = CTX_OUT_MEM(out_data_t *, DNNL_ARG_TO);
         const memory_desc_wrapper &input_d = pd()->src_md();
@@ -621,24 +628,21 @@ private:
                     int g = (p > 0) ? parts[p - 1] : 0;
                     dim_t m_p = to_igo ? parts[p] * O : I;
                     dim_t k_p = to_igo ? I : parts[p] * O;
-                    dnnl_status_t st;
                     if (type_o == data_type::bf16) {
-                        st = gemm_bf16bf16f32_pack("A", "N", "N", &m_p, &n,
+                        CHECK(gemm_bf16bf16f32_pack("A", "N", "N", &m_p, &n,
                                 &k_p, &lda, &ldb,
                                 (bfloat16_t *)&input_tr[to_igo
                                                 ? off_igo(l, d, 0, g, 0)
                                                 : off_goi(l, d, 0, g, 0)],
-                                (bfloat16_t *)output);
+                                (bfloat16_t *)output));
                     } else {
-                        st = sgemm_pack("A", "N", "N", &m_p, &n, &k_p, &lda,
+                        CHECK(sgemm_pack("A", "N", "N", &m_p, &n, &k_p, &lda,
                                 &ldb,
                                 (float *)&input_tr[to_igo
                                                 ? off_igo(l, d, 0, g, 0)
                                                 : off_goi(l, d, 0, g, 0)],
-                                (float *)output);
+                                (float *)output));
                     }
-                    assert(st == dnnl_success);
-                    MAYBE_UNUSED(st);
                     output += size_packed_cell[p] / sizeof(out_data_t);
                 }
             }
@@ -646,7 +650,7 @@ private:
         return status::success;
     }
 
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 
 } // namespace cpu

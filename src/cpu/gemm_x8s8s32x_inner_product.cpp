@@ -14,12 +14,12 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "dnnl_thread.hpp"
-#include "math_utils.hpp"
-#include "simple_q10n.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/math_utils.hpp"
+#include "cpu/simple_q10n.hpp"
 
-#include "gemm/gemm.hpp"
-#include "gemm_x8s8s32x_inner_product.hpp"
+#include "cpu/gemm/gemm.hpp"
+#include "cpu/gemm_x8s8s32x_inner_product.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -30,7 +30,7 @@ using namespace format_tag;
 using namespace memory_tracking::names;
 
 template <data_type_t src_type, data_type_t dst_type>
-void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::execute_forward(
+status_t gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::execute_forward(
         const exec_ctx_t &ctx) const {
     auto src = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
     auto weights = CTX_IN_MEM(const wei_data_t *, DNNL_ARG_WEIGHTS);
@@ -58,19 +58,23 @@ void gemm_x8s8s32x_inner_product_fwd_t<src_type, dst_type>::execute_forward(
                     key_iprod_int_dat_in_acc_dt);
 
     const float onef = 1.0, zerof = 0.0;
-    gemm_s8x8s32(wei_tr ? "T" : "N", "N", "F", &M, &N, &K, &onef, weights,
-            wei_tr ? &K : &M, &off_a, src, &K, &off_b, &zerof, acc, &M, &off_c);
+    status_t st = gemm_s8x8s32(wei_tr ? "T" : "N", "N", "F", &M, &N, &K, &onef,
+            weights, wei_tr ? &K : &M, &off_a, src, &K, &off_b, &zerof, acc, &M,
+            &off_c);
+    if (st != status::success) return st;
 
-    if (!pd()->attr()->has_default_values() || !pd()->dst_is_acc_
+    if (!pd()->attr()->has_default_values() || dst_type != data_type::s32
             || pd()->with_bias()) {
         const bool force_sequential
                 = pp_kernel_->sequential_kernel() || MB * OC < 2000;
         parallel(force_sequential ? 1 : 0, [&](int ithr, int nthr) {
             size_t start, end;
             balance211((size_t)(OC * MB), nthr, ithr, start, end);
-            (*pp_kernel_)(dst, acc, bias, scales, start, end);
+            (*pp_kernel_)(dst, acc, bias, scales, start, end, 0, nullptr);
         });
     }
+
+    return st;
 }
 
 using namespace data_type;

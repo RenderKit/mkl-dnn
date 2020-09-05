@@ -21,7 +21,7 @@
 
 #include "dnnl.h"
 
-#include "src/common/dnnl_thread.hpp"
+#include "tests/test_thread.hpp"
 
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
@@ -30,7 +30,9 @@
 
 namespace sum {
 
-static int init_pd(const prb_t *p, dnnl_primitive_desc_t &spd, res_t *r) {
+static int init_pd(dnnl_engine_t engine, const prb_t *p,
+        dnnl_primitive_desc_t &spd, res_t *r, dir_t dir,
+        const_dnnl_primitive_desc_t hint) {
     std::vector<dnnl_memory_desc_t> src_d;
     src_d.resize(p->n_inputs());
 
@@ -52,7 +54,7 @@ static int init_pd(const prb_t *p, dnnl_primitive_desc_t &spd, res_t *r) {
 
     dnnl_status_t init_status = dnnl_sum_primitive_desc_create(&spd,
             p->dtag != tag::undef ? &dst_d : NULL, p->n_inputs(),
-            p->scales.data(), src_d.data(), dnnl_attr, engine_tgt);
+            p->scales.data(), src_d.data(), dnnl_attr, engine);
 
     dnnl_primitive_attr_destroy(dnnl_attr);
 
@@ -61,8 +63,8 @@ static int init_pd(const prb_t *p, dnnl_primitive_desc_t &spd, res_t *r) {
     else
         SAFE(init_status, WARN);
 
-    const char *impl_str = query_impl_info(spd);
-    BENCHDNN_PRINT(5, "oneDNN implementation: %s\n", impl_str);
+    r->impl_name = query_impl_info(spd);
+    BENCHDNN_PRINT(5, "oneDNN implementation: %s\n", r->impl_name.c_str());
 
     return OK;
 }
@@ -128,23 +130,28 @@ int fill_src(
     return OK;
 }
 
+void check_known_skipped_case(const prb_t *p, res_t *r) {
+    std::vector<dnnl_data_type_t> dts = p->sdt;
+    dts.push_back(p->ddt);
+    check_known_skipped_case_common(dts, r);
+}
+
 int doit(const prb_t *p, res_t *r) {
     if (bench_mode == LIST) return r->state = LISTED, OK;
 
-    dnnl_primitive_desc_t spd;
-    SAFE(init_pd(p, spd, r), WARN);
-    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
+    check_known_skipped_case(p, r);
+    if (r->state == SKIPPED) return OK;
 
-    dnnl_primitive_t s;
-    DNN_SAFE(dnnl_primitive_create(&s, spd), WARN);
-    DNN_SAFE(dnnl_primitive_desc_destroy(spd), CRIT);
+    dnnl_primitive_t s {};
+    SAFE(init_prim(&s, init_pd, p, r), WARN);
+    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
 
     const_dnnl_primitive_desc_t const_pd;
     DNN_SAFE(dnnl_primitive_get_primitive_desc(s, &const_pd), CRIT);
 
     if (dnn_mem_t::check_mem_size(const_pd) != OK) {
         DNN_SAFE_V(dnnl_primitive_destroy(s));
-        return r->state = SKIPPED, OK;
+        return r->state = SKIPPED, r->reason = NOT_ENOUGH_RAM, OK;
     }
 
     const auto q = [&](int index = 0) -> const dnnl_memory_desc_t & {
@@ -157,11 +164,14 @@ int doit(const prb_t *p, res_t *r) {
 
     const auto &dst_md = q(DNNL_ARG_DST);
     const auto dst_data_type = dst_md.data_type; // needed for deduced dst
-    dnn_mem_t dst_fp(dst_md, fp, tag, engine_tgt);
-    dnn_mem_t dst_dt(dst_md, engine_tgt);
+
+    const auto &test_engine = get_test_engine();
+
+    dnn_mem_t dst_fp(dst_md, fp, tag, test_engine);
+    dnn_mem_t dst_dt(dst_md, test_engine);
 
     const auto &scratchpad_md = q(DNNL_ARG_SCRATCHPAD);
-    dnn_mem_t scratchpad_dt(scratchpad_md, engine_tgt);
+    dnn_mem_t scratchpad_dt(scratchpad_md, test_engine);
 
     args_t args;
     args.set(DNNL_ARG_DST, dst_dt);
@@ -173,17 +183,17 @@ int doit(const prb_t *p, res_t *r) {
 
     for (int i_input = 0; i_input < p->n_inputs(); ++i_input) {
         const auto &src_md = q(DNNL_ARG_MULTIPLE_SRC + i_input);
-        src_fp.emplace_back(src_md, fp, tag, engine_tgt);
-        src_dt.emplace_back(src_md, engine_tgt);
+        src_fp.emplace_back(src_md, fp, tag, test_engine);
+        src_dt.emplace_back(src_md, test_engine);
         SAFE(fill_src(p, i_input, src_dt[i_input], src_fp[i_input]), WARN);
         args.set(DNNL_ARG_MULTIPLE_SRC + i_input, src_dt[i_input]);
     }
 
-    DNN_SAFE(execute_and_wait(s, stream_tgt, args), WARN);
+    SAFE(execute_and_wait(s, args), WARN);
 
     if (bench_mode & CORR) {
         compute_ref(p, src_fp, dst_fp);
-        dnn_mem_t dst(dst_dt, fp, tag, engine_tgt);
+        dnn_mem_t dst(dst_dt, fp, tag, test_engine);
         SAFE(compare(p, dst_data_type, dst_fp, dst, r), WARN);
     }
 

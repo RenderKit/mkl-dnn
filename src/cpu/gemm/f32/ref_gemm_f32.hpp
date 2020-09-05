@@ -14,11 +14,12 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef REF_GEMM_F32_HPP
-#define REF_GEMM_F32_HPP
+#ifndef CPU_GEMM_F32_REF_GEMM_F32_HPP
+#define CPU_GEMM_F32_REF_GEMM_F32_HPP
 
-#include "c_types_map.hpp"
 #include "dnnl_types.h"
+
+#include "common/c_types_map.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -33,4 +34,4 @@ dnnl_status_t ref_gemm(const char *transa, const char *transb, const dim_t *M,
 } // namespace impl
 } // namespace dnnl
 
-#endif // REF_GEMM_F32_HPP
+#endif // CPU_GEMM_F32_REF_GEMM_F32_HPP

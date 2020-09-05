@@ -8,14 +8,17 @@
 where *rnn-knobs* are:
 
  - `--prop={FWD_D [default], BWD_DW}` -- dnnl_prop_kind_t.
-            Refer to the common glossary in README.md for details.
+            Refer to [direction](knobs_dir.md) for details.
  - `--cfg={f32 [default], ...}` -- refer to ``Configurations`` below.
  - `--alg={VANILLA_RNN [default], VANILLA_LSTM, VANILLA_GRU, LBR_GRU}`
             -- RNN algorithm.
  - `--direction={left2right [default], right2left, concat, sum}` -- TBA.
  - `--activation={RELU [default], LOGISTIC, TANH}` -- TBA.
  - `--scaling="scale_str"` -- RNN scaling policy, default `""` (no scaling).
-            Refer to knobs_attr.md for details.
+            Refer to [attributes](knobs_attr.md) for details.
+ - `--trivial-strides={true, false [default]}` -- specify if input
+   tensors should have trivial strides (each tensor stride is the
+   product of the previous dimensions) or not.
  - `--mb=INT` -- override minibatch size specified in the problem description.
              When set to `0`, use minibatch size as defined by the individual
              problem descriptor. The default is `0`.
@@ -24,23 +27,26 @@ and *rnn-desc* is a problem descriptor. The canonical form is:
 ```
  lXtXmbX_sicX_slcX_dhcX_nS
 ```
-Here X is an integer number and S is a string (n stands for name).
-The special symbol `_` is ignored, so it may be used as a delimiter.
+Here `X` is an integer number and `S` is a string literal without spaces (`n`
+stands for name). The special symbol `_` is ignored, so it may be used as a
+delimiter for better readability.
 
-Description of RNN descriptor symbols: TBA.
-
-There are default values for some entities in case they were not specified:
- - l = 1;
- - t = 1;
- - mb = 2;
- - slc = dhc = sic;
-
+Description of RNN descriptor symbols:
+ - `l` is the number of layers. The default value is `1`.
+ - `t` is the number of timesteps (so the sequence length). The default value
+             is `1`.
+ - `mb` is the minibatch. The default value is `2`.
+ - `sic` is the feature size of `src_iter`. No default value.
+ - `slc` is the feature size of `src_layer`. The default value is `sic`.
+ - `dhc` is the hidden feature size. For GRU it is equal to `dst_iter` feature
+             size. The default value is `sic`.
 
 ## Precision Configurations
 
-The `--cfg` option specifies the data type to be used for a problem. It also
-defines the data filling strategy. It is implicit for the integer type
-saturation. This option also defines the threshold for computation errors.
+The `--cfg` option specifies the [data types](knobs_dt.md) to be used for a
+problem. It also defines the data filling strategy. It is implicit for the
+integer type saturation. This option also defines the threshold for computation
+errors.
 
 The table below shows supported name configurations for this driver:
 

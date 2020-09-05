@@ -16,14 +16,14 @@
 
 #include "dnnl_types.h"
 
-#include "dnnl_thread.hpp"
-#include "nstl.hpp"
-#include "utils.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/nstl.hpp"
+#include "common/utils.hpp"
 
-#include "jit_generator.hpp"
+#include "cpu/platform.hpp"
 
-#include "gemm_utils_f32.hpp"
-#include "ref_gemm_f32.hpp"
+#include "cpu/gemm/f32/gemm_utils_f32.hpp"
+#include "cpu/gemm/f32/ref_gemm_f32.hpp"
 
 namespace dnnl {
 namespace impl {

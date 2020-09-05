@@ -152,15 +152,42 @@ inline float epsilon_dt(dnnl_data_type_t dt) {
     return 0;
 }
 
+inline float lowest_dt(dnnl_data_type_t dt) {
+#define CASE(dt) \
+    case dt: \
+        return (float)dnnl::impl::nstl::numeric_limits< \
+                typename prec_traits<dt>::type>::lowest();
+
+    CASE_ALL(dt);
+
+#undef CASE
+
+    return 0;
+}
+
+inline float max_dt(dnnl_data_type_t dt) {
+#define CASE(dt) \
+    case dt: \
+        return (float)dnnl::impl::nstl::numeric_limits< \
+                typename prec_traits<dt>::type>::max();
+
+    CASE_ALL(dt);
+
+#undef CASE
+
+    return 0;
+}
+
 #undef CASE_ALL
 
 template <dnnl_data_type_t dt>
 inline float saturate(float val) {
-    return MAX2((float)dnnl::impl::nstl::numeric_limits<
-                        typename prec_traits<dt>::type>::lowest(),
+    auto res = MAX2((float)dnnl::impl::nstl::numeric_limits<
+                            typename prec_traits<dt>::type>::lowest(),
             MIN2((float)dnnl::impl::nstl::numeric_limits<
                          typename prec_traits<dt>::type>::max(),
-                    mxcsr_round(val)));
+                    val));
+    return mxcsr_cvt(res);
 }
 
 inline float maybe_saturate(dnnl_data_type_t dt, float value) {
@@ -185,71 +212,7 @@ float round_to_nearest_representable(dnnl_data_type_t dt, float value);
 
 /* simplification */
 extern dnnl_engine_kind_t engine_tgt_kind;
-
-extern dnnl_engine_t engine_tgt;
-extern dnnl_stream_t stream_tgt;
 extern dnnl_scratchpad_mode_t scratchpad_mode;
-
-/* for fast-ref-gpu support */
-extern dnnl_engine_t engine_cpu;
-extern dnnl_stream_t stream_cpu;
-
-#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-#include "dnnl_threadpool_iface.hpp"
-// XXX: cannot include dnnl_thread.hpp because of conflicting macro
-// definitions
-namespace dnnl {
-namespace impl {
-namespace threadpool_utils {
-threadpool_iface *get_active_threadpool();
-}
-} // namespace impl
-} // namespace dnnl
-#endif
-
-inline int create_dnnl_stream(
-        dnnl_stream_t *stream, dnnl_engine_t engine, unsigned flags) {
-    dnnl_engine_kind_t engine_kind;
-    DNN_SAFE(dnnl_engine_get_kind(engine, &engine_kind), CRIT);
-
-    dnnl_stream_attr_t stream_attr;
-    DNN_SAFE(dnnl_stream_attr_create(&stream_attr, engine_kind), CRIT);
-#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    if (engine_kind == dnnl_cpu) {
-        SAFE_V(dnnl_stream_attr_set_threadpool(stream_attr,
-                dnnl::impl::threadpool_utils::get_active_threadpool()));
-    }
-#endif
-
-    DNN_SAFE(dnnl_stream_create_v2(stream, engine, flags, stream_attr), CRIT);
-    dnnl_stream_attr_destroy(stream_attr);
-    return OK;
-}
-
-inline int init() {
-    if (!engine_tgt) {
-        DNN_SAFE(dnnl_engine_create(&engine_tgt, engine_tgt_kind, 0), CRIT);
-        SAFE(create_dnnl_stream(
-                     &stream_tgt, engine_tgt, dnnl_stream_default_flags),
-                CRIT);
-    }
-    if (!engine_cpu) {
-        DNN_SAFE(dnnl_engine_create(&engine_cpu, dnnl_cpu, 0), CRIT);
-        SAFE(create_dnnl_stream(
-                     &stream_cpu, engine_cpu, dnnl_stream_default_flags),
-                CRIT);
-    }
-
-    return OK;
-}
-
-inline int finalize() {
-    DNN_SAFE(dnnl_stream_destroy(stream_tgt), CRIT);
-    DNN_SAFE(dnnl_engine_destroy(engine_tgt), CRIT);
-    DNN_SAFE(dnnl_engine_destroy(engine_cpu), CRIT);
-    DNN_SAFE(dnnl_stream_destroy(stream_cpu), CRIT);
-    return OK;
-}
 
 inline const char *query_impl_info(const_dnnl_primitive_desc_t pd) {
     const char *str;
@@ -273,20 +236,78 @@ private:
     std::vector<std::pair<int, const dnn_mem_t *>> args_;
 };
 
-dnnl_status_t execute_and_wait(
-        dnnl_primitive_t prim, dnnl_stream_t stream, const args_t &args);
+// Engine used to run oneDNN primitives for testing.
+inline const engine_t &get_test_engine() {
+    static const engine_t instance(engine_tgt_kind);
+    return instance;
+}
+
+// Engine used to run reference implementations (fast-ref-gpu option).
+inline const engine_t &get_cpu_engine() {
+    static const engine_t instance(dnnl_cpu);
+    return instance;
+}
+
+template <typename func_t, typename prb_t>
+int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *p,
+        res_t *r, dir_t dir = FLAG_FWD,
+        const_dnnl_primitive_desc_t hint = nullptr) {
+    int status = OK;
+    dnnl_primitive_desc_t pd {};
+    dnnl_primitive_t return_prim {};
+
+    auto cleanup_pd = [&]() { dnnl_primitive_desc_destroy(pd); };
+    auto cleanup_prim = [&]() { dnnl_primitive_destroy(return_prim); };
+#ifndef DNNL_DISABLE_PRIMITIVE_CACHE
+    // The idea is to create the requested primitive twice using
+    // different engines.
+    // Rationale:
+    // 1. Make sure that the primitive cache is robust for the cases when:
+    //   - CPU engine is re-created
+    //   - GPU engine is re-created for the same device but different context
+    // These 2 cases are commonly used or expected to be used in the frameworks.
+    // 2. (for GPU only) Identify context dependent parts in primitive
+    // implementations, e.g. if a primitive implementation contains
+    // a memory_storage_t (for scales, zero points or buffers), which depends
+    // on a particular engine then it should fail at execution time.
+
+    // The first primitive creation using a temporary engine.
+    engine_t engine(engine_tgt_kind);
+    status = init_pd_func(engine, p, pd, r, dir, hint);
+    if (status != OK) return status;
+    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
+    DNN_SAFE_CLEAN(dnnl_primitive_create(&return_prim, pd), WARN, cleanup_pd);
+    DNN_SAFE_CLEAN(dnnl_primitive_desc_destroy(pd), WARN, cleanup_prim);
+    DNN_SAFE(dnnl_primitive_destroy(return_prim), WARN);
+
+#endif
+    // The second (if the cache is enabled) primitive creation using
+    // the global test engine.
+    status = init_pd_func(get_test_engine(), p, pd, r, dir, hint);
+    if (status != OK) return status;
+    // This primitive is expected to come from the cache.
+    DNN_SAFE_CLEAN(dnnl_primitive_create(&return_prim, pd), WARN, cleanup_pd);
+    DNN_SAFE_CLEAN(dnnl_primitive_desc_destroy(pd), WARN, cleanup_prim);
+    (*prim) = return_prim;
+    return OK;
+}
+
+int execute_and_wait(dnnl_primitive_t prim, const args_t &args);
 
 int measure_perf(benchdnn_timer_t &t, dnnl_primitive_t prim, args_t &args);
 
 void maybe_prepare_runtime_scales(dnn_mem_t &scales_m, const attr_t &attr,
-        int64_t scale_cnt, const float *scales, dnnl_engine_t engine);
-void maybe_prepare_runtime_scales(dnn_mem_t &scales_m,
-        const attr_bundle_t &attr_bundle, dnnl_engine_t engine);
+        int64_t scale_cnt, const float *scales);
+void maybe_prepare_runtime_scales(
+        dnn_mem_t &scales_m, const attr_bundle_t &attr_bundle);
 
-void maybe_prepare_runtime_zero_points(dnn_mem_t &zero_points_m,
-        const attr_t &attr, int arg, dnnl_engine_t engine);
+void maybe_prepare_runtime_zero_points(
+        dnn_mem_t &zero_points_m, const attr_t &attr, int arg);
 
 bool check_md_consistency_with_tag(
         const dnnl_memory_desc_t &md, const std::string &tag);
+
+void check_known_skipped_case_common(
+        const std::vector<dnnl_data_type_t> &v_dt, res_t *r);
 
 #endif

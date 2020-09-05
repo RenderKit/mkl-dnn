@@ -58,6 +58,7 @@ Data manipulation:
 
 # Performance Benchmarking and Inspection
 
+ * @ref dev_guide_performance_settings
  * @ref dev_guide_verbose
  * @ref dev_guide_benchdnn
  * @ref dev_guide_profilers
@@ -91,4 +92,4 @@ Data manipulation:
 | f32 training   | CPU/GPU  | @ref cnn_training_f32_cpp              |                              |
 |                | CPU      |                                        | @ref cpu_cnn_training_f32_c  |
 |                | CPU/GPU  | @ref rnn_training_f32_cpp              |                              |
-| bf16 training  | CPU      | @ref cpu_cnn_training_bf16_cpp         |                              |
+| bf16 training  | CPU/GPU  | @ref cnn_training_bf16_cpp             |                              |

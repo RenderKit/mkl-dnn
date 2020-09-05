@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "cpu_engine.hpp"
+#include "cpu/cpu_engine.hpp"
 
 /*
 #include "cpu/ref_concat.hpp"
@@ -28,19 +28,21 @@ namespace cpu {
 using cpd_create_f = dnnl::impl::engine_t::concat_primitive_desc_create_f;
 
 namespace {
-#define INSTANCE(...) __VA_ARGS__::pd_t::create
+// clang-format off
+#define INSTANCE(...) __VA_ARGS__::pd_t::create,
 static const cpd_create_f cpu_concat_impl_list[] = {
         /*
-        INSTANCE(simple_concat_t<data_type::f32>),
-        INSTANCE(simple_concat_t<data_type::u8>),
-        INSTANCE(simple_concat_t<data_type::s8>),
-        INSTANCE(simple_concat_t<data_type::s32>),
-        INSTANCE(simple_concat_t<data_type::bf16>),
-        INSTANCE(ref_concat_t),
+        INSTANCE(simple_concat_t<data_type::f32>)
+        INSTANCE(simple_concat_t<data_type::u8>)
+        INSTANCE(simple_concat_t<data_type::s8>)
+        INSTANCE(simple_concat_t<data_type::s32>)
+        INSTANCE(simple_concat_t<data_type::bf16>)
+        INSTANCE(ref_concat_t)
         */
         nullptr,
 };
 #undef INSTANCE
+// clang-format on
 } // namespace
 
 const cpd_create_f *cpu_engine_t::get_concat_implementation_list() const {

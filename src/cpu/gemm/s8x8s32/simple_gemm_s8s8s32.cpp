@@ -16,15 +16,18 @@
 
 #include <cstdint>
 
-#include "simple_gemm_s8s8s32.hpp"
-
-#include "../gemm.hpp"
-#include "dnnl_thread.hpp"
 #include "dnnl_types.h"
-#include "jit_generator.hpp"
-#include "math_utils.hpp"
-#include "nstl.hpp"
-#include "utils.hpp"
+
+#include "common/dnnl_thread.hpp"
+#include "common/nstl.hpp"
+#include "common/utils.hpp"
+
+#include "cpu/platform.hpp"
+#include "cpu/simple_q10n.hpp"
+
+#include "cpu/gemm/gemm.hpp"
+
+#include "cpu/gemm/s8x8s32/simple_gemm_s8s8s32.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -50,7 +53,7 @@ void compensation_init(const char *offsetC, int32_t *compensation, dim_t len,
 void compensation_compute(bool transa, dim_t m, dim_t k, float alpha,
         const int8_t *a, dim_t lda, int32_t *compensation) {
     if (!transa) {
-        const int L2_cache_size = get_per_core_cache_size(2);
+        const int L2_cache_size = platform::get_per_core_cache_size(2);
         const int blocking_factor = nstl::min(k, L2_cache_size / lda + 1);
         const dim_t npanels = k / blocking_factor;
         const bool has_tile = k % blocking_factor > 0;
@@ -61,8 +64,8 @@ void compensation_compute(bool transa, dim_t m, dim_t k, float alpha,
                 val += a[(i + j * blocking_factor * lda) + jb * lda];
             }
             if (alpha != 1.0f) {
-                val = math::out_round<int32_t>(
-                        math::saturate<int32_t>((double)val * alpha * -128.0));
+                val = out_round<int32_t>(
+                        saturate<int32_t>((double)val * alpha * -128.0));
             } else {
                 val *= -128;
             }
@@ -76,8 +79,8 @@ void compensation_compute(bool transa, dim_t m, dim_t k, float alpha,
                     val += a[i + j * lda];
                 }
                 if (alpha != 1.0f) {
-                    val = math::out_round<int32_t>(math::saturate<int32_t>(
-                            (double)val * alpha * -128.0));
+                    val = out_round<int32_t>(
+                            saturate<int32_t>((double)val * alpha * -128.0));
                 } else {
                     val *= -128;
                 }
@@ -91,8 +94,8 @@ void compensation_compute(bool transa, dim_t m, dim_t k, float alpha,
                 val += a[j + i * lda];
             }
             if (alpha != 1.0f) {
-                val = math::out_round<int32_t>(
-                        math::saturate<int32_t>((double)val * alpha * -128.0));
+                val = out_round<int32_t>(
+                        saturate<int32_t>((double)val * alpha * -128.0));
             } else {
                 val *= -128;
             }
@@ -154,9 +157,11 @@ dnnl_status_t simple_gemm_s8s8s32(const char *transA, const char *transB,
     bool transb = (*transB == 'T' || *transB == 't');
     dim_t ld = transb ? N : K;
 
-    uint8_t *b_u8 = (uint8_t *)malloc(sizeof(uint8_t) * K * N, 64);
+    uint8_t *b_u8 = (uint8_t *)malloc(
+            sizeof(uint8_t) * K * N, platform::get_cache_line_size());
     uint8_t ob_u8 = 0;
-    int32_t *compensation = (int32_t *)malloc(sizeof(int32_t) * M, 64);
+    int32_t *compensation = (int32_t *)malloc(
+            sizeof(int32_t) * M, platform::get_cache_line_size());
 
     if (utils::any_null(b_u8, compensation)) {
         free(b_u8);
@@ -168,8 +173,9 @@ dnnl_status_t simple_gemm_s8s8s32(const char *transA, const char *transB,
     compensation_compute(transa, M, K, *alpha, a, *lda, compensation);
     copy_and_shift_b(transb, K, N, b_u8, ld, b, *ldb);
 
-    gemm_s8x8s32(transA, transB, "C", m, n, k, alpha, a, lda, oa, b_u8, &ld,
-            &ob_u8, beta, c, ldc, compensation);
+    status_t st = gemm_s8x8s32(transA, transB, "C", m, n, k, alpha, a, lda, oa,
+            b_u8, &ld, &ob_u8, beta, c, ldc, compensation);
+    if (st != dnnl_success) return st;
 
     if ((*offsetC == 'R' || *offsetC == 'r'))
         parallel_nd(M, N, [=](dim_t i, dim_t j) { c[i + j * *ldc] += oc[j]; });
@@ -177,7 +183,7 @@ dnnl_status_t simple_gemm_s8s8s32(const char *transA, const char *transB,
     free(b_u8);
     free(compensation);
 
-    return dnnl_success;
+    return st;
 }
 } // namespace cpu
 } // namespace impl

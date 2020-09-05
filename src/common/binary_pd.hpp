@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef BINARY_PD_HPP
-#define BINARY_PD_HPP
+#ifndef COMMON_BINARY_PD_HPP
+#define COMMON_BINARY_PD_HPP
 
 #include <assert.h>
 
@@ -34,9 +34,9 @@ struct binary_pd_t : public primitive_desc_t {
     typedef binary_pd_t base_class;
     typedef binary_pd_t hint_class;
 
-    binary_pd_t(engine_t *engine, const binary_desc_t *adesc,
-            const primitive_attr_t *attr, const binary_pd_t *hint_fwd_pd)
-        : primitive_desc_t(engine, attr, base_pkind)
+    binary_pd_t(const binary_desc_t *adesc, const primitive_attr_t *attr,
+            const binary_pd_t *hint_fwd_pd)
+        : primitive_desc_t(attr, base_pkind)
         , desc_(*adesc)
         , src0_md_(desc_.src_desc[0])
         , src1_md_(desc_.src_desc[1])
@@ -45,11 +45,11 @@ struct binary_pd_t : public primitive_desc_t {
     }
 
     const binary_desc_t *desc() const { return &desc_; }
-    virtual const op_desc_t *op_desc() const override {
+    const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual status_t query(query_t what, int idx, void *result) const override {
+    status_t query(query_t what, int idx, void *result) const override {
         switch (what) {
             case query::binary_d:
                 *(const binary_desc_t **)result = desc();
@@ -59,7 +59,7 @@ struct binary_pd_t : public primitive_desc_t {
         return status::success;
     }
 
-    virtual arg_usage_t arg_usage(int arg) const override {
+    arg_usage_t arg_usage(int arg) const override {
         if (arg == DNNL_ARG_SRC_0 || arg == DNNL_ARG_SRC_1)
             return arg_usage_t::input;
 
@@ -68,7 +68,7 @@ struct binary_pd_t : public primitive_desc_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *arg_md(int arg) const override {
+    const memory_desc_t *arg_md(int arg) const override {
         switch (arg) {
             case DNNL_ARG_SRC_0: return src_md(0);
             case DNNL_ARG_SRC_1: return src_md(1);
@@ -77,19 +77,19 @@ struct binary_pd_t : public primitive_desc_t {
         }
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override {
+    const memory_desc_t *src_md(int index = 0) const override {
         if (index == 0)
             return &src0_md_;
         else if (index == 1)
             return &src1_md_;
         return &glob_zero_md;
     }
-    virtual const memory_desc_t *dst_md(int index = 0) const override {
+    const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 ? &dst_md_ : &glob_zero_md;
     }
 
-    virtual int n_inputs() const override { return 2; }
-    virtual int n_outputs() const override { return 1; }
+    int n_inputs() const override { return 2; }
+    int n_outputs() const override { return 1; }
 
     const dims_t &broadcast_dims() const { return broadcast_dims_; }
 
@@ -144,7 +144,8 @@ private:
         const dims_t &dims_B = src_md(1)->dims;
 
         for (int d = 0; d < ndims(); ++d)
-            broadcast_dims_[d] = dims_A[d] == dims_B[d] ? 0 : 1;
+            broadcast_dims_[d]
+                    = (dims_A[d] == dims_B[d] && dims_A[d] != 1) ? 0 : 1;
     }
 };
 

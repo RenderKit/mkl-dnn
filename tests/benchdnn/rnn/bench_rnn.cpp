@@ -44,12 +44,23 @@ void check_correctness(const settings_t &s) {
     for (const auto &i_mb : s.mb) {
         if (i_with_peephole && i_alg != VANILLA_LSTM) continue;
 
-        const dt_conf_t &cfg = dt_conf_t::create(i_cfg);
-        check_case_validity(cfg, i_scale_policy);
+        if (!(i_scale_policy == policy_t::COMMON
+                    || i_scale_policy == policy_t::PER_OC)) {
+            std::stringstream ss;
+            ss << i_scale_policy;
+            const std::string cpp_pstr = ss.str();
+            const char *policy_s = cpp_pstr.c_str();
+            fprintf(stderr,
+                    "ERROR: rnn driver: --scaling=%s is invalid, supported "
+                    "values are `common` and `per_oc`.\n",
+                    policy_s),
+                    fflush(stderr);
+            SAFE_V(FAIL);
+        }
 
-        const prb_t p(s.desc, cfg, i_prop, i_alg, i_with_peephole,
-                i_with_projection, i_direction, s.attr, i_scale_policy, s.flags,
-                i_activation, s.alpha, s.beta, i_skip_nonlinear,
+        const prb_t p(s.desc, dt_conf_t::create(i_cfg), i_prop, i_alg,
+                i_with_peephole, i_with_projection, i_direction, i_scale_policy,
+                s.flags, i_activation, s.alpha, s.beta, i_skip_nonlinear,
                 i_trivial_strides, i_mb);
         std::stringstream ss;
         ss << p;
@@ -61,7 +72,7 @@ void check_correctness(const settings_t &s) {
         const int status = doit(p, &res);
 
         bool want_perf_report = false;
-        parse_result(res, want_perf_report, s.allow_unimpl, status, pstr);
+        parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
@@ -76,27 +87,28 @@ int bench(int argc, char **argv) {
     driver_name = "rnn";
     using namespace parser;
     static settings_t s;
+    static const settings_t def {};
     for (; argc > 0; --argc, ++argv) {
         auto cstr2str = [](const char *str) { return std::string(str); };
         const bool parsed_options = parse_bench_settings(argv[0])
                 || parse_batch(bench, argv[0])
-                || parse_dir(s.prop, argv[0], "prop")
-                || parse_cfg(s.cfg, cstr2str, argv[0])
-                || parse_vector_option(s.alg, str2alg, argv[0], "alg")
-                || parse_vector_option(
-                        s.direction, str2direction, argv[0], "direction")
-                || parse_vector_option(
-                        s.activation, str2activation, argv[0], "activation")
-                || parse_scale_policy(s.scale_policy, argv[0])
-                || parse_mb(s.mb, argv[0])
-                || parse_skip_nonlinear(s.skip_nonlinear, argv[0])
-                || parse_trivial_strides(s.trivial_strides, argv[0])
-                || parse_vector_option(
-                        s.with_peephole, str2bool, argv[0], "with-peephole")
-                || parse_vector_option(
-                        s.with_projection, str2bool, argv[0], "with-projection")
-                || parse_attr(s.attr, argv[0])
-                || parse_allow_unimpl(s.allow_unimpl, argv[0])
+                || parse_dir(s.prop, def.prop, argv[0], "prop")
+                || parse_cfg(s.cfg, def.cfg, cstr2str, argv[0])
+                || parse_alg(s.alg, def.alg, str2alg, argv[0])
+                || parse_vector_option(s.direction, def.direction,
+                        str2direction, argv[0], "direction")
+                || parse_vector_option(s.activation, def.activation,
+                        str2activation, argv[0], "activation")
+                || parse_scale_policy(s.scale_policy, def.scale_policy, argv[0])
+                || parse_mb(s.mb, def.mb, argv[0])
+                || parse_skip_nonlinear(
+                        s.skip_nonlinear, def.skip_nonlinear, argv[0])
+                || parse_trivial_strides(
+                        s.trivial_strides, def.trivial_strides, argv[0])
+                || parse_vector_option(s.with_peephole, def.with_peephole,
+                        str2bool, argv[0], "with-peephole")
+                || parse_vector_option(s.with_projection, def.with_projection,
+                        str2bool, argv[0], "with-projection")
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

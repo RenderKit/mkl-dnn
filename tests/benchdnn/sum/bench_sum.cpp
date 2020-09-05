@@ -29,17 +29,13 @@ namespace sum {
 
 void check_correctness(const settings_t &s) {
     for (const auto &i_sdt : s.sdt) {
-        // unlike concat, number of inputs is defined by amount of elements in
-        // sdt, not by dims. As we allow to pass multiple values separated by
-        // comma for sdt, setting default tag has to happen when sdt is known,
-        // thus, inside the loop. E.g.: --sdt=f32:f32,f32:f32:f32 3x4x5x6
-        const std::vector<std::vector<std::string>> def_stag {
-                {i_sdt.size(), "abx"}};
-        auto &upd_stag = s.stag.empty() ? def_stag : s.stag;
-
         for_(const auto &i_ddt : s.ddt)
-        for_(const auto &i_stag : upd_stag)
+        for_(const auto &i_stag_ : s.stag)
         for (const auto &i_dtag : s.dtag) {
+            // broadcast tag if needed
+            auto i_stag = i_stag_;
+            if (i_stag.size() == 1) i_stag.assign(i_sdt.size(), i_stag[0]);
+
             if (i_sdt.size() != i_stag.size()) // expect 1:1 match of dt and tag
                 SAFE_V(FAIL);
 
@@ -59,8 +55,7 @@ void check_correctness(const settings_t &s) {
                 int status = doit(&p, &res);
 
                 bool want_perf_report = false;
-                parse_result(
-                        res, want_perf_report, s.allow_unimpl, status, pstr);
+                parse_result(res, want_perf_report, status, pstr);
 
                 if (want_perf_report && bench_mode & PERF) {
                     perf_report_t pr(s.perf_template);
@@ -77,14 +72,16 @@ int bench(int argc, char **argv) {
     driver_name = "sum";
     using namespace parser;
     static settings_t s;
+    static const settings_t def {};
     for (; argc > 0; --argc, ++argv) {
         const bool parsed_options = parse_bench_settings(argv[0])
-                || parse_batch(bench, argv[0]) || parse_multi_dt(s.sdt, argv[0])
-                || parse_dt(s.ddt, argv[0], "ddt")
-                || parse_multi_tag(s.stag, argv[0])
-                || parse_tag(s.dtag, argv[0], "dtag")
-                || parse_multivector_option(s.scales, atof, argv[0], "scales")
-                || parse_allow_unimpl(s.allow_unimpl, argv[0])
+                || parse_batch(bench, argv[0])
+                || parse_multi_dt(s.sdt, def.sdt, argv[0])
+                || parse_dt(s.ddt, def.ddt, argv[0], "ddt")
+                || parse_multi_tag(s.stag, def.stag, argv[0])
+                || parse_tag(s.dtag, def.dtag, argv[0], "dtag")
+                || parse_multivector_option(
+                        s.scales, def.scales, atof, argv[0], "scales")
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

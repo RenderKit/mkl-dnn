@@ -22,7 +22,6 @@
 #include <CL/cl.h>
 
 #include "common/z_magic.hpp"
-#include "cpu/cpu_isa_traits.hpp"
 #include "gpu/compute/device_info.hpp"
 #include "gpu/ocl/ocl_utils.hpp"
 
@@ -31,37 +30,28 @@ namespace impl {
 namespace gpu {
 namespace ocl {
 
-enum class gpu_arch_t {
-    unknown,
-    gen9,
-};
-
-inline gpu_arch_t str2gpu_arch(const char *str) {
-#define CASE(_case) \
-    if (!strcmp(STRINGIFY(_case), str)) return gpu_arch_t::_case
-
-    CASE(gen9);
-    return gpu_arch_t::unknown;
-#undef CASE
-}
-
-inline const char *gpu_arch2str(gpu_arch_t arch) {
-#define CASE(_case) \
-    case gpu_arch_t::_case: return STRINGIFY(_case)
-
-    switch (arch) {
-        CASE(gen9);
-        CASE(unknown);
+static compute::device_ext_t get_extensions(compute::gpu_arch_t gpu_arch) {
+    uint64_t extensions = 0;
+    switch (gpu_arch) {
+        case compute::gpu_arch_t::gen12lp:
+            extensions |= (uint64_t)
+                    compute::device_ext_t::intel_subgroup_local_block_io;
+        case compute::gpu_arch_t::gen9:
+            extensions |= (uint64_t)compute::device_ext_t::khr_fp16;
+            extensions |= (uint64_t)compute::device_ext_t::intel_subgroups;
+            extensions
+                    |= (uint64_t)compute::device_ext_t::intel_subgroups_short;
+            break;
+        case compute::gpu_arch_t::unknown: break;
     }
-    return "unknown";
-#undef CASE
+    return (compute::device_ext_t)extensions;
 }
 
 class ocl_gpu_device_info_t : public compute::device_info_t {
 public:
     ocl_gpu_device_info_t(cl_device_id device) : device_(device) {}
 
-    virtual status_t init() override {
+    status_t init() override {
         CHECK(init_arch());
         CHECK(init_extensions());
         CHECK(init_attributes());
@@ -100,25 +90,31 @@ public:
         }
         set_runtime_version(runtime_version);
 
+        CHECK(init_arch());
+        CHECK(init_extensions());
+        CHECK(init_attributes());
+
         return status::success;
     }
 
-    virtual bool has(compute::device_ext_t ext) const override {
+    bool has(compute::device_ext_t ext) const override {
         return has(extensions_, ext);
     }
 
-    gpu_arch_t gpu_arch() const { return gpu_arch_; }
+    compute::gpu_arch_t gpu_arch() const override { return gpu_arch_; }
 
-    virtual int eu_count() const override { return eu_count_; }
-    virtual int hw_threads() const override { return hw_threads_; }
-    virtual size_t llc_cache_size() const override { return llc_cache_size_; }
+    int eu_count() const override { return eu_count_; }
+    int hw_threads() const override { return hw_threads_; }
+    size_t llc_cache_size() const override { return llc_cache_size_; }
 
 private:
     status_t init_arch() {
         if (name().find("Gen9") != std::string::npos)
-            gpu_arch_ = gpu_arch_t::gen9;
+            gpu_arch_ = compute::gpu_arch_t::gen9;
+        else if (name().find("Gen12LP") != std::string::npos)
+            gpu_arch_ = compute::gpu_arch_t::gen12lp;
         else
-            gpu_arch_ = gpu_arch_t::unknown;
+            gpu_arch_ = compute::gpu_arch_t::unknown;
 
         return status::success;
     }
@@ -145,6 +141,9 @@ private:
             }
         }
 
+        // Handle future extensions, not yet supported by the OpenCL API
+        extensions_ |= (uint64_t)get_extensions(gpu_arch_);
+
         return status::success;
     }
 
@@ -154,20 +153,17 @@ private:
                 sizeof(cl_uint), &eu_count, nullptr);
         eu_count_ = (err == CL_SUCCESS) ? eu_count : 0;
 
-        // Assume 7 threads by for Gen9
+        // Assume 7 threads by default
         int32_t threads_per_eu = 7;
 
         switch (gpu_arch_) {
-            case gpu_arch_t::gen9: threads_per_eu = 7; break;
+            case compute::gpu_arch_t::gen9: threads_per_eu = 7; break;
+            case compute::gpu_arch_t::gen12lp: threads_per_eu = 7; break;
             default: break;
         }
 
         hw_threads_ = eu_count_ * threads_per_eu;
-
-        // Integrated GPUs share LLC with CPU which is L3 cache on CPU.
-        size_t cache_size
-                = cpu::get_per_core_cache_size(3) * cpu::get_num_cores();
-        llc_cache_size_ = (size_t)cache_size;
+        llc_cache_size_ = get_llc_cache_size();
         return status::success;
     }
 
@@ -175,16 +171,18 @@ private:
         return extensions & (uint64_t)ext;
     }
 
+    size_t get_llc_cache_size() const;
+
     cl_device_id device_ = nullptr;
 
     int32_t eu_count_ = 0;
     int32_t hw_threads_ = 0;
     size_t llc_cache_size_ = 0;
 
-    // extensions_ and gpu_arch_ describe effective extensions and GPU
-    // architecture.
+    // extensions_ and gpu_arch_ describe effective extensions and GPU architecutre.
     uint64_t extensions_ = 0;
-    gpu_arch_t gpu_arch_ = gpu_arch_t::unknown;
+
+    compute::gpu_arch_t gpu_arch_ = compute::gpu_arch_t::unknown;
 };
 
 } // namespace ocl

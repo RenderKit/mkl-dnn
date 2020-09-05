@@ -21,7 +21,7 @@
 
 #include "dnnl.h"
 
-#include "src/common/dnnl_thread.hpp"
+#include "tests/test_thread.hpp"
 
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
@@ -30,7 +30,9 @@
 
 namespace eltwise {
 
-static int init_pd(const prb_t *p, dnnl_primitive_desc_t &epd, res_t *r) {
+static int init_pd(dnnl_engine_t engine, const prb_t *p,
+        dnnl_primitive_desc_t &epd, res_t *r, dir_t dir,
+        const_dnnl_primitive_desc_t hint) {
     dnnl_eltwise_desc_t ed;
     dnnl_memory_desc_t data_d;
 
@@ -59,8 +61,8 @@ static int init_pd(const prb_t *p, dnnl_primitive_desc_t &epd, res_t *r) {
 
     auto dnnl_attr = create_dnnl_attr(attr_t());
 
-    dnnl_status_t init_status = dnnl_primitive_desc_create(
-            &epd, &ed, dnnl_attr, engine_tgt, NULL);
+    dnnl_status_t init_status
+            = dnnl_primitive_desc_create(&epd, &ed, dnnl_attr, engine, NULL);
 
     dnnl_primitive_attr_destroy(dnnl_attr);
 
@@ -69,13 +71,14 @@ static int init_pd(const prb_t *p, dnnl_primitive_desc_t &epd, res_t *r) {
     else
         SAFE(init_status, WARN);
 
-    const char *impl_str = query_impl_info(epd);
-    if (maybe_skip(impl_str)) {
-        BENCHDNN_PRINT(2, "SKIPPED: oneDNN implementation: %s\n", impl_str);
+    r->impl_name = query_impl_info(epd);
+    if (maybe_skip(r->impl_name)) {
+        BENCHDNN_PRINT(2, "SKIPPED: oneDNN implementation: %s\n",
+                r->impl_name.c_str());
         DNN_SAFE(dnnl_primitive_desc_destroy(epd), WARN);
-        return r->state = SKIPPED, OK;
+        return r->state = SKIPPED, r->reason = SKIP_IMPL_HIT, OK;
     } else {
-        BENCHDNN_PRINT(5, "oneDNN implementation: %s\n", impl_str);
+        BENCHDNN_PRINT(5, "oneDNN implementation: %s\n", r->impl_name.c_str());
     }
 
     return OK;
@@ -222,85 +225,35 @@ static int compare(const prb_t *p, const dnn_mem_t &mem_arg_fp,
     return r->state == FAILED ? FAIL : OK;
 }
 
-static int compare_padded_area_for_zeros(
-        const prb_t *p, const dnn_mem_t &mem_dt, res_t *r) {
-    const auto nelems = mem_dt.nelems();
-    const auto nelems_padded = mem_dt.nelems(true);
-    if (nelems == nelems_padded) return OK; // no padding - no worries
-
-    const auto md = mem_dt.md_;
-    const dnnl_dim_t *padded_dims = md.padded_dims;
-
-    // Create memory with dims = md.padded_dims with same format.
-    // This way reorder to plain format keeps padding values.
-    dnnl_memory_desc_t pad_data_d;
-    DNN_SAFE(dnnl_memory_desc_init_by_tag(&pad_data_d, md.ndims, padded_dims,
-                     md.data_type, convert_tag(p->tag, p->ndims)),
-            WARN);
-    dnn_mem_t padded_mem_dt(pad_data_d, engine_tgt);
-    for (int64_t i = 0; i < nelems_padded; i++)
-        padded_mem_dt.set_elem(i, mem_dt.get_elem(i));
-
-    const auto tag = get_abx_tag(md.ndims);
-    dnn_mem_t plain_padded_mem_dt(padded_mem_dt, md.data_type, tag);
-
-    r->errors = 0;
-    r->total = nelems_padded - nelems;
-
-    const auto bd = md.format_desc.blocking;
-    int in_blk = bd.inner_nblks;
-
-    // TODO: temporary don't test layouts w/ double and more blocking
-    if (in_blk > 1) return OK;
-
-    int64_t idx = bd.inner_idxs[in_blk - 1];
-    int64_t outer = 1, inner = 1;
-    for (int64_t i = 0; i < idx; i++)
-        outer *= md.dims[i];
-
-    for (int64_t i = idx + 1; i < md.ndims; i++)
-        inner *= md.dims[i];
-
-    dnnl::impl::parallel_nd(outer, [&](int64_t ou) {
-        int64_t offt = (ou * md.padded_dims[idx] + md.dims[idx]) * inner;
-        for (int64_t ax = 0; ax < md.padded_dims[idx] - md.dims[idx]; ++ax) {
-            for (int64_t in = offt; in < inner + offt; ++in) {
-                auto i = ax * inner + in;
-                auto dt = plain_padded_mem_dt.get_elem(i);
-
-                bool ok = dt == 0;
-                r->errors += !ok;
-
-                const bool dump = false
-                        || (!ok && (r->errors < 10 || verbose >= 10))
-                        || (verbose >= 50 && i < 30) || (verbose >= 99);
-                if (dump) {
-                    BENCHDNN_PRINT(
-                            0, "[%4ld] fp:  0.f dt:% 9.6g \n", (long)i, dt);
-                }
-            }
-        }
-    });
-
-    if (r->errors) r->state = FAILED;
-
-    return r->state == FAILED ? FAIL : OK;
-}
-
-int fill_data_fwd(const prb_t *p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
-        bool is_fwd = true) {
+int fill_data(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
+        dnn_mem_t &mem_fp) {
     const auto nelems = mem_fp.nelems();
     if (nelems == 0) return OK;
 
-    dnnl::impl::parallel(0, [&](int ithr, int nthr) {
-        int64_t chunk_size = (nelems + nthr - 1) / nthr;
-        int64_t idx_start = ithr * chunk_size;
+    /* Do fixed partitioning to have same filling for any number of threads */
+    const int64_t n_chunks = 16;
+    const int64_t chunk_size = div_up(nelems, n_chunks);
+
+    dnnl::impl::parallel_nd(n_chunks, [&](int idx_chunk) {
+        int64_t idx_start = idx_chunk * chunk_size;
         int64_t idx_end = MIN2(idx_start + chunk_size, nelems);
-        std::minstd_rand msr;
+        // Note 1: we use a different seed for each chunk to avoid
+        // repeating patterns. We could use discard(idx_start) too but
+        // we avoid it for two reasons:
+        //   a. it has a complexity in O(idx_start).
+        //   b. igen and fgen below might require more than 1 sample
+        //   per idx, so the we cannot deterministically compute the
+        //   number of states we need to discard
+        // Note 2: We also advance the state to avoid having only
+        // small values as first chunk input.  The +1 is necessary to
+        // avoid generating zeros in first chunk.
+        // Note 3: we multiply by kind + 1 to have different values in
+        // src/dst and diff_dst. The +1 is to avoid 0 again.
+        std::minstd_rand msr((idx_start + 1) * (kind + 1));
+        msr.discard(1);
         std::uniform_int_distribution<> igen(0, 10);
         // TODO: 0.09 due to log impl doesn't give good accuracy in 0.99 points
         std::uniform_real_distribution<> fgen(0.f, 0.09f);
-        msr.discard(idx_start);
 
         for (int64_t idx = idx_start; idx < idx_end; ++idx) {
             float value = FLT_MAX;
@@ -314,10 +267,12 @@ int fill_data_fwd(const prb_t *p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
                 case 6: value = 10.f * fgen(msr); break; // [0.-1.) pos
                 case 7: value = -10.f * fgen(msr); break; // [0.-1.) neg
             }
-            // Hack: adding 0.f works around an issue when value = -0 is used
-            // and may lead to different sign in the answer since input passes
-            // through simple reorder which converts -0 into +0.
-            value = round_to_nearest_representable(p->dt, value) + 0.f;
+            value = round_to_nearest_representable(p->dt, value);
+
+            // Hack: -0 may lead to different sign in the answer since input
+            // passes through simple reorder which converts -0 into +0.
+            if (value == -0.f) value = 0.f;
+
             mem_fp.set_elem(idx, maybe_saturate(p->dt, value));
         }
     });
@@ -327,27 +282,40 @@ int fill_data_fwd(const prb_t *p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp,
     return OK;
 }
 
-int fill_data_bwd(const prb_t *p, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp) {
-    return fill_data_fwd(p, mem_dt, mem_fp, false);
+void check_known_skipped_case(const prb_t *p, res_t *r) {
+    check_known_skipped_case_common({p->dt}, r);
+    if (r->state == SKIPPED) return;
+
+    bool is_invalid = false;
+    switch (p->alg) {
+        case alg_t::CLIP: is_invalid = p->beta < p->alpha; break;
+        case alg_t::BRELU:
+        case alg_t::ELU_DST:
+        case alg_t::RELU_DST: is_invalid = p->alpha < 0; break;
+        case alg_t::ROUND:
+            is_invalid = p->dt != dnnl_f32 || p->dir & FLAG_BWD;
+            break;
+        default: break;
+    };
+    if (is_invalid) r->state = SKIPPED, r->reason = INVALID_CASE;
 }
 
 int doit(const prb_t *p, res_t *r) {
     if (bench_mode == LIST) return r->state = LISTED, OK;
 
-    dnnl_primitive_desc_t epd;
-    SAFE(init_pd(p, epd, r), WARN);
-    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
+    check_known_skipped_case(p, r);
+    if (r->state == SKIPPED) return OK;
 
-    dnnl_primitive_t e;
-    DNN_SAFE(dnnl_primitive_create(&e, epd), WARN);
-    DNN_SAFE(dnnl_primitive_desc_destroy(epd), CRIT);
+    dnnl_primitive_t e {};
+    SAFE(init_prim(&e, init_pd, p, r), WARN);
+    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
 
     const_dnnl_primitive_desc_t const_pd;
     DNN_SAFE(dnnl_primitive_get_primitive_desc(e, &const_pd), CRIT);
 
     if (dnn_mem_t::check_mem_size(const_pd) != OK) {
         DNN_SAFE_V(dnnl_primitive_destroy(e));
-        return r->state = SKIPPED, OK;
+        return r->state = SKIPPED, r->reason = NOT_ENOUGH_RAM, OK;
     }
 
     const auto q = [&](int index = 0) -> const dnnl_memory_desc_t & {
@@ -361,20 +329,22 @@ int doit(const prb_t *p, res_t *r) {
     const auto fp = dnnl_f32;
     const auto tag = get_abx_tag(p->ndims);
 
-    dnn_mem_t src_fp(data_md, fp, tag, engine_tgt);
-    dnn_mem_t src_dt(data_md, engine_tgt);
+    const auto &test_engine = get_test_engine();
+
+    dnn_mem_t src_fp(data_md, fp, tag, test_engine);
+    dnn_mem_t src_dt(data_md, test_engine);
 
     // we need src_fp for proper comparison, => no in-place reference
-    dnn_mem_t dst_fp(data_md, fp, tag, engine_tgt);
+    dnn_mem_t dst_fp(data_md, fp, tag, test_engine);
     dnn_mem_t placeholder_dst_dt;
-    if (!p->inplace) { placeholder_dst_dt = dnn_mem_t(data_md, engine_tgt); }
+    if (!p->inplace) { placeholder_dst_dt = dnn_mem_t(data_md, test_engine); }
     dnn_mem_t &dst_dt = p->inplace ? src_dt : placeholder_dst_dt;
 
-    dnn_mem_t scratchpad_dt(scratchpad_md, engine_tgt);
+    dnn_mem_t scratchpad_dt(scratchpad_md, test_engine);
 
     dnn_mem_t d_dst_dt, placeholder_d_src_dt;
 
-    SAFE(fill_data_fwd(p, src_dt, src_fp), WARN);
+    SAFE(fill_data(p, SRC, src_dt, src_fp), WARN);
 
     args_t args;
 
@@ -383,27 +353,26 @@ int doit(const prb_t *p, res_t *r) {
         args.set(DNNL_ARG_DST, dst_dt);
         args.set(DNNL_ARG_SCRATCHPAD, scratchpad_dt);
 
-        DNN_SAFE(execute_and_wait(e, stream_tgt, args), WARN);
+        SAFE(execute_and_wait(e, args), WARN);
 
         if (bench_mode & CORR) {
             compute_ref_fwd(p, src_fp, dst_fp);
-            dnn_mem_t dst(dst_dt, fp, tag, engine_tgt);
+            dnn_mem_t dst(dst_dt, fp, tag, test_engine);
             SAFE(compare(p, src_fp, dst_fp, dst, r), WARN);
-            SAFE(compare_padded_area_for_zeros(p, dst_dt, r), WARN);
         }
     } else {
         const auto &d_data_md = q(DNNL_ARG_DIFF_DST);
 
-        dnn_mem_t d_dst_fp = dnn_mem_t(d_data_md, fp, tag, engine_tgt);
-        d_dst_dt = dnn_mem_t(d_data_md, engine_tgt);
+        dnn_mem_t d_dst_fp = dnn_mem_t(d_data_md, fp, tag, test_engine);
+        d_dst_dt = dnn_mem_t(d_data_md, test_engine);
 
         dnn_mem_t &d_src_fp = d_dst_fp; // in-place reference
         if (!p->inplace) {
-            placeholder_d_src_dt = dnn_mem_t(d_data_md, engine_tgt);
+            placeholder_d_src_dt = dnn_mem_t(d_data_md, test_engine);
         }
         dnn_mem_t &d_src_dt = p->inplace ? d_dst_dt : placeholder_d_src_dt;
 
-        SAFE(fill_data_bwd(p, d_dst_dt, d_dst_fp), WARN);
+        SAFE(fill_data(p, DST, d_dst_dt, d_dst_fp), WARN);
 
         args.set(DNNL_ARG_DIFF_DST, d_dst_dt);
         args.set(DNNL_ARG_DIFF_SRC, d_src_dt);
@@ -420,14 +389,13 @@ int doit(const prb_t *p, res_t *r) {
         } else {
             args.set(DNNL_ARG_SRC, src_dt);
         }
-        DNN_SAFE(execute_and_wait(e, stream_tgt, args), WARN);
+        SAFE(execute_and_wait(e, args), WARN);
 
         if (bench_mode & CORR) {
             dnn_mem_t &arg_fp = p->use_dst() ? dst_fp : src_fp;
             compute_ref_bwd(p, arg_fp, d_dst_fp, d_src_fp);
-            dnn_mem_t d_src(d_src_dt, fp, tag, engine_tgt);
+            dnn_mem_t d_src(d_src_dt, fp, tag, test_engine);
             SAFE(compare(p, arg_fp, d_src_fp, d_src, r), WARN);
-            SAFE(compare_padded_area_for_zeros(p, d_src_dt, r), WARN);
         }
     }
 

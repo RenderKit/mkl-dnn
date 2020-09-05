@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef MEMORY_HPP
-#define MEMORY_HPP
+#ifndef COMMON_MEMORY_HPP
+#define COMMON_MEMORY_HPP
 
 #include <assert.h>
 #include <memory>
@@ -53,29 +53,16 @@ struct dnnl_memory : public dnnl::impl::c_compatible {
     }
 
     /** sets data handle */
-    dnnl::impl::status_t set_data_handle(void *handle) {
-        using namespace dnnl::impl;
-
-        void *old_handle;
-        CHECK(memory_storage()->get_data_handle(&old_handle));
-
-        if (handle != old_handle) {
-            CHECK(memory_storage()->set_data_handle(handle));
-        }
-        return zero_pad();
-    }
+    dnnl::impl::status_t set_data_handle(void *handle, dnnl_stream *stream);
 
     /** zeros padding */
-    dnnl::impl::status_t zero_pad() const;
+    dnnl::impl::status_t zero_pad(dnnl_stream *stream) const;
 
 protected:
     dnnl::impl::engine_t *engine_;
     const dnnl::impl::memory_desc_t md_;
 
 private:
-    template <dnnl::impl::data_type_t>
-    dnnl::impl::status_t typed_zero_pad() const;
-
     dnnl_memory() = delete;
     DNNL_DISALLOW_COPY_AND_ASSIGN(dnnl_memory);
 

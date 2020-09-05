@@ -62,13 +62,14 @@ std::ostream &operator<<(std::ostream &s, const prb_t &p) {
     s << "--stag=" << p.reorder.tag_in << " ";
     s << "--dtag=" << p.reorder.tag_out << " ";
 
-    if (canonical || p.alg != def.alg) s << "--alg=" << alg2str(p.alg) << " ";
+    if (canonical || p.alg != def.alg[0])
+        s << "--alg=" << alg2str(p.alg) << " ";
     if (canonical || p.oflag != def.oflag[0])
         s << "--oflag=" << flag2str(p.oflag) << " ";
     if (canonical || p.runtime_dim_mask != def.runtime_dim_mask[0])
         s << "--runtime-dim-mask=" << p.runtime_dim_mask << " ";
-    if (canonical || !p.attr.is_def()) s << "--attr=\"" << p.attr << "\" ";
 
+    s << p.attr;
     s << p.reorder.dims;
 
     return s;

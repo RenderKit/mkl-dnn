@@ -19,32 +19,99 @@
 
 #include <assert.h>
 
-#include "c_types_map.hpp"
-#include "math_utils.hpp"
-#include "nstl.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/c_types_map.hpp"
+#include "common/math_utils.hpp"
+#include "common/nstl.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
 
+template <typename data_t, typename acc_t>
+inline typename utils::enable_if<!nstl::is_integral<data_t>::value,
+        typename utils::remove_reference<data_t>::type>::type
+saturate(const acc_t &x) {
+    return (typename utils::remove_reference<data_t>::type)x;
+}
+
+template <typename data_t, typename acc_t>
+inline typename utils::enable_if<nstl::is_integral<data_t>::value,
+        typename utils::remove_reference<data_t>::type>::type
+saturate(const acc_t &x) {
+    acc_t v = x;
+    if (v < (acc_t)nstl::numeric_limits<data_t>::lowest())
+        v = (acc_t)nstl::numeric_limits<data_t>::lowest();
+    if (v > (acc_t)nstl::numeric_limits<data_t>::max())
+        v = (acc_t)nstl::numeric_limits<data_t>::max();
+    return (typename utils::remove_reference<data_t>::type)v;
+}
+
+template <typename data_t>
+float saturate(const float &x) {
+    float v = x;
+    float lbound = (float)nstl::numeric_limits<data_t>::lowest();
+    float ubound = (float)nstl::numeric_limits<data_t>::max();
+    if (v < lbound) v = lbound;
+    if (v > ubound) v = ubound;
+    return v;
+}
+
+template <typename data_t>
+double saturate(const double &x) {
+    double v = x;
+    if (v < (double)nstl::numeric_limits<data_t>::lowest())
+        v = (double)nstl::numeric_limits<data_t>::lowest();
+    if (v > (double)nstl::numeric_limits<data_t>::max())
+        v = (double)nstl::numeric_limits<data_t>::max();
+    return v;
+}
+
+template <>
+inline int8_t saturate<int8_t, uint8_t>(const uint8_t &x) {
+    return x <= 127u ? x : 127;
+}
+
+template <>
+inline uint8_t saturate<uint8_t, int8_t>(const int8_t &x) {
+    return x >= 0 ? x : 0;
+}
+
 template <typename out_t>
-inline out_t round_and_saturate(float f) {
-    return math::saturate<out_t>(math::out_round<int>(f));
+typename utils::enable_if<nstl::is_integral<out_t>::value, out_t>::type
+out_round(float v) {
+    return (out_t)math::mxcsr_cvt(v);
+}
+
+template <typename out_t>
+typename utils::enable_if<nstl::is_integral<out_t>::value, out_t>::type
+out_round(double v) {
+    return (out_t)math::mxcsr_cvt((float)v);
+}
+
+template <typename out_t>
+typename utils::enable_if<!nstl::is_integral<out_t>::value, out_t>::type
+out_round(float v) {
+    return v;
+}
+
+template <typename out_t>
+inline out_t saturate_and_round(float f) {
+    return out_round<out_t>(saturate<out_t>(f));
 }
 
 /* Quantization with alpha == 1 and beta == 0 */
 template <typename in_t, typename out_t, typename enabled = void>
 struct qz_a1b0 {
-    out_t operator()(in_t in) { return round_and_saturate<out_t>((float)in); }
+    out_t operator()(in_t in) { return saturate_and_round<out_t>((float)in); }
 };
 
 template <typename in_t, typename out_t>
 struct qz_a1b0<in_t, out_t,
         typename utils::enable_if<true && nstl::is_integral<in_t>::value
                 && !is_subset<in_t, out_t>::value>::type> {
-    out_t operator()(in_t in) { return math::saturate<out_t>(in); }
+    out_t operator()(in_t in) { return saturate<out_t>(in); }
 };
 
 template <typename in_t, typename out_t>
@@ -57,7 +124,7 @@ struct qz_a1b0<in_t, out_t,
 template <typename in_t, typename out_t>
 struct qz_a1 {
     out_t operator()(in_t in, out_t out, float beta) {
-        return round_and_saturate<out_t>((float)in + beta * out);
+        return saturate_and_round<out_t>((float)in + beta * out);
     }
 };
 
@@ -72,7 +139,7 @@ struct qz_a1<in_t, float> {
 template <typename in_t, typename out_t>
 struct qz_b0 {
     out_t operator()(in_t in, float alpha) {
-        return round_and_saturate<out_t>(alpha * in);
+        return saturate_and_round<out_t>(alpha * in);
     }
 };
 
@@ -85,7 +152,7 @@ struct qz_b0<in_t, float> {
 template <typename in_t, typename out_t>
 struct qz {
     out_t operator()(in_t in, out_t out, float alpha, float beta) {
-        return round_and_saturate<out_t>(alpha * in + (beta ? beta * out : 0));
+        return saturate_and_round<out_t>(alpha * in + (beta ? beta * out : 0));
     }
 };
 

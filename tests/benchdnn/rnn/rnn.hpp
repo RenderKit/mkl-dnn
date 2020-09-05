@@ -206,22 +206,20 @@ struct settings_t {
         this->perf_template = perf_template;
     }
 
-    desc_t desc;
+    desc_t desc {};
 
     std::vector<dir_t> prop {FWD_D};
     std::vector<std::string> cfg {"f32"};
     std::vector<alg_t> alg {VANILLA_RNN};
     std::vector<dnnl_rnn_direction_t> direction {
             dnnl_unidirectional_left2right};
-    std::vector<activation_t> activation {UNDEF};
+    std::vector<activation_t> activation {RELU};
     std::vector<bool> skip_nonlinear {false};
     std::vector<bool> trivial_strides {false};
     std::vector<bool> with_peephole {false};
     std::vector<bool> with_projection {false};
     std::vector<int64_t> mb {0};
-    std::vector<policy_t> scale_policy {policy_t::NONE};
-    attr_t attr = {};
-    bool allow_unimpl = false;
+    std::vector<policy_t> scale_policy {policy_t::COMMON};
     unsigned int flags = 0x0;
     float alpha = 0.9f, beta = 0.0f;
 
@@ -240,10 +238,9 @@ struct settings_t {
 struct prb_t : public desc_t {
     prb_t(const desc_t &desc, const dt_conf_t &cfg, dir_t prop, alg_t alg,
             bool with_peephole, bool with_projection,
-            dnnl_rnn_direction_t direction, const attr_t &attr,
-            policy_t scale_policy, unsigned int flags, activation_t activation,
-            float alpha, float beta, bool skip_nonlinear, bool trivial_strides,
-            int mb = 0)
+            dnnl_rnn_direction_t direction, policy_t scale_policy,
+            unsigned int flags, activation_t activation, float alpha,
+            float beta, bool skip_nonlinear, bool trivial_strides, int mb = 0)
         : desc_t(desc)
         , cfg(cfg)
         , prop(prop2prop_kind(prop))
@@ -255,9 +252,8 @@ struct prb_t : public desc_t {
         , activation(activation)
         , alpha(alpha)
         , beta(beta)
-        , attr(attr)
-        , scale_policy(scale_policy)
         , ops(0.0)
+        , wei_scales_policy(scale_policy)
         , skip_nonlinear(skip_nonlinear)
         , trivial_strides(trivial_strides)
         , linear_cscale(0.0f) {
@@ -266,7 +262,7 @@ struct prb_t : public desc_t {
         count_ops();
         wc = MAX2(MAX2(sic, slc), MAX2(dic, dhc));
 
-        wei_oc_scales = nullptr;
+        wei_scales = nullptr;
         linear_scales = nullptr;
 
         // We always allocate linear scales. Even if they are not
@@ -275,14 +271,40 @@ struct prb_t : public desc_t {
         // Here we use the range of SRC_LAYER to set the scales
         set_tparams(cfg[SRC_LAYER].f_min, cfg[SRC_LAYER].f_max);
 
-        if (scale_policy == policy_t::PER_OC)
-            wei_oc_scales
-                    = (float *)zmalloc(sizeof(float) * dhc * n_gates(), 64);
+        switch (wei_scales_policy) {
+            case policy_t::COMMON:
+                wei_scales_mask = 0x0;
+                wei_nscales = 1;
+                break;
+            case policy_t::PER_OC:
+                wei_scales_mask = 0x18;
+                wei_nscales = dhc * n_gates();
+                break;
+            default: assert(!"unsupported scaling policy");
+        }
+
+        wei_scales = (float *)zmalloc(sizeof(float) * wei_nscales, 64);
         set_qparams(-1., 1.);
     }
     ~prb_t() {
-        if (wei_oc_scales) zfree(wei_oc_scales);
+        if (wei_scales) zfree(wei_scales);
         if (linear_scales) zfree(linear_scales);
+    }
+
+    float get_wei_scale(int idx) const {
+        return wei_scales[MIN2(idx, wei_nscales - 1)];
+    }
+
+    bool maybe_skip() const {
+        bool skip = false;
+        // TODO: remove early exit when int8 weights reorder supports non
+        // trivial strides
+        skip = skip || (is_int8() && !trivial_strides);
+
+        // TODO: remove early exit when other cells will support int8
+        skip = skip || (is_int8() && alg != VANILLA_LSTM);
+
+        return skip;
     }
 
     void count_ops() {
@@ -332,14 +354,14 @@ struct prb_t : public desc_t {
     activation_t activation;
     float alpha;
     float beta;
-    attr_t attr;
-    policy_t scale_policy;
-
     double ops;
 
     float data_scale, data_shift;
-    float wei_scale;
-    float *wei_oc_scales;
+
+    policy_t wei_scales_policy;
+    float *wei_scales;
+    int wei_nscales;
+    int wei_scales_mask;
 
     bool skip_nonlinear;
     bool trivial_strides;
@@ -363,34 +385,30 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_alg(std::ostream &s) const override {
-        s << alg2str(p_->alg);
-    }
+    void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
 
-    virtual void dump_cfg(std::ostream &s) const override {
-        s << p_->cfg.str();
-    }
+    void dump_cfg(std::ostream &s) const override { s << p_->cfg.str(); }
 
-    virtual void dump_desc(std::ostream &s) const override {
+    void dump_desc(std::ostream &s) const override {
         s << static_cast<const desc_t &>(*p_);
     }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
+    void dump_desc_csv(std::ostream &s) const override {
         s << p_->n_layer << "," << p_->n_iter << "," << p_->mb << "," << p_->sic
           << "," << p_->slc << "," << p_->dhc << "," << p_->dic;
     }
 
-    virtual void dump_rnn_activation(std::ostream &s) const override {
+    void dump_rnn_activation(std::ostream &s) const override {
         s << activation2str(p_->activation);
     }
 
-    virtual void dump_rnn_direction(std::ostream &s) const override {
+    void dump_rnn_direction(std::ostream &s) const override {
         s << direction2str(p_->direction);
     }
 
-    virtual double ops() const override { return p_->ops; }
-    virtual const char *name() const override { return p_->name; }
-    virtual const dnnl_prop_kind_t *prop() const override { return &p_->prop; }
+    double ops() const override { return p_->ops; }
+    const char *name() const override { return p_->name; }
+    const dnnl_prop_kind_t *prop() const override { return &p_->prop; }
 
 private:
     const prb_t *p_ = nullptr;
@@ -427,8 +445,6 @@ void compute_ref_bwd(const prb_t &p, dnn_mem_t &src_layer_m,
         dnn_mem_t &diff_src_iter_c_m, dnn_mem_t &diff_weights_layer_m,
         dnn_mem_t &diff_weights_iter_m, dnn_mem_t &diff_weights_peephole_m,
         dnn_mem_t &diff_weights_projection_m, dnn_mem_t &diff_bias_m);
-
-void check_case_validity(const dt_conf_t &cfg, policy_t policy);
 
 int doit(const prb_t &p, res_t *res);
 int bench(int argc, char **argv);

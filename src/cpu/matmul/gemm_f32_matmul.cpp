@@ -14,20 +14,22 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <atomic>
+
 #include <assert.h>
 #include <float.h>
 #include <math.h>
 
-#include "c_types_map.hpp"
-#include "dnnl_thread.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
 
 #include "cpu/cpu_primitive.hpp"
 
-#include "gemm_f32_matmul.hpp"
+#include "cpu/gemm/gemm.hpp"
 
-#include "gemm/gemm.hpp"
+#include "cpu/matmul/gemm_f32_matmul.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -36,7 +38,7 @@ namespace matmul {
 
 using namespace data_type;
 
-status_t gemm_f32_matmul_t::pd_t::init() {
+status_t gemm_f32_matmul_t::pd_t::init(engine_t *engine) {
     auto check_bias = [&]() -> bool {
         return !with_bias()
                 || (weights_md(1)->data_type == f32 && is_bias_1xN());
@@ -87,7 +89,7 @@ status_t gemm_f32_matmul_t::pd_t::check_and_configure_attributes() {
     if (!check_attr_oscale()) return status::unimplemented;
 
     // set state
-    params_.pp_attr_ = *attr();
+    CHECK(params_.pp_attr_.copy_from(*attr()));
     params_.gemm_applies_output_scales_
             = attr()->output_scales_.mask_ == 0 && !with_bias();
     if (params_.gemm_applies_output_scales_)
@@ -102,7 +104,7 @@ status_t gemm_f32_matmul_t::pd_t::check_and_configure_attributes() {
             params_.gemm_beta_ = po.entry_[sum_idx].sum.scale;
             // drop sum from pp_attributes, as it will be applied by gemm
             for (int i = 0; i < po.len_ - 1; ++i)
-                po.entry_[i] = po.entry_[i + 1];
+                CHECK(po.entry_[i].copy_from(po.entry_[i + 1]));
             po.len_ -= 1;
         }
     } else {
@@ -117,16 +119,23 @@ status_t gemm_f32_matmul_t::pd_t::check_and_configure_attributes() {
 }
 
 status_t gemm_f32_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
-    const auto src = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
-    const auto weights = CTX_IN_MEM(const weights_data_t *, DNNL_ARG_WEIGHTS);
-    const auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
+    auto src = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
+    auto weights = CTX_IN_MEM(const weights_data_t *, DNNL_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
     auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
 
     DEFINE_SCALES_BUFFER(scales);
 
     const auto src_d = ctx.memory_mdw(DNNL_ARG_SRC, pd()->src_md());
     const auto weights_d = ctx.memory_mdw(DNNL_ARG_WEIGHTS, pd()->weights_md());
+    const auto bias_d = ctx.memory_mdw(DNNL_ARG_BIAS, pd()->weights_md(1));
     const auto dst_d = ctx.memory_mdw(DNNL_ARG_DST, pd()->dst_md());
+
+    // apply offset0, since offsets are computed directly (not via mdw.off())
+    src += src_d.offset0();
+    weights += weights_d.offset0();
+    if (bias) bias += bias_d.offset0() * bias_d.data_type_size();
+    dst += dst_d.offset0();
 
     const gemm_based::params_t &params = pd()->params();
 
@@ -160,6 +169,8 @@ status_t gemm_f32_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
     const auto weights_batch_stride = weights_d.blocking_desc().strides[0];
     const auto dst_batch_stride = dst_d.blocking_desc().strides[0];
 
+    std::atomic<status_t> st(status::success);
+
     const bool parallel_over_batch = batch > 1;
     if (parallel_over_batch) {
         parallel(0, [&](int ithr, int nthr) {
@@ -171,21 +182,26 @@ status_t gemm_f32_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
                         = weights + b * weights_batch_stride;
                 dst_data_t *curr_dst = dst + b * dst_batch_stride;
 
-                extended_sgemm(transB, transA, &N, &M, &K, &alpha, curr_weights,
-                        &ldb, curr_src, &lda, &beta, curr_dst, &ldc, nullptr,
-                        false);
+                status_t st_thr = extended_sgemm(transB, transA, &N, &M, &K,
+                        &alpha, curr_weights, &ldb, curr_src, &lda, &beta,
+                        curr_dst, &ldc, nullptr, false);
+                if (st_thr != status::success) {
+                    st = st_thr;
+                    return;
+                }
 
                 if (params.has_pp_kernel_) {
                     const float *pp_scales
                             = params.get_post_processing_scales(scales);
                     (*pp_kernel_)(curr_dst, curr_dst, bias, pp_scales, 0, M * N,
-                            (size_t)N);
+                            (size_t)N, nullptr);
                 }
             }
         });
     } else {
-        extended_sgemm(transB, transA, &N, &M, &K, &alpha, weights, &ldb, src,
-                &lda, &beta, dst, &ldc, nullptr, false);
+        st = extended_sgemm(transB, transA, &N, &M, &K, &alpha, weights, &ldb,
+                src, &lda, &beta, dst, &ldc, nullptr, false);
+        if (st != status::success) return st;
 
         if (params.has_pp_kernel_) {
             const bool force_sequential = pp_kernel_->sequential_kernel();
@@ -193,12 +209,13 @@ status_t gemm_f32_matmul_t::execute_ref(const exec_ctx_t &ctx) const {
             parallel(force_sequential ? 1 : 0, [&](int ithr, int nthr) {
                 size_t start {}, end {};
                 balance211((size_t)(M * N), nthr, ithr, start, end);
-                (*pp_kernel_)(dst, dst, bias, pp_scales, start, end, (size_t)N);
+                (*pp_kernel_)(dst, dst, bias, pp_scales, start, end, (size_t)N,
+                        nullptr);
             });
         }
     }
 
-    return status::success;
+    return st;
 }
 
 } // namespace matmul

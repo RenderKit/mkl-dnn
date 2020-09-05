@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "src/common/dnnl_thread.hpp"
+#include "tests/test_thread.hpp"
 
 #include "conv/conv_common.hpp"
 
@@ -31,10 +31,6 @@ void exec_conv(get_args_func get_args, const prb_t *p, dnnl_primitive_t c_ref,
     SAFE_V(dnnl_primitive_desc_query(
             pd_ref, dnnl_query_engine, 0, &engine_ref));
 
-    dnnl_stream_t stream_ref;
-    SAFE_V(create_dnnl_stream(
-            &stream_ref, engine_ref, dnnl_stream_default_flags));
-
     dnn_mem_t src_ref(src_m.md_, engine_ref, (void *)src_m);
     dnn_mem_t wei_ref(wei_m.md_, engine_ref, (void *)wei_m);
     dnn_mem_t bia_ref;
@@ -43,9 +39,7 @@ void exec_conv(get_args_func get_args, const prb_t *p, dnnl_primitive_t c_ref,
     dnn_mem_t dst_ref(dst_m.md_, engine_ref, (void *)dst_m);
 
     args_t args = get_args(p, src_ref, wei_ref, bia_ref, dst_ref);
-    execute_and_wait(c_ref, stream_ref, args);
-
-    SAFE_V(dnnl_stream_destroy(stream_ref));
+    SAFE_V(execute_and_wait(c_ref, args));
 }
 
 args_t get_args_conv_fwd(const prb_t *p, dnn_mem_t &src_ref, dnn_mem_t &wei_ref,
@@ -176,8 +170,8 @@ void compute_ref_direct_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
                     conv_res += ((float *)bia_m)[bia_off];
                 }
 
-                maybe_scale(conv_res, p->scales, g * OCG + oc, p->attr);
-                maybe_post_ops(conv_res, dst, p->attr);
+                maybe_oscale(p->attr, conv_res, p->scales, g * OCG + oc);
+                maybe_post_ops(p->attr, conv_res, dst);
 
                 dst = conv_res;
             });
@@ -291,8 +285,8 @@ void compute_ref_direct_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m,
                     const size_t bia_off = (size_t)g * ICG + ic;
                     conv_res += ((float *)bia_m)[bia_off];
                 }
-                maybe_scale(conv_res, p->scales, g * ICG + ic, p->attr);
-                maybe_post_ops(conv_res, ds, p->attr);
+                maybe_oscale(p->attr, conv_res, p->scales, g * ICG + ic);
+                maybe_post_ops(p->attr, conv_res, ds);
 
                 ds = conv_res;
             });

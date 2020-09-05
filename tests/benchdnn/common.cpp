@@ -150,8 +150,7 @@ benchdnn_timer_t &benchdnn_timer_t::operator=(const benchdnn_timer_t &rhs) {
 }
 
 /* result structure */
-const char *state2str(res_state_t state, bool allow_unimpl) {
-    if (state == UNIMPLEMENTED && !allow_unimpl) return "UNIMPLEMENTED_FAILED";
+const char *state2str(res_state_t state) {
     if (state == UNTESTED) return "UNTESTED_FAILED"; // for easier fail search
 
 #define CASE(x) \
@@ -167,10 +166,22 @@ const char *state2str(res_state_t state, bool allow_unimpl) {
     return "STATE_UNDEF";
 }
 
-void parse_result(res_t &res, bool &want_perf_report, bool allow_unimpl,
-        int status, const char *pstr) {
+const char *skip_reason2str(skip_reason_t skip_reason) {
+#define CASE(x) \
+    if (skip_reason == x) return STRINGIFY(x)
+    CASE(CASE_NOT_SUPPORTED);
+    CASE(DATA_TYPE_NOT_SUPPORTED);
+    CASE(INVALID_CASE);
+    CASE(NOT_ENOUGH_RAM);
+    CASE(SKIP_IMPL_HIT);
+#undef CASE
+    return "SKIP_UNKNOWN";
+}
+
+void parse_result(
+        res_t &res, bool &want_perf_report, int status, const char *pstr) {
     auto &bs = benchdnn_stat;
-    const char *state = state2str(res.state, allow_unimpl);
+    const char *state = state2str(res.state);
 
     switch (res.state) {
         case UNTESTED:
@@ -187,14 +198,15 @@ void parse_result(res_t &res, bool &want_perf_report, bool allow_unimpl,
             break;
         case SKIPPED:
             assert(status == OK);
-            BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
+            BENCHDNN_PRINT(0, "%d:%s (%s) __REPRO: %s\n", bs.tests, state,
+                    skip_reason2str(res.reason), pstr);
             bs.skipped++;
             break;
         case UNIMPLEMENTED:
             assert(status == OK);
             BENCHDNN_PRINT(0, "%d:%s __REPRO: %s\n", bs.tests, state, pstr);
             bs.unimplemented++;
-            bs.failed += !allow_unimpl;
+            bs.failed++;
             break;
         case MISTRUSTED:
             assert(status == OK);
@@ -361,10 +373,9 @@ bool match_regex(const char *str, const char *pattern) {
 }
 #endif /* _WIN32 */
 
-bool maybe_skip(const char *impl_str) {
+bool maybe_skip(const std::string &impl_str) {
     if (skip_impl.empty()) return false;
 
-    const std::string impl(impl_str);
     size_t start_pos = 0, end_pos = 0;
     if (skip_impl[0] == '"' || skip_impl[0] == '\'') start_pos++;
 
@@ -378,7 +389,7 @@ bool maybe_skip(const char *impl_str) {
         std::string sub_skip_impl = skip_impl.substr(start_pos, len);
         // even incomplete match leads to skipping
         if (!sub_skip_impl.empty()
-                && impl.find(sub_skip_impl) != std::string::npos)
+                && impl_str.find(sub_skip_impl) != std::string::npos)
             return true;
         start_pos = end_pos + 1;
     } while (end_pos < skip_impl.size());
@@ -488,11 +499,30 @@ int batch(const char *fname, bench_f bench) {
 
     std::vector<std::string> opts;
     std::string str;
+    bool continued_line = false;
     while (ifs >> str) {
-        if (str.length() > 0 && str[0] == '#') {
-            std::getline(ifs, str); /* stop reading till eol */
+        if (str.length() == 0) continue;
+
+        // shell style comments
+        if (str.front() == '#') {
+            std::getline(ifs, str); // take whole commented line out
             continue;
         }
+
+        // shell style line break
+        if (continued_line) {
+            str = opts.back() + str; // update current line with previous
+            opts.pop_back(); // take previous line out
+        }
+
+        if (str.back() == '\\') {
+            continued_line = true;
+            if (str.length() == 1) continue; // line break lives separately
+            str.erase(str.size() - 1); // otherwise remove it
+        } else {
+            continued_line = false;
+        }
+
         opts.push_back(std::move(str));
     }
 
@@ -527,7 +557,7 @@ int64_t next_pow2(int64_t a) {
 #include <immintrin.h>
 #include <xmmintrin.h>
 
-int mxcsr_round(float f) {
+int mxcsr_cvt(float f) {
     return _mm_cvtss_si32(_mm_load_ss(&f));
 }
 void init_fp_mode() {
@@ -535,7 +565,7 @@ void init_fp_mode() {
     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
 }
 #else
-int mxcsr_round(float f) {
+int mxcsr_cvt(float f) {
     return (int)nearbyintf(f);
 }
 void init_fp_mode() {}

@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #ifndef _WIN32
 #include <sys/time.h>
+#else
+#include <windows.h>
 #endif
 
 #include "dnnl.h"
@@ -24,7 +26,6 @@
 #include "dnnl_version.h"
 
 #include "c_types_map.hpp"
-#include "cpu/cpu_isa_traits.hpp"
 #include "verbose.hpp"
 
 #include "batch_normalization_pd.hpp"
@@ -46,25 +47,11 @@
 #include "softmax_pd.hpp"
 #include "sum_pd.hpp"
 
+#include "cpu/platform.hpp"
+
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include "gpu/ocl/verbose.hpp"
 #endif
-
-/* oneDNN CPU ISA info */
-#define ISA_ANY "Intel 64"
-#define SSE41 "Intel SSE4.1"
-#define AVX "Intel AVX"
-#define AVX2 "Intel AVX2"
-#define AVX512_COMMON "Intel AVX-512"
-#define AVX512_CORE \
-    "Intel AVX-512 with AVX512BW, AVX512VL, and AVX512DQ extensions"
-#define AVX512_CORE_VNNI "Intel AVX-512 with Intel DL Boost"
-#define AVX512_MIC \
-    "Intel AVX-512 with AVX512CD, AVX512ER, and AVX512PF extensions"
-#define AVX512_MIC_4OPS \
-    "Intel AVX-512 with AVX512_4FMAPS and AVX512_4VNNIW extensions"
-#define AVX512_CORE_BF16 \
-    "Intel AVX-512 with Intel DL Boost and bfloat16 support"
 
 namespace dnnl {
 namespace impl {
@@ -87,7 +74,7 @@ int get_verbose() {
                 dnnl_version()->patch, dnnl_version()->hash);
         printf("dnnl_verbose,info,cpu,runtime:%s\n",
                 dnnl_runtime2str(dnnl_version()->cpu_runtime));
-        printf("dnnl_verbose,info,cpu,isa:%s\n", get_isa_info());
+        printf("dnnl_verbose,info,cpu,isa:%s\n", cpu::platform::get_isa_info());
         printf("dnnl_verbose,info,gpu,runtime:%s\n",
                 dnnl_runtime2str(dnnl_version()->gpu_runtime));
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
@@ -113,22 +100,9 @@ double get_msec() {
 #endif
 }
 
-const char *get_isa_info() {
-    using namespace dnnl::impl::cpu;
-    if (mayiuse(avx512_core_bf16)) return AVX512_CORE_BF16;
-    if (mayiuse(avx512_mic_4ops)) return AVX512_MIC_4OPS;
-    if (mayiuse(avx512_mic)) return AVX512_MIC;
-    if (mayiuse(avx512_core_vnni)) return AVX512_CORE_VNNI;
-    if (mayiuse(avx512_core)) return AVX512_CORE;
-    if (mayiuse(avx512_common)) return AVX512_COMMON;
-    if (mayiuse(avx2)) return AVX2;
-    if (mayiuse(avx)) return AVX;
-    if (mayiuse(sse41)) return SSE41;
-    return ISA_ANY;
-}
-
 #if defined(DISABLE_VERBOSE)
-void pd_info_t::init(const primitive_desc_t *) {}
+void pd_info_t::init(
+        dnnl::impl::engine_t *, const dnnl::impl::primitive_desc_t *) {}
 
 #else
 
@@ -314,14 +288,14 @@ void flags2str(char *str, int len, int written, unsigned flags) {
     DPRINT(str, len, written, "flags:%s", s.c_str());
 }
 
-void verbose_templ(char *buffer, dnnl_engine_t engine,
+void verbose_templ(char *buffer, const engine_t *engine,
         dnnl_primitive_kind_t prim_kind, const char *impl_str,
         dnnl_prop_kind_t prop_kind, const char *data_str, const char *attr_str,
         const char *aux_str, const char *prb_str) {
     MAYBE_UNUSED(verbose_templ);
     int written = 0;
     dnnl_engine_kind_t engine_kind;
-    dnnl_engine_get_kind(engine, &engine_kind);
+    engine_kind = engine->kind();
     DPRINT(buffer, DNNL_VERBOSE_BUF_LEN, written, "%s,%s,%s,%s,%s,%s,%s,%s",
             dnnl_engine_kind2str(engine_kind), dnnl_prim_kind2str(prim_kind),
             impl_str, dnnl_prop_kind2str(prop_kind), data_str, attr_str,
@@ -329,7 +303,7 @@ void verbose_templ(char *buffer, dnnl_engine_t engine,
 }
 
 template <typename pd_t>
-static void init_info_batch_normalization(pd_t *s, char *buffer) {
+static void init_info_batch_normalization(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // data
@@ -352,12 +326,12 @@ static void init_info_batch_normalization(pd_t *s, char *buffer) {
     format_prb_desc_str(
             prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, s->src_md());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_concat(pd_t *s, char *buffer) {
+static void init_info_concat(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -386,12 +360,12 @@ static void init_info_concat(pd_t *s, char *buffer) {
     DPRINT(aux_str, DNNL_VERBOSE_AUX_LEN, aux_written, "axis:" DFMT,
             s->desc()->concat_dimension);
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
-            dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_convolution(pd_t *s, char *buffer) {
+static void init_info_convolution(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -468,17 +442,17 @@ static void init_info_convolution(pd_t *s, char *buffer) {
                     s->KSW(), s->KDW(), s->padL());
     }
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_deconvolution(pd_t *s, char *buffer) {
-    init_info_convolution(s, buffer);
+static void init_info_deconvolution(engine_t *e, pd_t *s, char *buffer) {
+    init_info_convolution(e, s, buffer);
 }
 
 template <typename pd_t>
-static void init_info_shuffle(pd_t *s, char *buffer) {
+static void init_info_shuffle(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     auto md = s->is_fwd() ? s->src_md() : s->diff_dst_md();
@@ -495,12 +469,12 @@ static void init_info_shuffle(pd_t *s, char *buffer) {
 
     dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, md);
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_eltwise(pd_t *s, char *buffer) {
+static void init_info_eltwise(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // data
@@ -524,28 +498,34 @@ static void init_info_eltwise(pd_t *s, char *buffer) {
 
     dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->src_md());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
-}
-
-template <typename pd_t>
-static void init_info_gemm(pd_t *s, char *buffer) {
-    DECL_DAT_AUX_PRB_STRS();
-
-    attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
-
-    DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, dat_written,
-            "m" DFMT "n" DFMT "k" DFMT "a_dt:%s b_dt:%s c_dt:%s acc_dt:%s",
-            s->desc()->m, s->desc()->n, s->desc()->k,
-            dnnl_dt2str(s->desc()->a_type), dnnl_dt2str(s->desc()->b_type),
-            dnnl_dt2str(s->desc()->c_type), dnnl_dt2str(s->desc()->acc_type));
-
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
             dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_inner_product(pd_t *s, char *buffer) {
+static void init_info_gemm(const engine_t *e, pd_t *s, char *buffer) {
+    DECL_DAT_AUX_PRB_STRS();
+
+    attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
+
+    const char *s_transa
+            = (s->desc()->transa == transpose::notrans ? "N" : "T");
+    const char *s_transb
+            = (s->desc()->transb == transpose::notrans ? "N" : "T");
+    DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, dat_written,
+            "m" DFMT "n" DFMT "k" DFMT "_lda" DFMT "ldb" DFMT "ldc" DFMT
+            " trans:%s%s a_dt:%s b_dt:%s c_dt:%s acc_dt:%s",
+            s->desc()->m, s->desc()->n, s->desc()->k, s->desc()->lda,
+            s->desc()->ldb, s->desc()->ldc, s_transa, s_transb,
+            dnnl_dt2str(s->desc()->a_type), dnnl_dt2str(s->desc()->b_type),
+            dnnl_dt2str(s->desc()->c_type), dnnl_dt2str(s->desc()->acc_type));
+
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
+}
+
+template <typename pd_t>
+static void init_info_inner_product(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -596,12 +576,12 @@ static void init_info_inner_product(pd_t *s, char *buffer) {
                 "mb" DFMT "ic" DFMT "oc" DFMT, s->MB(), s->IC(), s->OC());
     }
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_layer_normalization(pd_t *s, char *buffer) {
+static void init_info_layer_normalization(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // data
@@ -631,12 +611,12 @@ static void init_info_layer_normalization(pd_t *s, char *buffer) {
 
     dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->dst_md());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_lrn(pd_t *s, char *buffer) {
+static void init_info_lrn(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // data
@@ -662,12 +642,12 @@ static void init_info_lrn(pd_t *s, char *buffer) {
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, "ls" DFMT "beta%g",
             s->desc()->local_size, s->desc()->lrn_beta);
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_mem(pd_t *s, char *buffer) {
+static void init_info_mem(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -688,22 +668,22 @@ static void init_info_mem(pd_t *s, char *buffer) {
 
     dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->dst_md());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
-            dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_reorder(pd_t *s, char *buffer) {
-    init_info_mem(s, buffer);
+static void init_info_reorder(engine_t *e, pd_t *s, char *buffer) {
+    init_info_mem(e, s, buffer);
 }
 
 template <typename pd_t>
-static void init_info_sum(pd_t *s, char *buffer) {
-    init_info_mem(s, buffer);
+static void init_info_sum(engine_t *e, pd_t *s, char *buffer) {
+    init_info_mem(e, s, buffer);
 }
 
 template <typename pd_t>
-static void init_info_pooling(pd_t *s, char *buffer) {
+static void init_info_pooling(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -752,12 +732,12 @@ static void init_info_pooling(pd_t *s, char *buffer) {
                 s->IW(), s->OW(), s->KW(), s->KSW(), s->padL());
     }
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_softmax(pd_t *s, char *buffer) {
+static void init_info_softmax(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // data
@@ -781,17 +761,17 @@ static void init_info_softmax(pd_t *s, char *buffer) {
 
     dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->dst_md());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_logsoftmax(pd_t *s, char *buffer) {
-    init_info_softmax(s, buffer);
+static void init_info_logsoftmax(engine_t *e, pd_t *s, char *buffer) {
+    init_info_softmax(e, s, buffer);
 }
 
 template <typename pd_t>
-static void init_info_rnn(pd_t *s, char *buffer) {
+static void init_info_rnn(engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src layer
@@ -811,7 +791,7 @@ static void init_info_rnn(pd_t *s, char *buffer) {
     }
     { // wei_iter
         auto md = s->is_fwd() ? s->weights_md(1) : s->diff_weights_md(1);
-        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_layer_");
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_iter_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
     if (s->is_lstm_peephole()) { // wei_peephole
@@ -849,12 +829,12 @@ static void init_info_rnn(pd_t *s, char *buffer) {
             "dlc" DFMT,
             s->L(), s->T(), s->MB(), s->SIC(), s->SLC(), s->DHC(), s->DLC());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_binary(pd_t *s, char *buffer) {
+static void init_info_binary(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src0
@@ -886,12 +866,12 @@ static void init_info_binary(pd_t *s, char *buffer) {
     DPRINT(aux_str, DNNL_VERBOSE_AUX_LEN, aux_written, "alg:%s",
             dnnl_alg_kind2str(s->desc()->alg_kind));
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
-            dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_matmul(pd_t *s, char *buffer) {
+static void init_info_matmul(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -925,12 +905,12 @@ static void init_info_matmul(pd_t *s, char *buffer) {
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
             "m" DFMT "n" DFMT "k" DFMT, s->M(), s->N(), s->K());
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(), prop_kind::undef,
-            dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
 }
 
 template <typename pd_t>
-static void init_info_resampling(pd_t *s, char *buffer) {
+static void init_info_resampling(const engine_t *e, pd_t *s, char *buffer) {
     DECL_DAT_AUX_PRB_STRS();
 
     { // src
@@ -953,14 +933,14 @@ static void init_info_resampling(pd_t *s, char *buffer) {
     DPRINT(aux_str, DNNL_VERBOSE_AUX_LEN, aux_written, "alg:%s",
             dnnl_alg_kind2str(s->desc()->alg_kind));
 
-    verbose_templ(buffer, s->engine(), s->kind(), s->name(),
-            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+    verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
+            dat_str, attr_str, aux_str, prb_str);
 }
 
 #undef DPRINT
 } // namespace
 
-void pd_info_t::init(const primitive_desc_t *pd) {
+void pd_info_t::init(engine_t *engine, const primitive_desc_t *pd) {
     if (is_initialized_) return;
 
     std::call_once(initialization_flag_, [&] {
@@ -969,7 +949,7 @@ void pd_info_t::init(const primitive_desc_t *pd) {
         using logsoftmax_pd_t = softmax_pd_t;
 #define CASE(kind) \
     case primitive_kind::kind: \
-        init_info_##kind((const kind##_pd_t *)pd, &str_[0]); \
+        init_info_##kind(engine, (const kind##_pd_t *)pd, &str_[0]); \
         break
 
         switch (pd->kind()) {

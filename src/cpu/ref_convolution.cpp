@@ -14,21 +14,21 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "c_types_map.hpp"
-#include "dnnl_thread.hpp"
-#include "dnnl_traits.hpp"
-#include "math_utils.hpp"
-#include "simple_q10n.hpp"
-#include "type_helpers.hpp"
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/dnnl_traits.hpp"
+#include "common/math_utils.hpp"
+#include "common/type_helpers.hpp"
 
-#include "ref_convolution.hpp"
+#include "cpu/simple_q10n.hpp"
+
+#include "cpu/ref_convolution.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
 
 using math::get_bias;
-using math::saturate;
 
 template <data_type_t src_type, data_type_t wei_type, data_type_t dst_type,
         data_type_t acc_type>
@@ -414,24 +414,28 @@ void ref_convolution_bwd_data_t<diff_src_type, wei_type, diff_dst_type,
         } else {
             for_(dim_t oc = 0; oc < OC; ++oc)
             for_(dim_t kd = 0; kd < KD; ++kd)
-            for_(dim_t kh = 0; kh < KH; ++kh)
-            for (dim_t kw = 0; kw < KW; ++kw) {
-                dim_t ow = iw - kw * KDW + padL;
-                dim_t oh = ih - kh * KDH + padT;
+            for (dim_t kh = 0; kh < KH; ++kh) {
+                // Note: placing these 2 params outside the `kw-loop` because
+                // of a compiler-generated bug.
                 dim_t od = id - kd * KDD + padFront;
-                if (ow < 0 || oh < 0 || od < 0 || ow % KSW != 0 || oh % KSH != 0
-                        || od % KSD != 0)
-                    continue;
-                ow /= KSW;
-                oh /= KSH;
-                od /= KSD;
-                if (od >= OD || oh >= OH || ow >= OW) continue;
-                const dim_t diff_dst_off = oc + od * diff_dst_od_stride
-                        + oh * diff_dst_oh_stride + ow * diff_dst_ow_stride;
                 const dim_t weights_off = oc * weights_oc_stride
-                        + kd * weights_kd_stride + kh * weights_kh_stride + kw;
-                d += (acc_data_t)diff_dst_loc[diff_dst_off]
-                        * weights_loc[weights_off];
+                        + kd * weights_kd_stride + kh * weights_kh_stride;
+                for (dim_t kw = 0; kw < KW; ++kw) {
+                    dim_t ow = iw - kw * KDW + padL;
+                    dim_t oh = ih - kh * KDH + padT;
+                    if (ow < 0 || oh < 0 || od < 0 || ow % KSW != 0
+                            || oh % KSH != 0 || od % KSD != 0)
+                        continue;
+                    ow /= KSW;
+                    oh /= KSH;
+                    od /= KSD;
+                    if (od >= OD || oh >= OH || ow >= OW) continue;
+                    const dim_t diff_dst_off = oc + od * diff_dst_od_stride
+                            + oh * diff_dst_oh_stride + ow * diff_dst_ow_stride;
+                    const dim_t weights_off_ = weights_off + kw;
+                    d += (acc_data_t)diff_dst_loc[diff_dst_off]
+                            * weights_loc[weights_off_];
+                }
             }
         }
         return d;
@@ -454,7 +458,7 @@ void ref_convolution_bwd_data_t<diff_src_type, wei_type, diff_dst_type,
                     a += ker(g, mb, ic, id, ih, iw);
                 maybe_oscale(a, g, ic);
                 if (is_int_conv)
-                    diff_src[ds_idx] = round_and_saturate<diff_src_data_t>(a);
+                    diff_src[ds_idx] = saturate_and_round<diff_src_data_t>(a);
                 else
                     diff_src[ds_idx] = saturate<diff_src_data_t>(a);
             });
@@ -617,7 +621,7 @@ void ref_convolution_bwd_weights_t<src_type, diff_wei_type, diff_dst_type,
             ker_bias(db, g, oc);
             if (is_int_conv)
                 diff_bias[diff_bias_d.off(g * OC + oc)]
-                        = round_and_saturate<diff_wei_data_t>(db);
+                        = saturate_and_round<diff_wei_data_t>(db);
             else
                 diff_bias[diff_bias_d.off(g * OC + oc)]
                         = saturate<diff_wei_data_t>(db);
@@ -646,7 +650,7 @@ void ref_convolution_bwd_weights_t<src_type, diff_wei_type, diff_dst_type,
             else
                 assert(false);
             if (is_int_conv)
-                diff_weights[idx] = round_and_saturate<diff_wei_data_t>(dw);
+                diff_weights[idx] = saturate_and_round<diff_wei_data_t>(dw);
             else
                 diff_weights[idx] = saturate<diff_wei_data_t>(dw);
         }
@@ -656,6 +660,8 @@ void ref_convolution_bwd_weights_t<src_type, diff_wei_type, diff_dst_type,
 using namespace data_type;
 
 template struct ref_convolution_fwd_t<f32>;
+template struct ref_convolution_fwd_t<bf16, bf16, bf16, f32>;
+template struct ref_convolution_fwd_t<bf16, bf16, f32, f32>;
 
 template struct ref_convolution_fwd_t<u8, s8, f32, s32>;
 template struct ref_convolution_fwd_t<u8, s8, s32, s32>;
@@ -667,6 +673,8 @@ template struct ref_convolution_fwd_t<s8, s8, s8, s32>;
 template struct ref_convolution_fwd_t<s8, s8, u8, s32>;
 
 template struct ref_convolution_bwd_data_t<f32, f32, f32, f32>;
+template struct ref_convolution_bwd_data_t<f32, bf16, bf16, f32>;
+template struct ref_convolution_bwd_data_t<bf16, bf16, bf16, f32>;
 
 template struct ref_convolution_bwd_data_t<f32, s8, u8, s32>;
 template struct ref_convolution_bwd_data_t<s32, s8, u8, s32>;
@@ -678,6 +686,8 @@ template struct ref_convolution_bwd_data_t<s8, s8, s8, s32>;
 template struct ref_convolution_bwd_data_t<u8, s8, s8, s32>;
 
 template struct ref_convolution_bwd_weights_t<f32, f32, f32, f32>;
+template struct ref_convolution_bwd_weights_t<bf16, bf16, bf16, f32>;
+template struct ref_convolution_bwd_weights_t<bf16, f32, bf16, f32>;
 
 } // namespace cpu
 } // namespace impl

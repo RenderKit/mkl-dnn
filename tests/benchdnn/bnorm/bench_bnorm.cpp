@@ -33,10 +33,13 @@ void check_correctness(const settings_t &s) {
     for_(const auto &i_dt : s.dt)
     for_(const auto &i_tag : s.tag)
     for_(const auto &i_flags : s.flags)
-    for_(auto i_inplace : s.inplace)
-    for (const auto &i_mb : s.mb) {
+    for_(const auto &i_mb : s.mb)
+    for_(const auto &i_post_ops : s.post_ops)
+    for (auto i_inplace : s.inplace) {
+        attr_t attr(i_post_ops);
+        handle_legacy_attr(attr, s.attr);
         const prb_t p(s.desc, i_mb, i_dir, i_dt, i_tag, i_flags, i_inplace,
-                s.attr, s.check_alg);
+                attr, s.check_alg, s.debug_check_ws);
         std::stringstream ss;
         ss << p;
         const std::string cpp_pstr = ss.str();
@@ -49,7 +52,7 @@ void check_correctness(const settings_t &s) {
         const int status = doit(&p, &res);
 
         bool want_perf_report = false;
-        parse_result(res, want_perf_report, s.allow_unimpl, status, pstr);
+        parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
@@ -64,17 +67,24 @@ int bench(int argc, char **argv) {
     driver_name = "bnorm";
     using namespace parser;
     static settings_t s;
+    static const settings_t def {};
     for (; argc > 0; --argc, ++argv) {
         const bool parsed_options = parse_bench_settings(argv[0])
-                || parse_batch(bench, argv[0]) || parse_dir(s.dir, argv[0])
-                || parse_dt(s.dt, argv[0]) || parse_tag(s.tag, argv[0])
-                || parse_vector_option(s.flags, str2flags, argv[0], "flags")
-                || parse_single_value_option(
-                        s.check_alg, str2check_alg, argv[0], "check-alg")
-                || parse_inplace(s.inplace, argv[0]) || parse_mb(s.mb, argv[0])
+                || parse_batch(bench, argv[0])
+                || parse_dir(s.dir, def.dir, argv[0])
+                || parse_dt(s.dt, def.dt, argv[0])
+                || parse_tag(s.tag, def.tag, argv[0])
+                || parse_vector_option(
+                        s.flags, def.flags, str2flags, argv[0], "flags")
+                || parse_single_value_option(s.check_alg, def.check_alg,
+                        str2check_alg, argv[0], "check-alg")
+                || parse_inplace(s.inplace, def.inplace, argv[0])
+                || parse_mb(s.mb, def.mb, argv[0])
+                || parse_single_value_option(s.debug_check_ws,
+                        def.debug_check_ws, str2bool, argv[0], "debug-check-ws")
                 || parse_attr(s.attr, argv[0])
+                || parse_attr_post_ops(s.post_ops, argv[0])
                 || parse_test_pattern_match(s.pattern, argv[0])
-                || parse_allow_unimpl(s.allow_unimpl, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

@@ -14,9 +14,10 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef PRIMITIVE_CACHE_HPP
-#define PRIMITIVE_CACHE_HPP
+#ifndef COMMON_PRIMITIVE_CACHE_HPP
+#define COMMON_PRIMITIVE_CACHE_HPP
 
+#include <future>
 #include <list>
 #include <memory>
 #include <unordered_map>
@@ -24,57 +25,85 @@
 #include "c_types_map.hpp"
 #include "dnnl.h"
 #include "primitive_hashing.hpp"
-#include "primitive_impl.hpp"
+#include "rw_mutex.hpp"
 #include "type_helpers.hpp"
 
 namespace dnnl {
 namespace impl {
 
+struct primitive_t;
 struct primitive_cache_t : public c_compatible {
-    using key_type = primitive_hashing::key_t;
-    using value_type = std::shared_ptr<primitive_impl_t>;
-
-    virtual void add(const key_type &key, const value_type &impl) = 0;
-    virtual value_type get(const key_type &key) = 0;
+    struct cache_value_t {
+        std::shared_ptr<primitive_t> primitive;
+        status_t status;
+    };
+    using key_t = primitive_hashing::key_t;
+    using value_t = std::shared_future<cache_value_t>;
 
     virtual ~primitive_cache_t() = default;
+
+    virtual status_t set_capacity(int capacity) = 0;
+    virtual int get_capacity() const = 0;
+
+    virtual value_t get_or_add(
+            const key_t &key, const value_t &value, bool need_lock)
+            = 0;
+    virtual void remove_if_invalidated(const key_t &key, bool need_lock) = 0;
+
+    virtual int get_size() const = 0;
+
+protected:
+    static utils::rw_mutex_t &rw_mutex() {
+        static utils::rw_mutex_t mutex;
+        return mutex;
+    }
+
+    void lock_read(bool need_lock) {
+        if (need_lock) rw_mutex().lock_read();
+    }
+
+    void lock_write(bool need_lock) {
+        if (need_lock) rw_mutex().lock_write();
+    }
+
+    void unlock_read(bool need_lock) {
+        if (need_lock) rw_mutex().unlock_read();
+    }
+
+    void unlock_write(bool need_lock) {
+        if (need_lock) rw_mutex().unlock_write();
+    }
 };
 
 // The cache uses LRU replacement policy
 struct lru_primitive_cache_t : public primitive_cache_t {
-    lru_primitive_cache_t(size_t capacity) : capacity_(capacity) {}
+    lru_primitive_cache_t(int capacity) : capacity_(capacity) {}
 
-    virtual void add(const key_type &key, const value_type &impl) override {
-        // cache is disabled
-        if (capacity_ == 0) return;
+    ~lru_primitive_cache_t() override = default;
 
-        if (cache_list_.size() >= capacity_) {
-            // invalidate the least recently used entry
-            cache_mapper_.erase(cache_list_.back().first);
-            cache_list_.pop_back();
-        }
-        // place a new entry to cache_list_ and update cache_mapper_
-        cache_list_.emplace_front(key, impl);
-        cache_mapper_.insert(std::make_pair(key, cache_list_.begin()));
-    }
+    status_t set_capacity(int capacity) override;
+    int get_capacity() const override;
 
-    virtual value_type get(const key_type &key) override {
-        // cache is disabled
-        if (capacity_ == 0) return nullptr;
+    value_t get_or_add(
+            const key_t &key, const value_t &value, bool need_lock) override;
+    void remove_if_invalidated(const key_t &key, bool need_lock) override;
 
-        auto it = cache_mapper_.find(key);
-        if (it == cache_mapper_.end()) { return nullptr; }
-        // move 1 cache_list_ node to the front of the cache_list_
-        cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-        return cache_list_.front().second;
-    }
+    int get_size() const override;
 
 private:
+    void evict(size_t n);
+    void add(const key_t &key, const value_t &value);
+    value_t get(const key_t &key);
+
     size_t capacity_;
-    using cache_list_type = std::list<std::pair<key_type, value_type>>;
-    cache_list_type cache_list_;
-    std::unordered_map<key_type, cache_list_type::iterator> cache_mapper_;
+    using cache_list_t = std::list<std::pair<key_t, value_t>>;
+    cache_list_t cache_list_;
+    std::unordered_map<key_t, cache_list_t::iterator> cache_mapper_;
 };
+
+primitive_cache_t &primitive_cache();
+
+status_t DNNL_API get_primitive_cache_size(int *size);
 
 } // namespace impl
 } // namespace dnnl

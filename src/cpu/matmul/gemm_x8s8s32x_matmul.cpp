@@ -14,21 +14,23 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <atomic>
+
 #include <assert.h>
 #include <float.h>
 #include <math.h>
 
-#include "c_types_map.hpp"
-#include "dnnl_thread.hpp"
-#include "memory_tracking.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/memory_tracking.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
 
 #include "cpu/cpu_primitive.hpp"
 
-#include "gemm_x8s8s32x_matmul.hpp"
+#include "cpu/gemm/gemm.hpp"
 
-#include "gemm/gemm.hpp"
+#include "cpu/matmul/gemm_x8s8s32x_matmul.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -50,8 +52,8 @@ bool need_post_processing(const pd_t *pd, float runtime_dst_zero_point = 0.f) {
 } // namespace
 
 template <data_type_t src_type, data_type_t weights_type, data_type_t dst_type>
-status_t
-gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::pd_t::init() {
+status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::pd_t::init(
+        engine_t *engine) {
     using namespace utils;
 
     auto check_bias = [&]() -> bool {
@@ -91,7 +93,7 @@ gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::pd_t::init() {
     // set states
 
     // copy attributes and drop src and weights zero points
-    params_.pp_attr_ = *attr();
+    CHECK(params_.pp_attr_.copy_from(*attr()));
     params_.pp_attr_.zero_points_.set(DNNL_ARG_SRC, 0);
     params_.pp_attr_.zero_points_.set(DNNL_ARG_WEIGHTS, 0);
 
@@ -146,17 +148,27 @@ template <data_type_t src_type, data_type_t weights_type, data_type_t dst_type>
 status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
         const exec_ctx_t &ctx) const {
     using math::get_bias;
-    using math::saturate;
 
-    const auto src = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
-    const auto weights = CTX_IN_MEM(const weights_data_t *, DNNL_ARG_WEIGHTS);
-    const auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
+    auto src = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
+    auto weights = CTX_IN_MEM(const weights_data_t *, DNNL_ARG_WEIGHTS);
+    auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
     auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
 
     DEFINE_SCALES_BUFFER(scales);
     DEFINE_ZERO_POINT_VALUE(src_zero_point, DNNL_ARG_SRC);
     DEFINE_ZERO_POINT_VALUE(weights_zero_point, DNNL_ARG_WEIGHTS);
     DEFINE_ZERO_POINT_VALUE(dst_zero_point, DNNL_ARG_DST);
+
+    const auto src_d = ctx.memory_mdw(DNNL_ARG_SRC, pd()->src_md());
+    const auto weights_d = ctx.memory_mdw(DNNL_ARG_WEIGHTS, pd()->weights_md());
+    const auto bias_d = ctx.memory_mdw(DNNL_ARG_BIAS, pd()->weights_md(1));
+    const auto dst_d = ctx.memory_mdw(DNNL_ARG_DST, pd()->dst_md());
+
+    // apply offset0, since offsets are computed directly (not via mdw.off())
+    src += src_d.offset0();
+    weights += weights_d.offset0();
+    if (bias) bias += bias_d.offset0() * bias_d.data_type_size();
+    dst += dst_d.offset0();
 
     src_data_t gemm_off_a = (src_data_t)src_zero_point;
     weights_data_t gemm_off_b = (weights_data_t)weights_zero_point;
@@ -166,10 +178,6 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
         gemm_off_a = gemm_off_b = 0;
     }
     const float dst_zero_point_f32 = (float)dst_zero_point;
-
-    const auto src_d = ctx.memory_mdw(DNNL_ARG_SRC, pd()->src_md());
-    const auto weights_d = ctx.memory_mdw(DNNL_ARG_WEIGHTS, pd()->weights_md());
-    const auto dst_d = ctx.memory_mdw(DNNL_ARG_DST, pd()->dst_md());
 
     const gemm_based::params_t &params = pd()->params();
     bool dst_is_acc = params.dst_is_acc_;
@@ -195,6 +203,7 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
                         * nstl::min(batch, (dim_t)dnnl_get_max_threads()) * M
                         * N,
                 64);
+        if (acc == nullptr) return status::out_of_memory;
         need_free_acc = true;
     }
 
@@ -220,10 +229,13 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
     const auto dst_batch_stride = dst_d.blocking_desc().strides[0];
     const auto acc_batch_stride = M * N;
 
+    std::atomic<status_t> st(status::success);
     const bool parallel_over_batch = batch > 1;
     if (parallel_over_batch) {
-        // XXX: pass by copying to avoid gcc bug with c++14 standard
-        parallel(0, [=](int ithr, int nthr) {
+        // NOTE: inside lambda, type cast variables captured by reference using
+        // either c-like "(type)var" or functional "type(var)" notation in order
+        // to avoid gcc bug with c++14 standard. Otherwise, capture by value.
+        parallel(0, [=, &st](int ithr, int nthr) {
             size_t batch_start {}, batch_end {};
             balance211((size_t)(batch), nthr, ithr, batch_start, batch_end);
 
@@ -245,9 +257,13 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
                 dst_data_t *curr_dst = dst + b * dst_batch_stride;
                 if (!reuse_acc) curr_acc = acc + b * acc_batch_stride;
 
-                gemm_s8x8s32(transB, transA, "F", &N, &M, &K, &alpha,
-                        curr_weights, &ldb, &gemm_off_b, curr_src, &lda,
+                status_t st_thr = gemm_s8x8s32(transB, transA, "F", &N, &M, &K,
+                        &alpha, curr_weights, &ldb, &gemm_off_b, curr_src, &lda,
                         &gemm_off_a, &beta, curr_acc, &ldc, &gemm_off_c);
+                if (st_thr != status::success) {
+                    st = st_thr;
+                    return;
+                }
 
                 // if igemm cannot handle src and weights zero points
                 if (post_process_src_and_weights_zero_points_outside_of_gemm) {
@@ -273,9 +289,10 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
         // at compilation time in lambdas
         const int32_t gemm_off_c = 0;
 
-        gemm_s8x8s32(transB, transA, "F", &N, &M, &K, &alpha, weights, &ldb,
-                &gemm_off_b, src, &lda, &gemm_off_a, &beta, acc, &ldc,
-                &gemm_off_c);
+        status_t st = gemm_s8x8s32(transB, transA, "F", &N, &M, &K, &alpha,
+                weights, &ldb, &gemm_off_b, src, &lda, &gemm_off_a, &beta, acc,
+                &ldc, &gemm_off_c);
+        if (st != status::success) return st;
 
         std::vector<acc_data_t> src_compensation(M, 0);
         std::vector<acc_data_t> weights_compensation(N, 0);
@@ -305,7 +322,7 @@ status_t gemm_x8s8s32x_matmul_t<src_type, weights_type, dst_type>::execute_ref(
     }
     if (need_free_acc) free(acc);
 
-    return status::success;
+    return st;
 }
 
 template struct gemm_x8s8s32x_matmul_t<s8, s8, f32>;

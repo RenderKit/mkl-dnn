@@ -18,6 +18,16 @@ add_subdirectory (gtest)
 
 set(APP_NAME "gtest")
 set(MAIN_SRC_GTEST ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
+list(APPEND MAIN_SRC_GTEST ${TEST_THREAD})
+list(APPEND MAIN_SRC_GTEST ${CMAKE_CURRENT_SOURCE_DIR}/test_malloc.cpp)
+
+# Windows does not support weak/strong symbols and no guarrantees by the linker
+# for out_of_memory testing to work. Not tested on macOS
+if(UNIX)
+    if(DNNL_ENABLE_MEM_DEBUG)
+        add_definitions(-DDNNL_ENABLE_MEM_DEBUG)
+    endif()
+endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}
                     ${CMAKE_CURRENT_SOURCE_DIR}/gtest
@@ -27,13 +37,14 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}
                     )
 if(WIN32)
     # Correct 'jnl' macro/jit issue
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel")
+    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel" AND ${CMAKE_CXX_COMPILER_VERSION} LESS 19.1)
         append(CMAKE_CXX_FLAGS "/Qlong-double")
     endif()
 endif()
 
 # TODO: enable me!
 file(GLOB PRIM_TEST_CASES_SRC
+                              test_iface_primitive_cache.cpp
                               test_iface_pd.cpp
                               test_iface_pd_iter.cpp
                               test_iface_attr.cpp
@@ -41,6 +52,7 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_iface_stream_attr.cpp
                               test_iface_runtime_dims.cpp
                               test_iface_runtime_attr.cpp
+                              test_iface_wino_convolution.cpp
                               test_dnnl_threading.cpp
                               test_memory.cpp
                               test_sum.cpp
@@ -59,6 +71,7 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_inner_product_backward_data.cpp
                               test_inner_product_backward_weights.cpp
                               test_shuffle.cpp
+                              test_rnn_forward.cpp
                               test_convolution_format_any.cpp
                               test_convolution_forward_f32.cpp
                               test_convolution_forward_u8s8s32.cpp
@@ -77,28 +90,35 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_gemm_s8s8s32.cpp
                               test_gemm_s8u8s32.cpp
                               test_gemm_u8u8s32.cpp
-                              test_rnn_forward.cpp
                               test_layer_normalization.cpp
                               test_binary.cpp
                               test_logsoftmax.cpp
                               test_matmul.cpp
                               test_resampling.cpp
-                              test_isa_mask.cpp
-                              test_isa_iface.cpp
                               test_global_scratchpad.cpp
                               )
 
-# Some tests will fail on AArch64 and need to be skipped.
-# For example, any tests wich check for ISAs not present on AArch64.
-# AARCH64_SKIP_TESTS is a list of tests to be removed from PRIM_TEST_CASES_SRC.
-if(TARGET_ARCH STREQUAL "AARCH64")
-    file(GLOB AARCH64_SKIP_TESTS
-                                  test_isa_iface.cpp
-                                  )
+if(NOT DNNL_USE_CLANG_SANITIZER)
+    # Due to the following tests have long run-time, move them to Nightly set
+    if(DNNL_TEST_SET GREATER DNNL_TEST_SET_CI)
+        file(GLOB LARGE_PRIM_TEST_CASES_SRC
+            test_ip_formats.cpp
+            test_reorder_formats.cpp
+            )
+        foreach(TEST_FILE ${LARGE_PRIM_TEST_CASES_SRC})
+            list(APPEND PRIM_TEST_CASES_SRC "${TEST_FILE}")
+        endforeach()
+    endif()
+endif()
 
-# Remove AARCH64_SKIP_TESTS entries from PRIM_TEST_CASES_SRC.
-    foreach(TEST_FILE ${AARCH64_SKIP_TESTS})
-        list(REMOVE_ITEM PRIM_TEST_CASES_SRC "${TEST_FILE}")
+# Add X64-specific tests
+if(DNNL_TARGET_ARCH STREQUAL "X64")
+    file(GLOB X64_PRIM_TEST_CASES_SRC
+        test_isa_mask.cpp
+        test_isa_iface.cpp
+        )
+    foreach(TEST_FILE ${X64_PRIM_TEST_CASES_SRC})
+        list(APPEND PRIM_TEST_CASES_SRC "${TEST_FILE}")
     endforeach()
 endif()
 
@@ -121,7 +141,6 @@ foreach(TEST_FILE ${PRIM_TEST_CASES_SRC})
 
     add_executable(${exe} ${MAIN_SRC_GTEST} ${TEST_FILE})
     maybe_configure_windows_test(${exe} TARGET)
-    add_definitions(-DNOMINMAX) # to allow std::max on Windows with parentheses
     target_link_libraries(${exe} ${LIB_NAME} dnnl_gtest ${EXTRA_SHARED_LIBS})
 
     get_source_file_property(no_engine_param ${TEST_FILE} NO_ENGINE_PARAM)

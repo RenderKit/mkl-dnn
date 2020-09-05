@@ -14,11 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "c_types_map.hpp"
-#include "dnnl_thread.hpp"
-#include "type_helpers.hpp"
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/type_helpers.hpp"
 
-#include "gemm_inner_product.hpp"
+#include "cpu/gemm_inner_product.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -31,7 +31,7 @@ using namespace dnnl::impl::format_tag;
 using namespace dnnl::impl::primitive_kind;
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_fwd_t<data_type>::execute_forward(
+status_t gemm_inner_product_fwd_t<data_type>::execute_forward(
         const exec_ctx_t &ctx) const {
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
     auto weights = CTX_IN_MEM(const data_t *, DNNL_ARG_WEIGHTS);
@@ -43,29 +43,33 @@ void gemm_inner_product_fwd_t<data_type>::execute_forward(
     const dim_t IC = pd()->IC_total_padded();
 
     const auto &wmd = *pd()->weights_md();
-
     // check if OC is NOT the leading dimension
     bool wei_tr = wmd.format_desc.blocking.strides[0] != 1;
 
     const float *scales = pd()->attr()->output_scales_.scales_;
 
     float alpha = 1.;
-    extended_sgemm(wei_tr ? "T" : "N", "N", &OC, &MB, &IC, &alpha, weights,
-            wei_tr ? &IC : &OC, src, &IC, &beta_, dst, &OC,
+    status_t st = extended_sgemm(wei_tr ? "T" : "N", "N", &OC, &MB, &IC, &alpha,
+            weights, wei_tr ? &IC : &OC, src, &IC, &beta_, dst, &OC,
             postops_in_ip_ ? nullptr : bias);
+
+    if (st != status::success) return st;
 
     if (postops_in_ip_) {
         const bool force_sequential = pp_kernel_->sequential_kernel();
         parallel(force_sequential ? 1 : 0, [&](int ithr, int nthr) {
             size_t start, end;
             balance211((size_t)(OC * MB), nthr, ithr, start, end);
-            (*pp_kernel_)(dst, dst, (char *)bias, scales, start, end);
+            (*pp_kernel_)(
+                    dst, dst, (char *)bias, scales, start, end, 0, nullptr);
         });
     }
+
+    return status::success;
 }
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_bwd_data_t<data_type>::execute_backward_data(
+status_t gemm_inner_product_bwd_data_t<data_type>::execute_backward_data(
         const exec_ctx_t &ctx) const {
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
     auto weights = CTX_IN_MEM(const data_t *, DNNL_ARG_WEIGHTS);
@@ -79,12 +83,14 @@ void gemm_inner_product_bwd_data_t<data_type>::execute_backward_data(
     bool wei_tr = wmd.format_desc.blocking.strides[0] == 1;
 
     float alpha = 1.0, beta = 0.0;
-    extended_sgemm(wei_tr ? "T" : "N", "N", &IC, &MB, &OC, &alpha, weights,
-            wei_tr ? &OC : &IC, diff_dst, &OC, &beta, diff_src, &IC);
+    status_t st = extended_sgemm(wei_tr ? "T" : "N", "N", &IC, &MB, &OC, &alpha,
+            weights, wei_tr ? &OC : &IC, diff_dst, &OC, &beta, diff_src, &IC);
+
+    return st;
 }
 
 template <impl::data_type_t data_type>
-void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
+status_t gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
         const exec_ctx_t &ctx) const {
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
@@ -104,12 +110,15 @@ void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
     bool wei_tr = wmd.format_desc.blocking.strides[0] == 1;
 
     float alpha = 1.0, beta = 0.0;
+    status_t st;
     if (wei_tr)
-        extended_sgemm("N", "T", &OC, &IC, &MB, &alpha, diff_dst, &OC, src, &IC,
-                &beta, diff_weights, &OC);
+        st = extended_sgemm("N", "T", &OC, &IC, &MB, &alpha, diff_dst, &OC, src,
+                &IC, &beta, diff_weights, &OC);
     else
-        extended_sgemm("N", "T", &IC, &OC, &MB, &alpha, src, &IC, diff_dst, &OC,
-                &beta, diff_weights, &IC);
+        st = extended_sgemm("N", "T", &IC, &OC, &MB, &alpha, src, &IC, diff_dst,
+                &OC, &beta, diff_weights, &IC);
+
+    if (st != status::success) return st;
 
     if (diff_bias) {
         diff_bias += diff_bias_d.offset0();
@@ -134,6 +143,8 @@ void gemm_inner_product_bwd_weights_t<data_type>::execute_backward_weights(
             }
         });
     }
+
+    return status::success;
 }
 
 template struct gemm_inner_product_fwd_t<data_type::f32>;

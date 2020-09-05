@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef REORDER_PD_HPP
-#define REORDER_PD_HPP
+#ifndef COMMON_REORDER_PD_HPP
+#define COMMON_REORDER_PD_HPP
 
 #include <assert.h>
 
@@ -29,14 +29,48 @@
 namespace dnnl {
 namespace impl {
 
-struct reorder_pd_t : public primitive_desc_t {
-    reorder_pd_t(engine_t *engine, const primitive_attr_t *attr,
-            engine_t *src_engine, const memory_desc_t *src_md,
-            engine_t *dst_engine, const memory_desc_t *dst_md)
-        : primitive_desc_t(engine, attr, primitive_kind::reorder)
+struct reorder_primitive_desc_iface_t : public dnnl_primitive_desc {
+    reorder_primitive_desc_iface_t(primitive_desc_t *pd,
+            dnnl::impl::engine_t *engine, dnnl::impl::engine_t *src_engine,
+            dnnl::impl::engine_t *dst_engine)
+        : dnnl_primitive_desc(pd, engine)
         , src_engine_(src_engine)
         , dst_engine_(dst_engine)
-        , scratchpad_engine_(nullptr)
+        , scratchpad_engine_(nullptr) {}
+
+    dnnl::impl::engine_t *src_engine() const override { return src_engine_; }
+    dnnl::impl::engine_t *dst_engine() const override { return dst_engine_; }
+
+    dnnl::impl::engine_t *scratchpad_engine() const override {
+        return scratchpad_engine_;
+    }
+
+    dnnl::impl::status_t query(
+            dnnl::impl::query_t what, int idx, void *result) const override {
+        auto status = dnnl::impl::status::success;
+        switch (what) {
+            case dnnl::impl::query::reorder_src_engine:
+                *(dnnl::impl::engine_t **)result = src_engine();
+                break;
+            case dnnl::impl::query::reorder_dst_engine:
+                *(dnnl::impl::engine_t **)result = dst_engine();
+                break;
+            default: status = dnnl_primitive_desc::query(what, idx, result);
+        }
+        return status;
+    }
+
+private:
+    dnnl::impl::engine_t *src_engine_;
+    dnnl::impl::engine_t *dst_engine_;
+    dnnl::impl::engine_t *scratchpad_engine_;
+};
+
+struct reorder_pd_t : public primitive_desc_t {
+    reorder_pd_t(const primitive_attr_t *attr, engine_kind_t src_engine_kind,
+            const memory_desc_t *src_md, engine_kind_t dst_engine_kind,
+            const memory_desc_t *dst_md)
+        : primitive_desc_t(attr, primitive_kind::reorder)
         , src_md_(*src_md)
         , dst_md_(*dst_md) {
 
@@ -45,16 +79,16 @@ struct reorder_pd_t : public primitive_desc_t {
         desc_.primitive_kind = primitive_kind::reorder;
         desc_.src_md = src_md_;
         desc_.dst_md = dst_md_;
-        desc_.src_engine_kind = src_engine_->kind();
-        desc_.dst_engine_kind = dst_engine_->kind();
+        desc_.src_engine_kind = src_engine_kind;
+        desc_.dst_engine_kind = dst_engine_kind;
     }
 
     const reorder_desc_t *desc() const { return &desc_; }
-    virtual const op_desc_t *op_desc() const override {
+    const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual arg_usage_t arg_usage(int arg) const override {
+    arg_usage_t arg_usage(int arg) const override {
         if (arg == DNNL_ARG_FROM) return arg_usage_t::input;
 
         if (arg == DNNL_ARG_TO) return arg_usage_t::output;
@@ -62,7 +96,7 @@ struct reorder_pd_t : public primitive_desc_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *arg_md(int arg) const override {
+    const memory_desc_t *arg_md(int arg) const override {
         switch (arg) {
             case DNNL_ARG_FROM: return src_md(0);
             case DNNL_ARG_TO: return dst_md(0);
@@ -70,15 +104,15 @@ struct reorder_pd_t : public primitive_desc_t {
         }
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override {
+    const memory_desc_t *src_md(int index = 0) const override {
         return index == 0 ? &src_md_ : &glob_zero_md;
     }
-    virtual const memory_desc_t *dst_md(int index = 0) const override {
+    const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 ? &dst_md_ : &glob_zero_md;
     }
 
-    virtual int n_inputs() const override { return 1; }
-    virtual int n_outputs() const override { return 1; }
+    int n_inputs() const override { return 1; }
+    int n_outputs() const override { return 1; }
 
     float alpha() const { return attr()->output_scales_.scales_[0]; }
     float beta() const {
@@ -86,32 +120,8 @@ struct reorder_pd_t : public primitive_desc_t {
         return sum_idx == -1 ? 0 : attr()->post_ops_.entry_[sum_idx].sum.scale;
     }
 
-    engine_t *src_engine() const { return src_engine_; }
-    engine_t *dst_engine() const { return dst_engine_; }
-
-    virtual dnnl::impl::engine_t *scratchpad_engine() const override {
-        return scratchpad_engine_;
-    }
-
-    virtual status_t query(query_t what, int idx, void *result) const override {
-        switch (what) {
-            case query::reorder_src_engine:
-                *(engine_t **)result = src_engine();
-                break;
-            case query::reorder_dst_engine:
-                *(engine_t **)result = dst_engine();
-                break;
-            default: return primitive_desc_t::query(what, idx, result);
-        }
-        return status::success;
-    }
-
 protected:
     reorder_desc_t desc_;
-    engine_t *src_engine_;
-    engine_t *dst_engine_;
-    engine_t *scratchpad_engine_;
-
     memory_desc_t src_md_;
     memory_desc_t dst_md_;
 };

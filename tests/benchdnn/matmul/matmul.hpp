@@ -60,7 +60,7 @@ struct settings_t {
         this->perf_template = perf_template;
     }
 
-    desc_t desc;
+    desc_t desc {};
 
     std::vector<const dt_conf_t *> cfg {conf_f32};
     std::vector<std::string> stag {tag::abx}, wtag {tag::abx}, dtag {tag::abx};
@@ -69,8 +69,10 @@ struct settings_t {
             runtime_k {false};
     std::vector<dnnl_data_type_t> bia_dt {dnnl_data_type_undef};
     std::vector<int> bia_mask {2};
+    std::vector<attr_t::scale_t> oscale {attr_t::scale_t()};
+    std::vector<attr_t::zero_points_t> zero_points {attr_t::zero_points_t()};
+    std::vector<attr_t::post_ops_t> post_ops {attr_t::post_ops_t()};
     attr_t attr = {};
-    bool allow_unimpl = false;
 
     const char *perf_template_csv
             = "perf,%engine%,%name%,%cfg%,%attr%,%DESC%,"
@@ -144,20 +146,20 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
+    void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
 
-    virtual void dump_desc(std::ostream &s) const override {
+    void dump_desc(std::ostream &s) const override {
         s << static_cast<const desc_t &>(*p_);
     }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
+    void dump_desc_csv(std::ostream &s) const override {
         s << p_->ndims << ',' << p_->mb << ',' << p_->m << ',' << p_->n << ','
           << p_->k;
     }
 
-    virtual double ops() const override { return p_->ops; }
-    virtual const attr_t *attr() const override { return &p_->attr; }
-    virtual const char *name() const override { return p_->name; }
+    double ops() const override { return p_->ops; }
+    const attr_t *attr() const override { return &p_->attr; }
+    const char *name() const override { return p_->name; }
 
 private:
     const prb_t *p_ = NULL;
@@ -195,8 +197,8 @@ inline int64_t bia_off_f(const prb_t *p, int64_t mb, int64_t m, int64_t n) {
     return mb * bia_stride[0] + m * bia_stride[1] + n * bia_stride[2];
 }
 
-void compute_ref(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &dst_m);
+void compute_ref(const engine_t &engine_tgt, const prb_t *p, dnn_mem_t &src_m,
+        dnn_mem_t &wei_m, dnn_mem_t &bia_m, dnn_mem_t &dst_m);
 
 int doit(const prb_t *p, res_t *res);
 

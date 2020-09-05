@@ -5,6 +5,8 @@ Resampling {#dev_guide_resampling}
 > [API reference](@ref dnnl_api_resampling)
 >
 
+## General
+
 The resampling primitive computes forward or backward resampling operation on
 1D, 2D, or 3D spatial data. Resampling performs spatial scaling of original
 tensor using one of the supported interpolation algorithms:
@@ -73,8 +75,10 @@ and #dnnl_forward_inference propagation kinds.
 The backward propagation computes \diffsrc based on \diffdst.
 
 ## Execution Arguments
+
 When executed, the inputs and outputs should be mapped to an execution
 argument index as specified by the following table.
+
 | Primitive input/output | Execution argument index |
 | ---                    | ---                      |
 | \src                   | DNNL_ARG_SRC             |
@@ -113,19 +117,21 @@ argument index as specified by the following table.
 Resampling primitive supports the following combination of data types for
 source and destination memory objects:
 
-| Propagation        | Source    |  Destination  |
-| :--                | :--       |  :--          |
-| forward / backward | f32       | f32           |
-| forward / backward | bf16      | bf16          |
+| Propagation        | Source / Destination  |
+| :--                | :--                   |
+| forward / backward | f32, bf16             |
+| forward            | f16, s8, u8           |
 
 ### Post-ops and Attributes
 
-The resampling primitive doesn't support any post-ops or attributes.
+The resampling primitive does not support any post-ops or attributes.
 
 ## Implementation Limitations
 
 1. No primitive specific limitations. Refer to @ref dev_guide_data_types for
    limitations related to data types support.
+2. **CPU**
+    - No support for f16, u8, s8 data types.
 
 ## Performance Tips
 

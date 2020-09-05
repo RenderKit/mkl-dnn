@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef MATH_UTILS_HPP
-#define MATH_UTILS_HPP
+#ifndef COMMON_MATH_UTILS_HPP
+#define COMMON_MATH_UTILS_HPP
 
 #include <math.h>
 #include <stdint.h>
@@ -24,79 +24,11 @@
 #include "nstl.hpp"
 #include "utils.hpp"
 
-#if defined(DNNL_X86_64)
-#include "immintrin.h"
-#endif
+#include "../cpu/platform.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace math {
-
-/** rounds @p f to an integer according to the mxcsr register */
-inline int mxcsr_round(float f) ATTR_NO_MSAN {
-#if defined(DNNL_X86_64)
-    return _mm_cvtss_si32(_mm_load_ss(&f));
-#else
-    return (int)nearbyintf(f); // optimism
-#endif
-}
-
-template <typename data_t, typename acc_t>
-inline typename utils::enable_if<!nstl::is_integral<data_t>::value,
-        typename utils::remove_reference<data_t>::type>::type
-saturate(const acc_t &x) {
-    return (typename utils::remove_reference<data_t>::type)x;
-}
-
-template <typename data_t, typename acc_t>
-inline typename utils::enable_if<nstl::is_integral<data_t>::value,
-        typename utils::remove_reference<data_t>::type>::type
-saturate(const acc_t &x) {
-    acc_t v = x;
-    if (v < (acc_t)nstl::numeric_limits<data_t>::lowest())
-        v = (acc_t)nstl::numeric_limits<data_t>::lowest();
-    if (v > (acc_t)nstl::numeric_limits<data_t>::max())
-        v = (acc_t)nstl::numeric_limits<data_t>::max();
-    return (typename utils::remove_reference<data_t>::type)v;
-}
-
-template <typename data_t>
-double saturate(const double &x) {
-    double v = x;
-    if (v < (double)nstl::numeric_limits<data_t>::lowest())
-        v = (double)nstl::numeric_limits<data_t>::lowest();
-    if (v > (double)nstl::numeric_limits<data_t>::max())
-        v = (double)nstl::numeric_limits<data_t>::max();
-    return v;
-}
-
-template <>
-inline int8_t saturate<int8_t, uint8_t>(const uint8_t &x) {
-    return x <= 127u ? x : 127;
-}
-
-template <>
-inline uint8_t saturate<uint8_t, int8_t>(const int8_t &x) {
-    return x >= 0 ? x : 0;
-}
-
-template <typename out_t>
-typename utils::enable_if<nstl::is_integral<out_t>::value, out_t>::type
-out_round(float v) {
-    return (out_t)mxcsr_round(v);
-}
-
-template <typename out_t>
-typename utils::enable_if<nstl::is_integral<out_t>::value, out_t>::type
-out_round(double v) {
-    return (out_t)mxcsr_round((float)v);
-}
-
-template <typename out_t>
-typename utils::enable_if<!nstl::is_integral<out_t>::value, out_t>::type
-out_round(float v) {
-    return v;
-}
 
 inline int gcd(int a, int b) {
     a = impl::nstl::abs(a);
@@ -156,11 +88,35 @@ inline U x_m_square(T x) {
 }
 
 /* activation */
+
+/** rounds @p f to an integer according to the mxcsr register */
+inline float mxcsr_round(float f) ATTR_NO_MSAN {
+    return nearbyintf(f);
+}
+
+/** converts @p f to an integer according to the mxcsr register */
+inline int mxcsr_cvt(float f) ATTR_NO_MSAN {
+    return (int)mxcsr_round(f);
+}
+
+inline float round_fwd(float s) {
+    return mxcsr_round(s);
+}
+
 template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
-inline U relu_fwd(T s, A alpha) {
+inline typename utils::enable_if<nstl::is_integral<U>::value, U>::type relu_fwd(
+        T s, A alpha) {
+    return s > 0 ? s : (U)mxcsr_cvt(static_cast<float>(s * alpha));
+}
+
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline typename utils::enable_if<!nstl::is_integral<U>::value, U>::type
+relu_fwd(T s, A alpha) {
     return s > 0 ? s : (U)(s * alpha);
 }
+
 template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
 inline U relu_bwd(T dd, T s, A alpha) {
@@ -206,18 +162,6 @@ template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
 inline U elu_bwd_use_dst(T dd, T d, A alpha) {
     return (U)(dd * (d > 0 ? 1 : d + alpha));
-}
-
-template <typename T, typename A,
-        typename U = typename utils::remove_reference<T>::type>
-inline U swish_fwd(T s, A alpha) {
-    return (U)(s / (1 + ::expf(-alpha * (float)s)));
-}
-template <typename T, typename A,
-        typename U = typename utils::remove_reference<T>::type>
-inline U swish_bwd(T dd, T s, A alpha) {
-    float v = 1 / (1.0f + ::expf((float)-s * alpha));
-    return dd * (v + s * alpha * v * (1 - v));
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
@@ -277,28 +221,44 @@ inline U bounded_relu_bwd(T dd, T s, A alpha) {
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
-inline U soft_relu_fwd(T s) {
-    float max_logf = 8.872284e+01; //::logf(FLT_MAX)
-    return s < max_logf ? (U)(::log1pf(::expf((float)s))) : s;
-}
-template <typename T, typename U = typename utils::remove_reference<T>::type>
-inline U soft_relu_bwd(T dd, T s) {
-    return (U)(dd / (1 + ::expf((float)(-s))));
-}
-
-template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U logistic_fwd(T s) {
-    float v = ::expf((float)-s);
-    return (U)(1. / (1 + v));
+    // Here we avoid division/inverse by infinity as some architectures have
+    // non-standard behavior
+    float exp_overflow_bound = 88.72283172607421875;
+    float in = (float)-s;
+    return in < exp_overflow_bound ? (U)(1.f / (1.f + ::expf(in))) : 0.f;
 }
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U logistic_bwd(T dd, T s) {
-    float v = logistic_fwd<T, float>(s);
+    float v = logistic_fwd<float>(s);
     return (U)(dd * v * (1 - v));
 }
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U logistic_bwd_use_dst(T dd, T d) {
     return (U)(dd * d * (1 - d));
+}
+
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U soft_relu_fwd(T s) {
+    float exp_overflow_bound = 88.72283172607421875;
+    float in = (float)s;
+    return in < exp_overflow_bound ? (U)(::log1pf(::expf(in))) : (U)in;
+}
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U soft_relu_bwd(T dd, T s) {
+    return (U)(dd * logistic_fwd<float>(s));
+}
+
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U swish_fwd(T s, A alpha) {
+    return (U)(s * logistic_fwd<float>(alpha * s));
+}
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U swish_bwd(T dd, T s, A alpha) {
+    float v = logistic_fwd<float>(alpha * s);
+    return dd * (v + s * alpha * v * (1 - v));
 }
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
@@ -316,15 +276,15 @@ inline U exp_bwd_use_dst(T dd, T d) {
 
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U gelu_tanh_fwd(T s) {
-    const float sqrt_2_over_pi = 0.797884;
-    const float fitting_const = 0.044715;
+    const float sqrt_2_over_pi = 0.79788458347320556640625f;
+    const float fitting_const = 0.044715f;
     float v = tanh_fwd(sqrt_2_over_pi * s * (1 + fitting_const * s * s));
     return (U)(0.5 * s * (1. + v));
 }
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U gelu_tanh_bwd(T dd, T s) {
-    const float sqrt_2_over_pi = 0.797884;
-    const float fitting_const = 0.044715;
+    const float sqrt_2_over_pi = 0.79788458347320556640625f;
+    const float fitting_const = 0.044715f;
     float g = s * sqrt_2_over_pi * (1 + fitting_const * s * s);
     float dg = sqrt_2_over_pi * (1 + 3 * fitting_const * s * s);
     float v = tanh_fwd(g);
@@ -392,11 +352,13 @@ inline bool is_eltwise_ok(
                       eltwise_square, eltwise_abs, eltwise_sqrt, eltwise_linear,
                       eltwise_bounded_relu, eltwise_soft_relu, eltwise_logistic,
                       eltwise_exp, eltwise_gelu_tanh, eltwise_swish,
-                      eltwise_log, eltwise_clip, eltwise_pow, eltwise_gelu_erf)
+                      eltwise_log, eltwise_clip, eltwise_pow, eltwise_gelu_erf,
+                      eltwise_round)
             && IMPLICATION(alg == eltwise_bounded_relu, alpha >= 0)
             && IMPLICATION(alg == eltwise_clip, beta >= alpha)
+            && IMPLICATION(alg == eltwise_round, dt == dnnl_f32)
             && IMPLICATION(one_of(dt, dnnl_s32, dnnl_s8, dnnl_u8),
-                    alg == eltwise_relu && alpha == 0);
+                    one_of(alg, eltwise_relu, eltwise_linear));
 
     const bool eltwise_use_dst
             = one_of(alg, eltwise_relu_use_dst_for_bwd,
@@ -411,43 +373,6 @@ inline bool is_eltwise_ok(
     return eltwise_use_src || eltwise_use_dst;
 }
 
-inline bool eltwise_fwd_preserves_zero(
-        alg_kind_t alg, float alpha, float beta) {
-    using namespace alg_kind;
-    using namespace utils;
-    return one_of(alg, eltwise_relu, eltwise_tanh, eltwise_elu, eltwise_square,
-                   eltwise_abs, eltwise_sqrt, eltwise_swish,
-                   eltwise_bounded_relu, eltwise_gelu_tanh, eltwise_gelu_erf)
-            || one_of(alg, eltwise_relu_use_dst_for_bwd,
-                    eltwise_tanh_use_dst_for_bwd, eltwise_elu_use_dst_for_bwd,
-                    eltwise_sqrt_use_dst_for_bwd)
-            || (alg == eltwise_clip && alpha <= 0 && beta >= 0)
-            || (alg == eltwise_linear && beta == 0)
-            || (alg == eltwise_pow && beta > 0);
-}
-
-inline bool eltwise_bwd_preserves_zero(
-        alg_kind_t alg, float alpha, float beta) {
-    // Unlike forward counterpart, bwd works on two tensors (with same formats)
-    // and if alg moves zero to non-zero, it's fine, because diff_dst will
-    // still have zeros in padding and multiplication of zero and non-zero
-    // gives desired result. However, it doesn't work in case of special fp
-    // values which are NaN or infinity which give NaN when multiplying on
-    // zero, so excluding all those algs from here.
-    using namespace alg_kind;
-    using namespace utils;
-    return one_of(alg, eltwise_abs, eltwise_bounded_relu, eltwise_clip,
-                   eltwise_elu, eltwise_exp, eltwise_gelu_erf,
-                   eltwise_gelu_tanh, eltwise_linear, eltwise_logistic,
-                   eltwise_relu, eltwise_soft_relu, eltwise_square,
-                   eltwise_swish, eltwise_tanh)
-            || one_of(alg, eltwise_elu_use_dst_for_bwd,
-                    eltwise_exp_use_dst_for_bwd,
-                    eltwise_logistic_use_dst_for_bwd,
-                    eltwise_relu_use_dst_for_bwd, eltwise_tanh_use_dst_for_bwd)
-            || (alg == eltwise_pow && beta >= 1);
-}
-
 inline float get_bias(const char *bias, size_t offset, data_type_t data_type) {
     if (!bias) return 0.0f;
 
@@ -457,6 +382,7 @@ inline float get_bias(const char *bias, size_t offset, data_type_t data_type) {
     switch (data_type) {
         CASE(data_type::s8);
         CASE(data_type::u8);
+        CASE(data_type::bf16);
         CASE(data_type::s32);
         CASE(data_type::f32);
         default: assert(!"unimplemented");

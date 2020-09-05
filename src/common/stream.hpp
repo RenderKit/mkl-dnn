@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef STREAM_HPP
-#define STREAM_HPP
+#ifndef COMMON_STREAM_HPP
+#define COMMON_STREAM_HPP
 
 #include <assert.h>
 #include "dnnl.h"
@@ -50,6 +50,8 @@ struct dnnl_stream : public dnnl::impl::c_compatible {
 
     virtual void before_exec_hook() {}
     virtual void after_exec_hook() {}
+
+    virtual dnnl::impl::status_t zero_pad(const dnnl::impl::memory_t *memory);
 
 protected:
     dnnl::impl::engine_t *engine_;
