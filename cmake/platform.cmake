@@ -28,6 +28,9 @@ if (DNNL_LIBRARY_TYPE STREQUAL "SHARED")
     add_definitions(-DDNNL_DLL)
 endif()
 
+# Specify the target architecture
+add_definitions(-DDNNL_${DNNL_TARGET_ARCH}=1)
+
 # UNIT8_MAX-like macros are a part of the C99 standard and not a part of the
 # C++ standard (see C99 standard 7.18.2 and 7.18.4)
 add_definitions(-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
@@ -86,6 +89,9 @@ if(MSVC)
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
         append(CMAKE_CCXX_FLAGS "-Wno-pass-failed")
+        # Clang doesn't like the idea of overriding optimization flags.
+        # We don't want to optimize jit gemm kernels to reduce compile time
+        append(CMAKE_CCXX_FLAGS "-Wno-overriding-t-option")
     endif()
 elseif(UNIX OR MINGW)
     append(CMAKE_CCXX_FLAGS "-Wall -Wno-unknown-pragmas")
@@ -95,7 +101,21 @@ elseif(UNIX OR MINGW)
     append(CMAKE_CCXX_NOEXCEPT_FLAGS "-fno-exceptions")
     # compiler specific settings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(DEF_ARCH_OPT_FLAGS "-msse4.1")
+        if(DNNL_TARGET_ARCH STREQUAL "AARCH64")
+             set(DEF_ARCH_OPT_FLAGS "-O3")
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "PPC64")
+             set(DEF_ARCH_OPT_FLAGS "-O3")
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "X64")
+             set(DEF_ARCH_OPT_FLAGS "-msse4.1")
+        endif()
         # Clang cannot vectorize some loops with #pragma omp simd and gets
         # very upset. Tell it that it's okay and that we love it
         # unconditionally.
@@ -139,11 +159,20 @@ elseif(UNIX OR MINGW)
             append(CMAKE_CCXX_SANITIZER_FLAGS "-g -fno-omit-frame-pointer")
         endif()
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-        if(TARGET_ARCH STREQUAL "AARCH64")
-             set(DEF_ARCH_OPT_FLAGS "-O3 -mcpu=native")
-             set(DNNL_ENABLE_JIT_PROFILING CACHE BOOL "OFF" FORCE)
-             message(WARNING "AArch64 build, DNNL_ENABLE_JIT_PROFILING is OFF")
-        else()
+        if(DNNL_TARGET_ARCH STREQUAL "AARCH64")
+             set(DEF_ARCH_OPT_FLAGS "-O3")
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "PPC64")
+             set(DEF_ARCH_OPT_FLAGS "-O3")
+             # In GCC, -ftree-vectorize is turned on under -O3 since 2007.
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "X64")
              set(DEF_ARCH_OPT_FLAGS "-msse4.1")
         endif()
         # suppress warning on assumptions made regarding overflow (#146)
@@ -161,7 +190,17 @@ elseif(UNIX OR MINGW)
     endif()
 endif()
 
-if(UNIX OR MINGW)
+if(MSVC)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
+        # There's no opportunity for icl to link its libraries statically
+        # into the library. That's why removing them when searching symbols.
+        # libm symbols will be taken from ucrt.lib, otherwise, linker will
+        # complain about duplicated symbols being linked to the library.
+        append(NO_DYNAMIC_LIBS "/NODEFAULTLIB:libmmd.lib")
+        append(NO_DYNAMIC_LIBS "/NODEFAULTLIB:svml_dispmd.lib svml_dispmt.lib")
+        append(CMAKE_SHARED_LINKER_FLAGS "${NO_DYNAMIC_LIBS}")
+    endif()
+elseif(UNIX OR MINGW)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
         # Link Intel libraries statically (except for iomp5)
         if ("${DNNL_CPU_THREADING_RUNTIME}" STREQUAL "OMP")

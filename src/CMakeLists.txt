@@ -19,10 +19,7 @@ file(GLOB_RECURSE HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.hpp
     )
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/common
-    )
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 if (DNNL_LIBRARY_TYPE STREQUAL "SHARED")
     add_definitions(-DDNNL_DLL_EXPORTS)
@@ -50,15 +47,12 @@ endif()
 
 if(DNNL_ENABLE_PRIMITIVE_CACHE)
     message(STATUS "Primitive cache is enabled")
-    add_definitions(-DDNNL_ENABLE_PRIMITIVE_CACHE)
+else()
+    add_definitions(-DDNNL_DISABLE_PRIMITIVE_CACHE)
+    message(STATUS "Primitive cache is disabled")
 endif()
 
-if(NOT DNNL_ENABLE_JIT_PROFILING)
-    # XXX: the profiling interface will still be built and present in the
-    # library
-    message(STATUS "Intel(R) VTune(TM) Amplifier JIT profiling disabled")
-    add_definitions(-DDNNL_ENABLE_JIT_PROFILING=0)
-elseif(UNIX AND NOT APPLE)
+if(DNNL_ENABLE_JIT_PROFILING AND UNIX AND NOT APPLE)
     # Not every compiler adds -ldl automatically
     list(APPEND EXTRA_SHARED_LIBS "${CMAKE_DL_LIBS}")
 endif()
@@ -71,8 +65,16 @@ if(WIN32)
     add_definitions(-D_WIN)
     add_definitions(-DNOMINMAX)
     # Correct 'jnl' macro/jit issue
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel")
+    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel" AND ${CMAKE_CXX_COMPILER_VERSION} LESS 19.1)
         append(CMAKE_CXX_FLAGS "/Qlong-double")
+    endif()
+endif()
+
+# Windows does not support weak/strong symbols and no guarrantees by the linker
+# for out_of_memory testing to work. Not tested on macOS
+if(UNIX)
+    if(DNNL_ENABLE_MEM_DEBUG)
+        add_definitions(-DDNNL_ENABLE_MEM_DEBUG)
     endif()
 endif()
 
@@ -137,7 +139,7 @@ install(EXPORT ${LIB_EXPORT_NAME}
 
 # Intel MKL-DNN compat cmake files
 install(CODE "execute_process(COMMAND ${CMAKE_COMMAND}
-    -DDIR=${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake
+    -DDIR=\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake
     -P ${PROJECT_SOURCE_DIR}/cmake/gen_mkldnn_compat_cmakes.cmake)")
 
 # Intel MKL-DNN compat libraries
@@ -157,6 +159,8 @@ if (WIN32)
         ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}dnnl.${ext}
         $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn.${ext}
+        # Workaround for MSB8065 warning.
+        COMMAND ${CMAKE_COMMAND} -E touch "CMakeFiles/compat_libs"
         DEPENDS ${LIB_NAME})
     install(FILES $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn.${ext}
         DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
@@ -170,15 +174,19 @@ else()
     endif()
     foreach(ver "" ${vers})
         set_ternary(ext_and_ver APPLE "${ver}${ext}" "${ext}${ver}")
-        add_custom_command(OUTPUT libmkldnn${ext_and_ver}
+        get_property(lib_location TARGET ${LIB_NAME} PROPERTY LIBRARY_OUTPUT_DIRECTORY)
+        if(lib_location)
+            set(compat_link "${lib_location}/libmkldnn${ext_and_ver}")
+        else()
+            set(compat_link "${CMAKE_CURRENT_BINARY_DIR}/libmkldnn${ext_and_ver}")
+        endif()
+        add_custom_command(OUTPUT ${compat_link}
             # to make the next command work fine
-            COMMAND ${CMAKE_COMMAND} -E remove -f libmkldnn${ext_and_ver}
-            COMMAND ${CMAKE_COMMAND} -E create_symlink libdnnl${ext_and_ver} libmkldnn${ext_and_ver}
+            COMMAND ${CMAKE_COMMAND} -E remove -f ${compat_link}
+            COMMAND ${CMAKE_COMMAND} -E create_symlink libdnnl${ext_and_ver} ${compat_link}
             DEPENDS ${LIB_NAME})
-        add_custom_target(compat_libs${ver} ALL
-                DEPENDS libmkldnn${ext_and_ver})
-        install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libmkldnn${ext_and_ver}
-            DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
+        add_custom_target(compat_libs${ver} ALL DEPENDS ${compat_link})
+        install(FILES ${compat_link} DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
     endforeach()
 endif()
 
@@ -203,7 +211,7 @@ if(DNNL_GPU_RUNTIME STREQUAL "OCL")
     install(FILES
         "../cmake/FindOpenCL.cmake"
         DESTINATION ${LIB_CONFIG_INSTALL_DIR})
-    install(FILES "${CMAKE_INSTALL_PREFIX}/${LIB_CONFIG_INSTALL_DIR}/FindOpenCL.cmake"
+    install(FILES "../cmake/FindOpenCL.cmake"
             DESTINATION ${LIB_CONFIG_INSTALL_DIR_COMPAT})
 endif()
 

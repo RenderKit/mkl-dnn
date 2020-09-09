@@ -19,26 +19,31 @@
 #include "dnnl_threadpool_iface.hpp"
 #endif
 
-#include "c_types_map.hpp"
-#include "dnnl_thread.hpp"
-#include "dnnl_traits.hpp"
-#include "nstl.hpp"
-#include "utils.hpp"
-
-#include "jit_generator.hpp"
-
-#include "gemm.hpp"
-
-#include "f32/jit_avx512_common_gemm_f32.hpp"
-#include "f32/jit_avx_gemm_f32.hpp"
-#include "f32/ref_gemm_f32.hpp"
-
-#include "gemm_driver.hpp"
-#include "s8x8s32/ref_gemm_s8x8s32.hpp"
-#include "s8x8s32/simple_gemm_s8s8s32.hpp"
-
 #include "common/bfloat16.hpp"
-#include "os_blas.hpp"
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/dnnl_traits.hpp"
+#include "common/nstl.hpp"
+#include "common/utils.hpp"
+
+#include "cpu/gemm/gemm.hpp"
+#include "cpu/gemm/gemm_msan_unpoison.hpp"
+#include "cpu/gemm/os_blas.hpp"
+
+#include "cpu/gemm/f32/ref_gemm_f32.hpp"
+#include "cpu/gemm/s8x8s32/ref_gemm_s8x8s32.hpp"
+#include "cpu/gemm/s8x8s32/simple_gemm_s8s8s32.hpp"
+
+#if DNNL_X64
+#include "cpu/x64/cpu_isa_traits.hpp"
+
+#include "cpu/x64/gemm/f32/jit_avx512_common_gemm_f32.hpp"
+#include "cpu/x64/gemm/f32/jit_avx_gemm_f32.hpp"
+
+#include "cpu/x64/gemm/gemm_driver.hpp"
+
+using namespace dnnl::impl::cpu::x64;
+#endif
 
 namespace dnnl {
 namespace impl {
@@ -118,17 +123,18 @@ dnnl_status_t extended_sgemm(const char *transa, const char *transb,
     }
 #endif
 
+#if DNNL_X64
     if (mayiuse(sse41)) {
         float *dummy_ao = NULL;
         float *dummy_bo = NULL;
-        status = gemm_driver(transa, transb, bias ? "C" : NULL, M, N, K, alpha,
-                A, lda, dummy_ao, B, ldb, dummy_bo, beta, C, ldc, bias,
+        return gemm_driver(transa, transb, bias ? "C" : NULL, M, N, K, alpha, A,
+                lda, dummy_ao, B, ldb, dummy_bo, beta, C, ldc, bias,
                 force_jit_nocopy_gemm);
-    } else {
-        status = ref_gemm<float>(transa, transb, M, N, K, alpha, A, lda, B, ldb,
-                beta, C, ldc, bias);
     }
-    return status;
+#endif
+
+    return ref_gemm<float>(
+            transa, transb, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc, bias);
 }
 
 // Tries calling Intel MKL cblas_gemm_s8u8s32 if applicable and available
@@ -183,14 +189,14 @@ dnnl_status_t gemm_s8x8s32(const char *transa, const char *transb,
             LDA, ao, B, LDB, bo, beta, C, LDC, co);
     if (status == dnnl_success) return status;
 
+#if DNNL_X64
     if (mayiuse(sse41) && !mayiuse(avx512_mic))
-        status = gemm_driver(transa, transb, offsetc, M, N, K, alpha, A, LDA,
-                ao, B, LDB, bo, beta, C, LDC, co, false);
-    else
-        status = ref_gemm_s8x8s32(transa, transb, offsetc, M, N, K, alpha, A,
-                LDA, ao, B, LDB, bo, beta, C, LDC, co);
+        return gemm_driver(transa, transb, offsetc, M, N, K, alpha, A, LDA, ao,
+                B, LDB, bo, beta, C, LDC, co, false);
+#endif
 
-    return status;
+    return ref_gemm_s8x8s32(transa, transb, offsetc, M, N, K, alpha, A, LDA, ao,
+            B, LDB, bo, beta, C, LDC, co);
 }
 
 template <>
@@ -205,22 +211,22 @@ dnnl_status_t gemm_s8x8s32(const char *transa, const char *transb,
 
     if (*M == 0 || *N == 0 || *K == 0) return dnnl_success;
 
+#if DNNL_X64
     bool use_jit = mayiuse(avx512_core);
     bool use_s8u8 = true
             && utils::everyone_is(0, *ao, *bo) // so far a requirement
             && IMPLICATION(USE_MKL_IGEMM == 0, mayiuse(sse41));
 
     if (use_jit)
-        status = gemm_driver(transa, transb, offsetc, M, N, K, alpha, A, LDA,
-                ao, B, LDB, bo, beta, C, LDC, co, false);
+        return gemm_driver(transa, transb, offsetc, M, N, K, alpha, A, LDA, ao,
+                B, LDB, bo, beta, C, LDC, co, false);
     else if (use_s8u8)
-        status = simple_gemm_s8s8s32(transa, transb, offsetc, M, N, K, alpha, A,
+        return simple_gemm_s8s8s32(transa, transb, offsetc, M, N, K, alpha, A,
                 LDA, ao, B, LDB, bo, beta, C, LDC, co);
-    else
-        status = ref_gemm_s8x8s32(transa, transb, offsetc, M, N, K, alpha, A,
-                LDA, ao, B, LDB, bo, beta, C, LDC, co);
+#endif
 
-    return status;
+    return ref_gemm_s8x8s32(transa, transb, offsetc, M, N, K, alpha, A, LDA, ao,
+            B, LDB, bo, beta, C, LDC, co);
 }
 
 dnnl_status_t gemm_bf16bf16f32(const char *transa, const char *transb,
@@ -231,18 +237,19 @@ dnnl_status_t gemm_bf16bf16f32(const char *transa, const char *transb,
             ldb, C, ldc, alpha, beta, false);
     if (status != dnnl_success) return status;
 
+#if DNNL_X64
     char *dummyOffsetC = NULL;
     bfloat16_t *dummy_ao = NULL;
     bfloat16_t *dummy_bo = NULL;
     float *dummy_co = NULL;
 
-    if (mayiuse(avx512_core)) {
+    if (mayiuse(avx512_core))
         return gemm_driver(transa, transb, dummyOffsetC, M, N, K, alpha,
                 (const bfloat16_t *)A, lda, dummy_ao, (const bfloat16_t *)B,
                 ldb, dummy_bo, beta, (float *)C, ldc, dummy_co, false);
-    } else {
-        return dnnl_unimplemented;
-    }
+#endif
+
+    return dnnl_unimplemented;
 }
 
 } // namespace cpu

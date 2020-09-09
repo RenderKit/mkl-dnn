@@ -14,16 +14,17 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_CONVOLUTION_PD_HPP
-#define CPU_CONVOLUTION_PD_HPP
+#ifndef CPU_CPU_CONVOLUTION_PD_HPP
+#define CPU_CPU_CONVOLUTION_PD_HPP
 
 #include <assert.h>
 
-#include "c_types_map.hpp"
-#include "convolution_pd.hpp"
-#include "cpu_engine.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/c_types_map.hpp"
+#include "common/convolution_pd.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
+#include "cpu/cpu_eltwise_pd.hpp"
+#include "cpu/cpu_engine.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -48,7 +49,8 @@ struct cpu_convolution_fwd_pd_t : public convolution_fwd_pd_t {
         int idx = po.find(primitive_kind::eltwise);
         if (idx == -1) return false;
         const auto &ee = po.entry_[idx].eltwise;
-        return !math::eltwise_fwd_preserves_zero(ee.alg, ee.alpha, ee.beta);
+        return !cpu_eltwise_fwd_pd_t::eltwise_preserves_zero(
+                ee.alg, ee.alpha, ee.beta);
     }
 };
 

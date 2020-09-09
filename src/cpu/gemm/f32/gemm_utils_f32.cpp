@@ -15,9 +15,10 @@
 *******************************************************************************/
 #include <cmath>
 
-#include "dnnl_thread.hpp"
-#include "gemm_utils_f32.hpp"
-#include "utils.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/utils.hpp"
+
+#include "cpu/gemm/f32/gemm_utils_f32.hpp"
 
 namespace dnnl {
 namespace impl {

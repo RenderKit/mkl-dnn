@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef GEMM_PD_HPP
-#define GEMM_PD_HPP
+#ifndef COMMON_GEMM_PD_HPP
+#define COMMON_GEMM_PD_HPP
 
 #include "dnnl.h"
 
@@ -33,20 +33,20 @@ struct gemm_pd_t : public primitive_desc_t {
     typedef gemm_pd_t base_class;
     typedef gemm_pd_t hint_class;
 
-    gemm_pd_t(dnnl::impl::engine_t *engine, const gemm_desc_t *adesc,
-            const primitive_attr_t *attr, const hint_class *hint_fwd_pd)
-        : primitive_desc_t(engine, attr, base_pkind)
+    gemm_pd_t(const gemm_desc_t *adesc, const primitive_attr_t *attr,
+            const hint_class *hint_fwd_pd)
+        : primitive_desc_t(attr, base_pkind)
         , desc_(*adesc)
         , a_md_(create_gemm_mem_desc_helper(adesc, 0))
         , b_md_(create_gemm_mem_desc_helper(adesc, 1))
         , c_md_(create_gemm_mem_desc_helper(adesc, 2)) {}
 
     const gemm_desc_t *desc() const { return &desc_; }
-    virtual const op_desc_t *op_desc() const override {
+    const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual arg_usage_t arg_usage(int arg) const override {
+    arg_usage_t arg_usage(int arg) const override {
         if (utils::one_of(arg, DNNL_ARG_SRC_0, DNNL_ARG_SRC_1))
             return arg_usage_t::input;
 
@@ -55,7 +55,7 @@ struct gemm_pd_t : public primitive_desc_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *arg_md(int arg) const override {
+    const memory_desc_t *arg_md(int arg) const override {
         switch (arg) {
             case DNNL_ARG_SRC_0: return src_md(0);
             case DNNL_ARG_SRC_1: return src_md(1);
@@ -64,19 +64,19 @@ struct gemm_pd_t : public primitive_desc_t {
         }
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override {
+    const memory_desc_t *src_md(int index = 0) const override {
         switch (index) {
             case 0: return &a_md_;
             case 1: return &b_md_;
             default: return &glob_zero_md;
         }
     }
-    virtual const memory_desc_t *dst_md(int index = 0) const override {
+    const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 ? &c_md_ : &glob_zero_md;
     }
 
-    virtual int n_inputs() const override { return 2; }
-    virtual int n_outputs() const override { return 1; }
+    int n_inputs() const override { return 2; }
+    int n_outputs() const override { return 1; }
 
 private:
     static memory_desc_t create_gemm_mem_desc_helper(

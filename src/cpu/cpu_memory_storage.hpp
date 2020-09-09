@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_MEMORY_STORAGE_HPP
-#define CPU_MEMORY_STORAGE_HPP
+#ifndef CPU_CPU_MEMORY_STORAGE_HPP
+#define CPU_CPU_MEMORY_STORAGE_HPP
 
 #include <memory>
 
@@ -23,6 +23,8 @@
 #include "common/memory.hpp"
 #include "common/memory_storage.hpp"
 #include "common/utils.hpp"
+
+#include "cpu/platform.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -33,17 +35,17 @@ public:
     cpu_memory_storage_t(engine_t *engine)
         : memory_storage_t(engine), data_(nullptr, release) {}
 
-    virtual status_t get_data_handle(void **handle) const override {
+    status_t get_data_handle(void **handle) const override {
         *handle = data_.get();
         return status::success;
     }
 
-    virtual status_t set_data_handle(void *handle) override {
+    status_t set_data_handle(void *handle) override {
         data_ = decltype(data_)(handle, release);
         return status::success;
     }
 
-    virtual std::unique_ptr<memory_storage_t> get_sub_storage(
+    std::unique_ptr<memory_storage_t> get_sub_storage(
             size_t offset, size_t size) const override {
         void *sub_ptr = reinterpret_cast<uint8_t *>(data_.get()) + offset;
         auto sub_storage = new cpu_memory_storage_t(this->engine());
@@ -52,8 +54,8 @@ public:
     }
 
 protected:
-    virtual status_t init_allocate(size_t size) override {
-        void *ptr = malloc(size, 64);
+    status_t init_allocate(size_t size) override {
+        void *ptr = malloc(size, platform::get_cache_line_size());
         if (!ptr) return status::out_of_memory;
         data_ = decltype(data_)(ptr, destroy);
         return status::success;

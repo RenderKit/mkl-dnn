@@ -14,10 +14,11 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef MEMORY_STORAGE_HPP
-#define MEMORY_STORAGE_HPP
+#ifndef COMMON_MEMORY_STORAGE_HPP
+#define COMMON_MEMORY_STORAGE_HPP
 
 #include "common/c_types_map.hpp"
+#include "common/memory_desc_wrapper.hpp"
 #include "common/utils.hpp"
 
 #include <assert.h>
@@ -53,14 +54,9 @@ struct memory_storage_t : public c_compatible {
     size_t offset() const { return offset_; }
     void set_offset(size_t offset) { offset_ = offset; }
 
-    virtual status_t map_data(void **mapped_ptr) const {
-        return get_data_handle(mapped_ptr);
-    }
+    virtual status_t map_data(void **mapped_ptr, stream_t *stream) const;
 
-    virtual status_t unmap_data(void *mapped_ptr) const {
-        UNUSED(mapped_ptr);
-        return status::success;
-    }
+    virtual status_t unmap_data(void *mapped_ptr, stream_t *stream) const;
 
     /** returns slice of memory storage
      *
@@ -95,24 +91,24 @@ private:
 struct empty_memory_storage_t : public memory_storage_t {
     empty_memory_storage_t() : memory_storage_t(nullptr) {}
 
-    virtual status_t get_data_handle(void **handle) const override {
+    status_t get_data_handle(void **handle) const override {
         *handle = nullptr;
         return status::success;
     }
 
-    virtual status_t set_data_handle(void *handle) override {
+    status_t set_data_handle(void *handle) override {
         assert(!"not expected");
         return status::runtime_error;
     }
 
-    virtual std::unique_ptr<memory_storage_t> get_sub_storage(
+    std::unique_ptr<memory_storage_t> get_sub_storage(
             size_t offset, size_t size) const override {
         assert(!"not expected");
         return nullptr;
     }
 
 protected:
-    virtual status_t init_allocate(size_t) override { return status::success; }
+    status_t init_allocate(size_t) override { return status::success; }
 };
 
 inline memory_storage_t &memory_storage_t::empty_storage() {

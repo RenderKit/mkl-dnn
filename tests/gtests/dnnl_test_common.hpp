@@ -41,21 +41,32 @@
 #endif
 
 #include "src/common/bfloat16.hpp"
-#include "src/common/dnnl_thread.hpp"
 #include "src/common/float16.hpp"
 #include "src/common/memory_desc_wrapper.hpp"
 #include "src/common/nstl.hpp"
+#include "tests/gtests/test_malloc.hpp"
+#include "tests/test_thread.hpp"
+
+#include "src/cpu/platform.hpp"
 
 #define for_ for
 
 using dnnl::impl::bfloat16_t;
 using dnnl::impl::f16_support::float16_t;
 
+#ifdef DNNL_ENABLE_MEM_DEBUG
+#define DNNL_CHECK(f) \
+    do { \
+        dnnl_status_t s = (f); \
+        dnnl::error::wrap_c_api(s, dnnl_status2str(s)); \
+    } while (0)
+#else
 #define DNNL_CHECK(f) \
     do { \
         dnnl_status_t s = (f); \
         ASSERT_EQ(s, dnnl_success); \
     } while (0)
+#endif
 
 using memory = dnnl::memory;
 
@@ -64,6 +75,23 @@ bool is_current_test_failed();
 #ifdef DNNL_TEST_WITH_ENGINE_PARAM
 dnnl::engine::kind get_test_engine_kind();
 dnnl::engine get_test_engine();
+#endif
+
+inline bool unsupported_data_type(memory::data_type dt, dnnl::engine eng) {
+    dnnl::engine::kind kind = eng.get_kind();
+
+    bool supported = true; // optimism
+    if (kind == dnnl::engine::kind::cpu)
+        supported = dnnl::impl::cpu::platform::has_data_type_support(
+                memory::convert_to_c(dt));
+
+    return !supported;
+}
+
+#ifdef DNNL_TEST_WITH_ENGINE_PARAM
+inline bool unsupported_data_type(memory::data_type dt) {
+    return unsupported_data_type(dt, get_test_engine());
+}
 #endif
 
 template <typename data_t>
@@ -114,18 +142,18 @@ inline void assert_eq<float>(float a, float b) {
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
-inline int mxcsr_round(float f) {
+inline int mxcsr_cvt(float f) {
     return _mm_cvtss_si32(_mm_load_ss(&f));
 }
 #else
-inline int mxcsr_round(float f) {
+inline int mxcsr_cvt(float f) {
     return (int)nearbyintf(f);
 }
 #endif
 
 template <typename data_t>
 data_t out_round(float x) {
-    return (data_t)mxcsr_round(x);
+    return (data_t)mxcsr_cvt(x);
 }
 template <>
 inline float out_round<float>(float x) {
@@ -485,7 +513,21 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
                 // Print unimplemented but do not treat as error
                 std::cout << "[  UNIMPL  ] "
                           << "Implementation not found" << std::endl;
+                reset_malloc_counter();
                 return true;
+            } else if (test_out_of_memory()
+                    && (e.status == dnnl_out_of_memory
+                            || e.status == dnnl_unimplemented)) {
+                // Restart if error thrown due to a malloc failed intentionally,
+                // and increment malloc counter.
+                // TODO: This should be valid only for `dnnl_out_of_memory`
+                // error. Currently a failed malloc inside
+                // gemm_pack_storage_shell_t ctor makes it unable to use the
+                // reference RNN impl, and the iterator produces an
+                // `dnnl_unimplemented` error.
+                increment_malloc_counter();
+                return catch_expected_failures(f, expect_to_fail,
+                        expected_status, ignore_unimplemented);
             } else {
                 if (expect_to_fail && (e.status != expected_status))
                     std::cout << "expect failure status mismatch: expect("
@@ -495,8 +537,12 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
                 throw e;
             }
         }
-        // Return normally if the failure is expected
-        if (expect_to_fail) return true;
+        // Return normally if the failure is expected. Reset failed malloc
+        // counter to zero before performing a new test.
+        if (expect_to_fail) {
+            reset_malloc_counter();
+            return true;
+        }
     }
 
     // Throw an exception if the failure is expected but did not happen
@@ -507,6 +553,8 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
         throw std::exception();
     }
 
+    // Reset failed malloc counter to zero before performing a new test.
+    reset_malloc_counter();
     return false;
 }
 
@@ -801,8 +849,7 @@ inline dnnl::stream make_stream(dnnl::engine engine,
     if (engine.get_kind() != dnnl::engine::kind::cpu)
         return dnnl::stream(engine, flags);
     dnnl::stream_attr stream_attr(dnnl::engine::kind::cpu);
-    stream_attr.set_threadpool(
-            dnnl::impl::threadpool_utils::get_active_threadpool());
+    stream_attr.set_threadpool(dnnl::testing::get_threadpool());
     return dnnl::stream(engine, flags, stream_attr);
 #else
     return dnnl::stream(engine, flags);

@@ -14,14 +14,14 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "src/common/dnnl_thread.hpp"
+#include "tests/test_thread.hpp"
 
 #include "matmul/matmul.hpp"
 
 namespace matmul {
 
-void compute_ref(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &dst_m) {
+void compute_ref(const engine_t &engine_tgt, const prb_t *p, dnn_mem_t &src_m,
+        dnn_mem_t &wei_m, dnn_mem_t &bia_m, dnn_mem_t &dst_m) {
     const int64_t MB = p->mb;
     const int64_t M = p->m;
     const int64_t N = p->n;
@@ -55,8 +55,8 @@ void compute_ref(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
             float *bia_ptr = (float *)bia_m;
             tmp += bia_ptr[wei_off];
         }
-        maybe_scale(tmp, p->scales, n, p->attr);
-        maybe_post_ops(tmp, dst, p->attr);
+        maybe_oscale(p->attr, tmp, p->scales, n);
+        maybe_post_ops(p->attr, tmp, dst);
         tmp += dst_zero_point;
         dst = tmp;
     });

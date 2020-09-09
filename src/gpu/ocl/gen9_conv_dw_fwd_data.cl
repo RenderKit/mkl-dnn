@@ -14,20 +14,12 @@
 * limitations under the License.
 *******************************************************************************/
 
-#if WITH_ELTWISE == 1
 #include "gpu/ocl/ocl_post_ops.h"
-#endif
 #include "gpu/ocl/ocl_types.h"
 
 #if IS_DW != 1
 #error "Kernel supports depth-wise convolutions only"
 #endif
-
-#define DO_ELTWISE(blockC, nelems, alpha, beta, scale) \
-    do { \
-        for (uint i = 0; i < nelems; i++) \
-            blockC[i] = fwd_eltwise(blockC[i], alpha, beta, scale); \
-    } while (0)
 
 __attribute__((reqd_work_group_size(LWS_0, LWS_1, LWS_2))) // attr:no-format
 #if SUB_GROUP_SIZE != 1
@@ -35,10 +27,9 @@ __attribute__((intel_reqd_sub_group_size(SUB_GROUP_SIZE))) // attr:no-format
 #endif
 __kernel void
 gen9_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
-        const __global DATA_T *bias, __global DATA_T *dst, float eltwise_alpha,
-        float eltwise_beta, float eltwise_scale, float sum_scale) {
+        const __global DATA_T *bias, __global DATA_T *dst POST_OP_ARGS) {
 
-#ifdef VER_8OW16C
+#if VER_8OW16C
     const int osp = get_global_id(1);
     const int od = osp / (OWB * OH);
     const int ohw = osp % (OWB * OH);
@@ -57,16 +48,14 @@ gen9_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
             + (id * IH * IW + ih * IW + iw) * MB_BLOCK * IC_BLOCK;
     wei += g * KD * KH * KW;
 
-#if WITH_BIAS
-    DATA_T S00[OW_BLOCK];
-    DATA_T B = AS_DATA_T(BLOCK_READ((const __global BLOCK_DATA_T *)&bias[g]));
-    __attribute__((opencl_unroll_hint(OW_BLOCK))) // attr:no-format
-    for (int k = 0; k < OW_BLOCK; k++) {
-        S00[k] = B;
-    }
-#else
     DATA_T S00[OW_BLOCK] = {DATA_ZERO};
-#endif
+    if (WITH_BIAS) {
+        const int bg_off = g + get_sub_group_local_id();
+        DATA_T b = (G_WO_PADDING % OC_BLOCK == 0 || bg_off < G_WO_PADDING)
+                ? bias[bg_off]
+                : DATA_ZERO;
+        unroll_for(int k = 0; k < OW_BLOCK; k++) { S00[k] = b; }
+    }
 
 #if KH != 1 || KW != 1 || KD != 1
     for (int kd = 0; kd < KD; kd++)
@@ -120,35 +109,32 @@ gen9_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
         }
 #endif
 
-#if WITH_SUM == 1 || WITH_ELTWISE == 1
     DATA_T D00[OW_BLOCK];
+#if WITH_SUM
     __attribute__((opencl_unroll_hint(OW_BLOCK))) // attr:no-format
     for (int k = 0; k < OW_BLOCK; k++) {
-#if WITH_SUM == 1
         D00[k] = AS_DATA_T(
                 BLOCK_READ((const __global BLOCK_DATA_T *)&dst[k * OC_BLOCK]));
-#if SUM_SCALE == 1
-        S00[k] += D00[k];
-#else
-        S00[k] = fma(D00[k], (DATA_T)sum_scale, S00[k]);
+    }
 #endif
-#endif
-#if WITH_ELTWISE == 1
-        S00[k] = fwd_eltwise(
-                S00[k], eltwise_alpha, eltwise_beta, eltwise_scale);
-#endif
+    APPLY_POST_OPS(S00, DATA_T, D00, DATA_T);
+
+    if (OW % OW_BLOCK == 0 || ow + OW_BLOCK <= OW) {
+        __attribute__((opencl_unroll_hint)) // attr:no-format
+        for (int k = 0; k < OW_BLOCK; k++) {
+            BLOCK_WRITE((__global BLOCK_DATA_T *)&dst[k * OC_BLOCK],
+                    AS_UINT_T(S00[k]));
+        }
+    } else {
+        __attribute__((opencl_unroll_hint)) // attr:no-format
+        for (int k = 0; k < OW % OW_BLOCK; k++) {
+            BLOCK_WRITE((__global BLOCK_DATA_T *)&dst[k * OC_BLOCK],
+                    AS_UINT_T(S00[k]));
+        }
     }
 #endif
 
-    __attribute__((opencl_unroll_hint(OW_BLOCK))) // attr:no-format
-    for (int k = 0; k < OW_BLOCK; k++) {
-        BLOCK_WRITE(
-                (__global BLOCK_DATA_T *)&dst[k * OC_BLOCK], AS_UINT_T(S00[k]));
-    }
-
-#endif
-
-#ifdef VER_16MB16C
+#if VER_16MB16C
     const int osp = get_global_id(1);
     const int od = osp / (OWB * OH);
     const int ohw = osp % (OWB * OH);
@@ -167,18 +153,17 @@ gen9_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
             + (id * IH * IW + ih * IW + iw) * MB_BLOCK * IC_BLOCK;
     wei += g * KD * KH * KW;
 
-#if WITH_BIAS
-    DATA8_T S00, S01;
-    DATA_T B = AS_DATA_T(BLOCK_READ((const __global BLOCK_DATA_T *)&bias[g]));
-    __attribute__((opencl_unroll_hint(OW_BLOCK))) // attr:no-format
-    for (int k = 0; k < 8; k++) {
-        S00[k] = B;
-        S01[k] = B;
-    }
-#else
     DATA8_T S00 = DATA_ZERO;
     DATA8_T S01 = DATA_ZERO;
-#endif
+
+    if (WITH_BIAS) {
+        const int bg_off = g + get_sub_group_local_id();
+        DATA_T b = (G % OC_BLOCK == 0 || bg_off < G) ? bias[bg_off] : DATA_ZERO;
+        unroll_for(int k = 0; k < 8; k++) {
+            S00[k] = b;
+            S01[k] = b;
+        }
+    }
 
 #if KH != 1 || KW != 1 || KD != 1
     for (int kd = 0; kd < KD; kd++)
@@ -215,23 +200,17 @@ gen9_conv_dw_fwd(const __global DATA_T *src, const __global DATA_T *wei,
             }
 #endif
 
-#if WITH_SUM == 1
-    DATA8_T D00 = AS_DATA8_T(BLOCK_READ8((const __global BLOCK_DATA_T *)dst));
-    DATA8_T D01 = AS_DATA8_T(
+    DATA8_T D00;
+    DATA8_T D01;
+#if WITH_SUM
+    D00 = AS_DATA8_T(BLOCK_READ8((const __global BLOCK_DATA_T *)dst));
+    D01 = AS_DATA8_T(
             BLOCK_READ8((const __global BLOCK_DATA_T *)&dst[8 * OC_BLOCK]));
 
-#if SUM_SCALE == 1
-    S00 += D00;
-    S01 += D01;
-#else
-    S00 = fma(D00, (DATA8_T)sum_scale, S00);
-    S01 = fma(D01, (DATA8_T)sum_scale, S01);
 #endif
-#endif
-#if WITH_ELTWISE == 1
-    DO_ELTWISE(S00, 8, eltwise_alpha, eltwise_beta, eltwise_scale);
-    DO_ELTWISE(S01, 8, eltwise_alpha, eltwise_beta, eltwise_scale);
-#endif
+
+    APPLY_POST_OPS(S00, DATA_T, D00, DATA_T);
+    APPLY_POST_OPS(S01, DATA_T, D01, DATA_T);
 
     BLOCK_WRITE8((__global BLOCK_DATA_T *)&dst[0], AS_UINT8_T(S00));
     BLOCK_WRITE8((__global BLOCK_DATA_T *)&dst[8 * OC_BLOCK], AS_UINT8_T(S01));

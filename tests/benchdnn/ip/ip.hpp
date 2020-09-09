@@ -56,14 +56,15 @@ struct settings_t {
         this->perf_template = perf_template;
     }
 
-    desc_t desc;
+    desc_t desc {};
 
     std::vector<dir_t> dir {FWD_B};
     std::vector<const dt_conf_t *> cfg {conf_f32};
     std::vector<std::string> stag {tag::any}, wtag {tag::any}, dtag {tag::any};
     std::vector<int64_t> mb {0};
+    std::vector<attr_t::scale_t> oscale {attr_t::scale_t()};
+    std::vector<attr_t::post_ops_t> post_ops {attr_t::post_ops_t()};
     attr_t attr = {};
-    bool allow_unimpl = false;
 
     const char *perf_template_csv
             = "perf,%engine%,%name%,%dir%,%cfg%,%attr%,%DESC%,"
@@ -127,21 +128,21 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
+    void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
 
-    virtual void dump_desc(std::ostream &s) const override {
+    void dump_desc(std::ostream &s) const override {
         s << static_cast<const desc_t &>(*p_);
     }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
+    void dump_desc_csv(std::ostream &s) const override {
         s << p_->mb << ',' << p_->oc << ',' << p_->ic << ',' << p_->id << ','
           << p_->ih << ',' << p_->iw;
     }
 
-    virtual double ops() const override { return p_->ops; }
-    virtual const attr_t *attr() const override { return &p_->attr; }
-    virtual const char *name() const override { return p_->name; }
-    virtual const dir_t *dir() const override { return &p_->dir; }
+    double ops() const override { return p_->ops; }
+    const attr_t *attr() const override { return &p_->attr; }
+    const char *name() const override { return p_->name; }
+    const dir_t *dir() const override { return &p_->dir; }
 
 private:
     const prb_t *p_ = NULL;
@@ -165,8 +166,8 @@ inline size_t dst_off_f(const prb_t *p, int64_t mb, int64_t oc) {
     return mb * p->oc + oc;
 }
 
-void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &dst_m);
+void compute_ref_fwd(const engine_t &engine_tgt, const prb_t *p,
+        dnn_mem_t &src_m, dnn_mem_t &wei_m, dnn_mem_t &bia_m, dnn_mem_t &dst_m);
 void compute_ref_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m, dnn_mem_t &wei_m,
         dnn_mem_t &diff_dst_m);
 void compute_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &diff_wei_m,

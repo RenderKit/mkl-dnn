@@ -14,14 +14,15 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "src/common/dnnl_thread.hpp"
+#include "tests/test_thread.hpp"
 
 #include "ip/ip.hpp"
 
 namespace ip {
 
-void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
-        dnn_mem_t &bia_m, dnn_mem_t &dst_m) {
+void compute_ref_fwd(const engine_t &engine_tgt, const prb_t *p,
+        dnn_mem_t &src_m, dnn_mem_t &wei_m, dnn_mem_t &bia_m,
+        dnn_mem_t &dst_m) {
 
     int64_t M = p->mb;
     int64_t N = p->oc;
@@ -41,8 +42,8 @@ void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
             size_t bia_off = bia_off_f(p, oc);
             d += ((float *)bia_m)[bia_off];
         }
-        maybe_scale(d, p->scales, oc, p->attr);
-        maybe_post_ops(d, dst, p->attr);
+        maybe_oscale(p->attr, d, p->scales, oc);
+        maybe_post_ops(p->attr, d, dst);
         dst = d;
     });
 }

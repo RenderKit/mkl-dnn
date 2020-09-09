@@ -14,15 +14,20 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_ENGINE_HPP
-#define CPU_ENGINE_HPP
+#ifndef CPU_CPU_ENGINE_HPP
+#define CPU_CPU_ENGINE_HPP
 
 #include <assert.h>
 
 #include "dnnl.h"
 
-#include "../common/engine.hpp"
-#include "c_types_map.hpp"
+#include "common/c_types_map.hpp"
+#include "common/engine.hpp"
+
+#include "cpu/platform.hpp"
+
+#define CPU_INSTANCE(...) &primitive_desc_t::create<__VA_ARGS__::pd_t>,
+#define CPU_INSTANCE_X64(...) DNNL_X64_ONLY(CPU_INSTANCE(__VA_ARGS__))
 
 namespace dnnl {
 namespace impl {
@@ -43,7 +48,7 @@ DECLARE_IMPL_LIST(convolution);
 //DECLARE_IMPL_LIST(logsoftmax);
 //DECLARE_IMPL_LIST(matmul);
 DECLARE_IMPL_LIST(pooling);
-DECLARE_IMPL_LIST(resampling);
+//DECLARE_IMPL_LIST(resampling);
 //DECLARE_IMPL_LIST(rnn);
 //DECLARE_IMPL_LIST(shuffle);
 //DECLARE_IMPL_LIST(softmax);
@@ -56,21 +61,20 @@ public:
         : engine_t(engine_kind::cpu, get_default_runtime(engine_kind::cpu)) {}
 
     /* implementation part */
+    status_t create_memory_storage(memory_storage_t **storage, unsigned flags,
+            size_t size, void *handle) override;
 
-    virtual status_t create_memory_storage(memory_storage_t **storage,
-            unsigned flags, size_t size, void *handle) override;
-
-    virtual status_t create_stream(stream_t **stream, unsigned flags,
+    status_t create_stream(stream_t **stream, unsigned flags,
             const stream_attr_t *attr) override;
 
-    virtual const concat_primitive_desc_create_f *
+    const concat_primitive_desc_create_f *
     get_concat_implementation_list() const override;
-    virtual const reorder_primitive_desc_create_f *
-    get_reorder_implementation_list(const memory_desc_t *src_md,
+    const reorder_primitive_desc_create_f *get_reorder_implementation_list(
+            const memory_desc_t *src_md,
             const memory_desc_t *dst_md) const override;
-    virtual const sum_primitive_desc_create_f *
+    const sum_primitive_desc_create_f *
     get_sum_implementation_list() const override;
-    virtual const primitive_desc_create_f *get_implementation_list(
+    const primitive_desc_create_f *get_implementation_list(
             const op_desc_t *desc) const override {
         static const primitive_desc_create_f empty_list[] = {nullptr};
 
@@ -89,7 +93,7 @@ public:
             //CASE(logsoftmax);
             //CASE(matmul);
             CASE(pooling);
-            CASE(resampling);
+            //CASE(resampling);
             //CASE(rnn);
             //CASE(shuffle);
             //CASE(softmax);
@@ -101,9 +105,8 @@ public:
 
 class cpu_engine_factory_t : public engine_factory_t {
 public:
-    virtual size_t count() const override { return 1; }
-    virtual status_t engine_create(
-            engine_t **engine, size_t index) const override {
+    size_t count() const override { return 1; }
+    status_t engine_create(engine_t **engine, size_t index) const override {
         assert(index == 0);
         *engine = new cpu_engine_t();
         return status::success;

@@ -36,9 +36,14 @@ void check_correctness(const settings_t &s) {
     for_(const auto &i_stag : s.stag)
     for_(const auto &i_wtag : s.wtag)
     for_(const auto &i_dtag : s.dtag)
+    for_(const auto &i_alg : s.alg)
+    for_(const auto &i_oscale : s.oscale)
+    for_(const auto &i_post_ops : s.post_ops)
     for (const auto &i_mb : s.mb) {
-        const prb_t p(s.desc, i_dir, i_cfg, i_stag, i_wtag, i_dtag, s.alg,
-                s.attr, i_mb);
+        attr_t attr(i_oscale, i_post_ops);
+        handle_legacy_attr(attr, s.attr);
+        const prb_t p(s.desc, i_dir, i_cfg, i_stag, i_wtag, i_dtag, i_alg, attr,
+                i_mb);
         std::stringstream ss;
         ss << p;
         const std::string cpp_pstr = ss.str();
@@ -51,7 +56,7 @@ void check_correctness(const settings_t &s) {
         const int status = deconv::doit(&p, &res);
 
         bool want_perf_report = false;
-        parse_result(res, want_perf_report, s.allow_unimpl, status, pstr);
+        parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
@@ -66,17 +71,21 @@ int bench(int argc, char **argv) {
     driver_name = "deconv";
     using namespace parser;
     static settings_t s;
+    static const settings_t def {};
     for (; argc > 0; --argc, ++argv) {
         const bool parsed_options = parse_bench_settings(argv[0])
-                || parse_batch(bench, argv[0]) || parse_dir(s.dir, argv[0])
-                || parse_cfg(s.cfg, str2cfg, argv[0])
-                || parse_tag(s.stag, argv[0], "stag")
-                || parse_tag(s.wtag, argv[0], "wtag")
-                || parse_tag(s.dtag, argv[0], "dtag")
-                || parse_single_value_option(s.alg, str2alg, argv[0], "alg")
-                || parse_mb(s.mb, argv[0]) || parse_attr(s.attr, argv[0])
+                || parse_batch(bench, argv[0])
+                || parse_dir(s.dir, def.dir, argv[0])
+                || parse_cfg(s.cfg, def.cfg, str2cfg, argv[0])
+                || parse_tag(s.stag, def.stag, argv[0], "stag")
+                || parse_tag(s.wtag, def.wtag, argv[0], "wtag")
+                || parse_tag(s.dtag, def.dtag, argv[0], "dtag")
+                || parse_alg(s.alg, def.alg, str2alg, argv[0])
+                || parse_mb(s.mb, def.mb, argv[0])
+                || parse_attr(s.attr, argv[0])
+                || parse_attr_oscale(s.oscale, argv[0])
+                || parse_attr_post_ops(s.post_ops, argv[0])
                 || parse_test_pattern_match(s.pattern, argv[0])
-                || parse_allow_unimpl(s.allow_unimpl, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

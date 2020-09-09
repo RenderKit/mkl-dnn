@@ -20,13 +20,15 @@
 #include <assert.h>
 #include <string.h>
 
-#include "c_types_map.hpp"
-#include "primitive_iterator.hpp"
-#include "type_helpers.hpp"
-#include "utils.hpp"
+#include "common/c_types_map.hpp"
+#include "common/primitive.hpp"
+#include "common/primitive_iterator.hpp"
+#include "common/stream.hpp"
+#include "common/type_helpers.hpp"
+#include "common/utils.hpp"
 
-#include "cpu_convolution_pd.hpp"
-#include "cpu_deconvolution_pd.hpp"
+#include "cpu/cpu_convolution_pd.hpp"
+#include "cpu/cpu_deconvolution_pd.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -78,13 +80,11 @@ static status_t conv_descr_create(
             dd->strides, dd->dilates, dd->padding[0], dd->padding[1]);
 }
 
-struct ref_deconvolution_fwd_t : public primitive_impl_t {
+struct ref_deconvolution_fwd_t : public primitive_t {
     struct pd_t : public cpu_deconvolution_fwd_pd_t {
-        pd_t(engine_t *engine, const deconvolution_desc_t *adesc,
-                const primitive_attr_t *attr,
+        pd_t(const deconvolution_desc_t *adesc, const primitive_attr_t *attr,
                 const deconvolution_fwd_pd_t *hint_fwd_pd)
-            : cpu_deconvolution_fwd_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , conv_pd_(nullptr) {}
+            : cpu_deconvolution_fwd_pd_t(adesc, attr, hint_fwd_pd) {}
 
         pd_t(const pd_t &other)
             : cpu_deconvolution_fwd_pd_t(other)
@@ -92,33 +92,27 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
             , conv_supports_bias_(other.conv_supports_bias_)
             , dst_tag_(other.dst_tag_) {}
 
-        pd_t &operator=(const pd_t &other) {
-            DNNL_SHORT_CIRCUIT_SELF_ASSIGN(other);
-            cpu_deconvolution_fwd_pd_t::operator=(other);
-            delete conv_pd_;
-            conv_pd_ = other.conv_pd_->clone();
-            conv_supports_bias_ = other.conv_supports_bias_;
-            dst_tag_ = other.dst_tag_;
-            return *this;
-        }
-
-        ~pd_t() { delete conv_pd_; }
+        ~pd_t() = default;
 
         DECLARE_COMMON_PD_T(conv_pd_->name(), ref_deconvolution_fwd_t);
 
-        status_t init_convolution() {
+        status_t init_convolution(engine_t *engine) {
             using namespace format_tag;
             using namespace data_type;
 
             convolution_desc_t cd;
             CHECK(conv_descr_create(desc(), &cd));
-
+            primitive_attr_t conv_attr(*attr());
+            if (!conv_attr.is_initialized()) return status::out_of_memory;
+            conv_attr.set_scratchpad_mode(scratchpad_mode::user);
             dnnl_primitive_desc_iterator it(
-                    engine_, (op_desc_t *)&cd, &attr_, nullptr);
+                    engine, (op_desc_t *)&cd, &conv_attr, nullptr);
+            if (!it.is_initialized()) return status::out_of_memory;
             while (++it != it.end()) {
-                conv_pd_ = it.fetch_once();
+                conv_pd_.reset(it.fetch_once());
                 conv_supports_bias_
-                        = static_cast<cpu_convolution_bwd_data_pd_t *>(conv_pd_)
+                        = utils::downcast<cpu_convolution_bwd_data_pd_t *>(
+                                conv_pd_.get())
                                   ->support_bias();
                 bool ref_deconv_supports_bias = true
                         && desc()->accum_data_type == data_type::f32
@@ -128,6 +122,8 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
                                         *conv_pd_->diff_src_md(),
                                         utils::pick(
                                                 ndims() - 3, ncw, nchw, ncdhw),
+                                        utils::pick(
+                                                ndims() - 3, nwc, nhwc, ndhwc),
                                         utils::pick(ndims() - 3, nCw16c,
                                                 nChw16c, nCdhw16c)));
                 bool ok = true
@@ -137,14 +133,11 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
                                 conv_supports_bias_
                                         || ref_deconv_supports_bias);
                 if (ok) return status::success;
-
-                delete conv_pd_;
             }
-            conv_pd_ = nullptr;
             return status::unimplemented;
         }
 
-        status_t init() {
+        status_t init(engine_t *engine) {
             using namespace format_tag;
             bool ok = true && is_fwd()
                     && utils::one_of(desc()->alg_kind,
@@ -153,7 +146,7 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
                     && attr()->has_default_values();
 
             if (ok) {
-                CHECK(init_convolution());
+                CHECK(init_convolution(engine));
                 if (weights_md_.format_kind == format_kind::any)
                     CHECK(weights_axes_permutation(&weights_md_,
                             conv_pd_->weights_md(), with_groups()));
@@ -166,30 +159,37 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
 
                 dst_tag_ = memory_desc_matches_one_of_tag(dst_md_,
                         utils::pick(ndims() - 3, ncw, nchw, ncdhw),
+                        utils::pick(ndims() - 3, nwc, nhwc, ndhwc),
                         utils::pick(ndims() - 3, nCw8c, nChw8c, nCdhw8c),
                         utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c));
 
+                init_scratchpad();
                 return status::success;
             }
 
             return status::unimplemented;
         }
 
-        virtual void init_scratchpad_md() override {
-            scratchpad_md_ = *conv_pd_->scratchpad_md();
-        }
-
-        primitive_desc_t *conv_pd_;
+        std::unique_ptr<primitive_desc_t> conv_pd_;
         bool conv_supports_bias_;
         format_tag_t dst_tag_;
+
+    private:
+        void init_scratchpad() {
+            auto scratchpad = scratchpad_registry().registrar();
+            scratchpad.book(memory_tracking::names::key_nested,
+                    conv_pd_->scratchpad_registry());
+        }
     };
 
-    ref_deconvolution_fwd_t(const pd_t *apd) : primitive_impl_t(apd) {
-        pd()->conv_pd_->create_primitive((primitive_t **)&conv_p_);
-    }
-    ~ref_deconvolution_fwd_t() { delete conv_p_; }
+    ref_deconvolution_fwd_t(const pd_t *apd) : primitive_t(apd) {}
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t init(engine_t *engine) override {
+        return pd()->conv_pd_->create_primitive(conv_p_, engine);
+    }
+
+    status_t execute(const exec_ctx_t &ctx) const override {
+        using namespace memory_tracking::names;
         const auto &args = ctx.args();
         exec_args_t conv_args;
         conv_args[DNNL_ARG_DIFF_DST] = args.at(DNNL_ARG_SRC);
@@ -197,10 +197,10 @@ struct ref_deconvolution_fwd_t : public primitive_impl_t {
         if (pd()->with_bias() && pd()->conv_supports_bias_)
             conv_args[DNNL_ARG_BIAS] = args.at(DNNL_ARG_BIAS);
         conv_args[DNNL_ARG_DIFF_SRC] = args.at(DNNL_ARG_DST);
-        if (!types::is_zero_md(pd()->scratchpad_md()))
-            conv_args[DNNL_ARG_SCRATCHPAD] = args.at(DNNL_ARG_SCRATCHPAD);
         exec_ctx_t conv_ctx(ctx.stream(), std::move(conv_args));
 
+        nested_scratchpad_t ns(ctx, key_nested, conv_p_);
+        conv_ctx.set_scratchpad_grantor(ns.grantor());
         conv_p_->execute(conv_ctx);
 
         if (pd()->with_bias() && !pd()->conv_supports_bias_) {
@@ -226,6 +226,10 @@ private:
     void compute_fwd_bias_ncdhw(typename prec_traits<dst_type>::type *dst,
             const typename prec_traits<bia_type>::type *bias) const;
 
+    template <data_type_t dst_type, data_type_t bia_type>
+    void compute_fwd_bias_ndhwc(typename prec_traits<dst_type>::type *dst,
+            const typename prec_traits<bia_type>::type *bias) const;
+
     template <data_type_t dst_type, data_type_t bia_type, int blksize>
     void compute_fwd_bias_nCdhwXc(typename prec_traits<dst_type>::type *dst,
             const typename prec_traits<bia_type>::type *bias) const;
@@ -233,54 +237,47 @@ private:
     template <data_type_t dst_type, data_type_t bia_type>
     void compute_bias(const exec_ctx_t &ctx) const;
 
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
-    primitive_t *conv_p_;
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
+    std::shared_ptr<primitive_t> conv_p_;
 };
 
-struct ref_deconvolution_bwd_data_t : public primitive_impl_t {
+struct ref_deconvolution_bwd_data_t : public primitive_t {
     struct pd_t : public cpu_deconvolution_bwd_data_pd_t {
-        pd_t(engine_t *engine, const deconvolution_desc_t *adesc,
-                const primitive_attr_t *attr,
+        pd_t(const deconvolution_desc_t *adesc, const primitive_attr_t *attr,
                 const deconvolution_fwd_pd_t *hint_fwd_pd)
-            : cpu_deconvolution_bwd_data_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , conv_pd_(nullptr) {}
+            : cpu_deconvolution_bwd_data_pd_t(adesc, attr, hint_fwd_pd) {}
 
         pd_t(const pd_t &other)
             : cpu_deconvolution_bwd_data_pd_t(other)
             , conv_pd_(other.conv_pd_->clone()) {}
 
-        pd_t &operator=(const pd_t &other) {
-            DNNL_SHORT_CIRCUIT_SELF_ASSIGN(other);
-            cpu_deconvolution_bwd_data_pd_t::operator=(other);
-            delete conv_pd_;
-            conv_pd_ = other.conv_pd_->clone();
-            return *this;
-        }
-
-        ~pd_t() { delete conv_pd_; }
+        ~pd_t() = default;
 
         DECLARE_COMMON_PD_T(conv_pd_->name(), ref_deconvolution_bwd_data_t);
 
-        status_t init_convolution() {
+        status_t init_convolution(engine_t *engine) {
             using namespace types;
 
             convolution_desc_t cd;
             status_t status = conv_descr_create(desc(), &cd);
             if (status != status::success) return status;
+            primitive_attr_t conv_attr(*attr());
+            if (!conv_attr.is_initialized()) return status::out_of_memory;
+            conv_attr.set_scratchpad_mode(scratchpad_mode::user);
 
             dnnl_primitive_desc_iterator it(
-                    engine_, (op_desc_t *)&cd, &attr_, nullptr);
+                    engine, (op_desc_t *)&cd, &conv_attr, nullptr);
+            if (!it.is_initialized()) return status::out_of_memory;
             while (++it != it.end()) {
-                conv_pd_ = it.fetch_once();
+                conv_pd_.reset(it.fetch_once());
                 if (conv_pd_->weights_md()->extra.flags == 0)
                     return status::success;
-                delete conv_pd_;
             }
 
             return status::unimplemented;
         }
 
-        status_t init() {
+        status_t init(engine_t *engine) {
             using namespace data_type;
             auto dsrc_type = desc()->diff_src_desc.data_type;
             auto wei_type = desc()->weights_desc.data_type;
@@ -296,7 +293,7 @@ struct ref_deconvolution_bwd_data_t : public primitive_impl_t {
                     && attr()->has_default_values();
 
             if (ok) {
-                CHECK(init_convolution());
+                CHECK(init_convolution(engine));
                 if (weights_md_.format_kind == format_kind::any)
                     CHECK(weights_axes_permutation(&weights_md_,
                             conv_pd_->weights_md(), with_groups()));
@@ -304,100 +301,99 @@ struct ref_deconvolution_bwd_data_t : public primitive_impl_t {
                     diff_src_md_ = *conv_pd_->dst_md();
                 if (diff_dst_md_.format_kind == format_kind::any)
                     diff_dst_md_ = *conv_pd_->src_md();
-
+                init_scratchpad();
                 return status::success;
             }
 
             return status::unimplemented;
         }
 
-        virtual void init_scratchpad_md() override {
-            scratchpad_md_ = *conv_pd_->scratchpad_md();
-        }
+        std::unique_ptr<primitive_desc_t> conv_pd_;
 
-        primitive_desc_t *conv_pd_;
+    private:
+        void init_scratchpad() {
+            auto scratchpad = scratchpad_registry().registrar();
+            scratchpad.book(memory_tracking::names::key_nested,
+                    conv_pd_->scratchpad_registry());
+        }
     };
 
     typedef typename prec_traits<data_type::f32>::type data_t;
 
-    ref_deconvolution_bwd_data_t(const pd_t *apd) : primitive_impl_t(apd) {
-        pd()->conv_pd_->create_primitive((primitive_t **)&conv_p_);
-    }
-    ~ref_deconvolution_bwd_data_t() { delete conv_p_; }
+    ref_deconvolution_bwd_data_t(const pd_t *apd) : primitive_t(apd) {}
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t init(engine_t *engine) override {
+        return pd()->conv_pd_->create_primitive(conv_p_, engine);
+    }
+
+    status_t execute(const exec_ctx_t &ctx) const override {
+        using namespace memory_tracking::names;
         const auto &args = ctx.args();
         exec_args_t conv_args;
         conv_args[DNNL_ARG_SRC] = args.at(DNNL_ARG_DIFF_DST);
         conv_args[DNNL_ARG_WEIGHTS] = args.at(DNNL_ARG_WEIGHTS);
         conv_args[DNNL_ARG_DST] = args.at(DNNL_ARG_DIFF_SRC);
-        if (!types::is_zero_md(pd()->scratchpad_md()))
-            conv_args[DNNL_ARG_SCRATCHPAD] = args.at(DNNL_ARG_SCRATCHPAD);
         exec_ctx_t conv_ctx(ctx.stream(), std::move(conv_args));
 
+        nested_scratchpad_t ns(ctx, key_nested, conv_p_);
+        conv_ctx.set_scratchpad_grantor(ns.grantor());
         conv_p_->execute(conv_ctx);
         return status::success;
     }
 
 private:
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
-    primitive_t *conv_p_;
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
+    std::shared_ptr<primitive_t> conv_p_;
 };
 
-struct ref_deconvolution_bwd_weights_t : public primitive_impl_t {
+struct ref_deconvolution_bwd_weights_t : public primitive_t {
     struct pd_t : public cpu_deconvolution_bwd_weights_pd_t {
-        pd_t(engine_t *engine, const deconvolution_desc_t *adesc,
-                const primitive_attr_t *attr,
+        pd_t(const deconvolution_desc_t *adesc, const primitive_attr_t *attr,
                 const deconvolution_fwd_pd_t *hint_fwd_pd)
-            : cpu_deconvolution_bwd_weights_pd_t(
-                    engine, adesc, attr, hint_fwd_pd)
-            , conv_pd_(nullptr) {}
+            : cpu_deconvolution_bwd_weights_pd_t(adesc, attr, hint_fwd_pd) {}
 
         pd_t(const pd_t &other)
             : cpu_deconvolution_bwd_weights_pd_t(other)
             , conv_pd_(other.conv_pd_->clone())
             , dst_tag_(other.dst_tag_) {}
 
-        pd_t &operator=(const pd_t &other) {
-            DNNL_SHORT_CIRCUIT_SELF_ASSIGN(other);
-            cpu_deconvolution_bwd_weights_pd_t::operator=(other);
-            delete conv_pd_;
-            conv_pd_ = other.conv_pd_->clone();
-            return *this;
-        }
-
-        ~pd_t() { delete conv_pd_; }
+        ~pd_t() = default;
 
         DECLARE_COMMON_PD_T(conv_pd_->name(), ref_deconvolution_bwd_weights_t);
 
-        status_t init_convolution() {
+        status_t init_convolution(engine_t *engine) {
             using namespace types;
             using namespace format_tag;
 
             convolution_desc_t cd;
             status_t status = conv_descr_create(desc(), &cd);
             if (status != status::success) return status;
+            primitive_attr_t conv_attr(*attr());
+            if (!conv_attr.is_initialized()) return status::out_of_memory;
+            conv_attr.set_scratchpad_mode(scratchpad_mode::user);
 
             dnnl_primitive_desc_iterator it(
-                    engine_, (op_desc_t *)&cd, &attr_, nullptr);
+                    engine, (op_desc_t *)&cd, &conv_attr, nullptr);
+            if (!it.is_initialized()) return status::out_of_memory;
             while (++it != it.end()) {
-                conv_pd_ = it.fetch_once();
+                conv_pd_.reset(it.fetch_once());
                 bool bf16_ref_deconv_supports_bias = IMPLICATION(with_bias()
                                 && desc()->src_desc.data_type
                                         == data_type::bf16,
                         memory_desc_matches_one_of_tag(*conv_pd_->src_md(),
                                 utils::pick(ndims() - 3, ncw, nchw, ncdhw),
+                                utils::pick(ndims() - 3, nwc, nhwc, ndhwc),
                                 utils::pick(ndims() - 3, nCw16c, nChw16c,
                                         nCdhw16c)));
                 if (conv_pd_->diff_weights_md()->extra.flags == 0
-                        && bf16_ref_deconv_supports_bias)
+                        && bf16_ref_deconv_supports_bias) {
                     return status::success;
-                delete conv_pd_;
+                }
             }
             return status::unimplemented;
         }
 
-        status_t init() {
+        status_t init(engine_t *engine) {
             using namespace format_tag;
             using namespace data_type;
             auto src_type = desc()->src_desc.data_type;
@@ -414,7 +410,7 @@ struct ref_deconvolution_bwd_weights_t : public primitive_impl_t {
                     && attr()->has_default_values();
 
             if (ok) {
-                CHECK(init_convolution());
+                CHECK(init_convolution(engine));
                 if (diff_weights_md_.format_kind == format_kind::any)
                     CHECK(weights_axes_permutation(&diff_weights_md_,
                             conv_pd_->diff_weights_md(), with_groups()));
@@ -427,38 +423,44 @@ struct ref_deconvolution_bwd_weights_t : public primitive_impl_t {
 
                 dst_tag_ = memory_desc_matches_one_of_tag(diff_dst_md_,
                         utils::pick(ndims() - 3, ncw, nchw, ncdhw),
+                        utils::pick(ndims() - 3, nwc, nhwc, ndhwc),
                         utils::pick(ndims() - 3, nCw8c, nChw8c, nCdhw8c),
                         utils::pick(ndims() - 3, nCw16c, nChw16c, nCdhw16c));
-
+                init_scratchpad();
                 return status::success;
             }
 
             return status::unimplemented;
         }
 
-        virtual void init_scratchpad_md() override {
-            scratchpad_md_ = *conv_pd_->scratchpad_md();
-        }
-
-        primitive_desc_t *conv_pd_;
+        std::unique_ptr<primitive_desc_t> conv_pd_;
         format_tag_t dst_tag_;
+
+    private:
+        void init_scratchpad() {
+            auto scratchpad = scratchpad_registry().registrar();
+            scratchpad.book(memory_tracking::names::key_nested,
+                    conv_pd_->scratchpad_registry());
+        }
     };
 
-    ref_deconvolution_bwd_weights_t(const pd_t *apd) : primitive_impl_t(apd) {
-        pd()->conv_pd_->create_primitive((primitive_t **)&conv_p_);
-    }
-    ~ref_deconvolution_bwd_weights_t() { delete conv_p_; }
+    ref_deconvolution_bwd_weights_t(const pd_t *apd) : primitive_t(apd) {}
 
-    virtual status_t execute(const exec_ctx_t &ctx) const override {
+    status_t init(engine_t *engine) override {
+        return pd()->conv_pd_->create_primitive(conv_p_, engine);
+    }
+
+    status_t execute(const exec_ctx_t &ctx) const override {
+        using namespace memory_tracking::names;
         const auto &args = ctx.args();
         exec_args_t conv_args;
         conv_args[DNNL_ARG_DIFF_DST] = args.at(DNNL_ARG_SRC);
         conv_args[DNNL_ARG_SRC] = args.at(DNNL_ARG_DIFF_DST);
         conv_args[DNNL_ARG_DIFF_WEIGHTS] = args.at(DNNL_ARG_DIFF_WEIGHTS);
-        if (!types::is_zero_md(pd()->scratchpad_md()))
-            conv_args[DNNL_ARG_SCRATCHPAD] = args.at(DNNL_ARG_SCRATCHPAD);
         exec_ctx_t conv_ctx(ctx.stream(), std::move(conv_args));
 
+        nested_scratchpad_t ns(ctx, key_nested, conv_p_);
+        conv_ctx.set_scratchpad_grantor(ns.grantor());
         status_t status = conv_p_->execute(conv_ctx);
         if (status != status::success) return status;
 
@@ -479,11 +481,16 @@ struct ref_deconvolution_bwd_weights_t : public primitive_impl_t {
     }
 
 private:
-    const pd_t *pd() const { return (const pd_t *)primitive_impl_t::pd(); }
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     void compute_bwd_bias(float *diff_bias, const float *diff_dst) const;
 
     template <data_type_t dbia_type, data_type_t ddst_type>
     void compute_bwd_bias_ncdhw(
+            typename prec_traits<dbia_type>::type *diff_bias,
+            const typename prec_traits<ddst_type>::type *diff_dst) const;
+
+    template <data_type_t dbia_type, data_type_t ddst_type>
+    void compute_bwd_bias_ndhwc(
             typename prec_traits<dbia_type>::type *diff_bias,
             const typename prec_traits<ddst_type>::type *diff_dst) const;
 
@@ -494,7 +501,7 @@ private:
 
     template <data_type_t dbia_type, data_type_t ddst_type>
     void compute_bias(const exec_ctx_t &ctx) const;
-    primitive_t *conv_p_;
+    std::shared_ptr<primitive_t> conv_p_;
 };
 
 } // namespace cpu

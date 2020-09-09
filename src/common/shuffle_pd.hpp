@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef SHUFFLE_PD_HPP
-#define SHUFFLE_PD_HPP
+#ifndef COMMON_SHUFFLE_PD_HPP
+#define COMMON_SHUFFLE_PD_HPP
 
 #include "dnnl.h"
 
@@ -31,19 +31,19 @@ struct shuffle_pd_t : public primitive_desc_t {
     typedef shuffle_pd_t base_class;
     typedef shuffle_pd_t hint_class;
 
-    shuffle_pd_t(engine_t *engine, const shuffle_desc_t *adesc,
-            const primitive_attr_t *attr, const shuffle_pd_t *hint_fwd_pd)
-        : primitive_desc_t(engine, attr, base_pkind)
+    shuffle_pd_t(const shuffle_desc_t *adesc, const primitive_attr_t *attr,
+            const shuffle_pd_t *hint_fwd_pd)
+        : primitive_desc_t(attr, base_pkind)
         , desc_(*adesc)
         , hint_fwd_pd_(hint_fwd_pd)
         , data_md_(desc_.data_desc) {}
 
     const shuffle_desc_t *desc() const { return &desc_; }
-    virtual const op_desc_t *op_desc() const override {
+    const op_desc_t *op_desc() const override {
         return reinterpret_cast<const op_desc_t *>(this->desc());
     }
 
-    virtual status_t query(query_t what, int idx, void *result) const override {
+    status_t query(query_t what, int idx, void *result) const override {
         switch (what) {
             case query::prop_kind:
                 *(prop_kind_t *)result = desc()->prop_kind;
@@ -56,7 +56,7 @@ struct shuffle_pd_t : public primitive_desc_t {
         return status::success;
     }
 
-    virtual arg_usage_t arg_usage(int arg) const override {
+    arg_usage_t arg_usage(int arg) const override {
         if (is_fwd()) {
             if (arg == DNNL_ARG_SRC) return arg_usage_t::input;
 
@@ -70,7 +70,7 @@ struct shuffle_pd_t : public primitive_desc_t {
         return primitive_desc_t::arg_usage(arg);
     }
 
-    virtual const memory_desc_t *arg_md(int arg) const override {
+    const memory_desc_t *arg_md(int arg) const override {
         switch (arg) {
             case DNNL_ARG_SRC: return src_md(0);
             case DNNL_ARG_DST: return dst_md(0);
@@ -80,22 +80,22 @@ struct shuffle_pd_t : public primitive_desc_t {
         }
     }
 
-    virtual const memory_desc_t *src_md(int index = 0) const override {
+    const memory_desc_t *src_md(int index = 0) const override {
         return index == 0 && is_fwd() ? &data_md_ : &glob_zero_md;
     }
-    virtual const memory_desc_t *dst_md(int index = 0) const override {
+    const memory_desc_t *dst_md(int index = 0) const override {
         return index == 0 && is_fwd() ? &data_md_ : &glob_zero_md;
     }
 
-    virtual const memory_desc_t *diff_src_md(int index = 0) const override {
+    const memory_desc_t *diff_src_md(int index = 0) const override {
         return index == 0 && !is_fwd() ? &data_md_ : &glob_zero_md;
     }
-    virtual const memory_desc_t *diff_dst_md(int index = 0) const override {
+    const memory_desc_t *diff_dst_md(int index = 0) const override {
         return index == 0 && !is_fwd() ? &data_md_ : &glob_zero_md;
     }
 
-    virtual int n_inputs() const override { return 1; }
-    virtual int n_outputs() const override { return 1; }
+    int n_inputs() const override { return 1; }
+    int n_outputs() const override { return 1; }
 
     /* shuffle aux functions */
 

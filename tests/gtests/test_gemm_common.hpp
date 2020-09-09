@@ -21,7 +21,6 @@
 #include "dnnl_thread.hpp"
 #include "gtest/gtest.h"
 
-#include "cpu_isa_traits.hpp"
 #include "dnnl.h"
 #include "dnnl_types.h"
 
@@ -114,77 +113,7 @@ dnnl_status_t dnnl_gemm_bf16bf16f32(char transa, char transb, dnnl_dim_t M,
 }
 
 // Declare packed GEMM interfaces for testing
-namespace dnnl {
-namespace impl {
-namespace cpu {
-
-// Get pack-size functions.
-extern dnnl_status_t sgemm_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
-        bool *pack = nullptr);
-
-extern dnnl_status_t gemm_bf16bf16f32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
-        bool *pack = nullptr);
-
-extern dnnl_status_t gemm_s8u8s32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
-        bool *pack = nullptr);
-
-extern dnnl_status_t gemm_s8s8s32_pack_get_size(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, size_t *size,
-        bool *pack = nullptr);
-
-// Pack functions.
-extern dnnl_status_t sgemm_pack(const char *identifier, const char *transa,
-        const char *transb, const dim_t *M, const dim_t *N, const dim_t *K,
-        const dim_t *lda, const dim_t *ldb, const float *src, float *dst);
-
-extern dnnl_status_t gemm_bf16bf16f32_pack(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb,
-        const bfloat16_t *src, bfloat16_t *dst);
-
-extern dnnl_status_t gemm_s8u8s32_pack(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, const void *src,
-        void *dst);
-
-extern dnnl_status_t gemm_s8s8s32_pack(const char *identifier,
-        const char *transa, const char *transb, const dim_t *M, const dim_t *N,
-        const dim_t *K, const dim_t *lda, const dim_t *ldb, const void *src,
-        void *dst);
-
-// Compute functions.
-extern dnnl_status_t sgemm_compute(const char *transa, const char *transb,
-        const dim_t *M, const dim_t *N, const dim_t *K, const float *A,
-        const dim_t *lda, const float *B, const dim_t *ldb, const float *beta,
-        float *C, const dim_t *ldc);
-
-extern dnnl_status_t gemm_bf16bf16f32_compute(const char *transa,
-        const char *transb, const dim_t *M, const dim_t *N, const dim_t *K,
-        const bfloat16_t *A, const dim_t *lda, const bfloat16_t *B,
-        const dim_t *ldb, const float *beta, float *C, const dim_t *ldc);
-
-extern dnnl_status_t gemm_s8u8s32_compute(const char *transa,
-        const char *transb, const char *offsetc, const dim_t *M, const dim_t *N,
-        const dim_t *K, const int8_t *A, const dim_t *lda, const uint8_t *B,
-        const dim_t *ldb, const float *beta, int32_t *C, const dim_t *ldc,
-        const int32_t *co);
-
-extern dnnl_status_t gemm_s8s8s32_compute(const char *transa,
-        const char *transb, const char *offsetc, const dim_t *M, const dim_t *N,
-        const dim_t *K, const int8_t *A, const dim_t *lda, const int8_t *B,
-        const dim_t *ldb, const float *beta, int32_t *C, const dim_t *ldc,
-        const int32_t *co);
-
-} // namespace cpu
-} // namespace impl
-} // namespace dnnl
+#include "src/cpu/gemm/gemm_pack.hpp"
 
 namespace dnnl {
 
@@ -1218,22 +1147,14 @@ protected:
         SKIP_IF(!zero_off && get_test_engine_kind() == engine::kind::cpu,
                 "CPU does not support non-zero offsets.");
 
-        bool is_f16 = (data_traits<a_dt>::data_type == memory::data_type::f16);
-        SKIP_IF(is_f16 && get_test_engine_kind() == engine::kind::cpu,
-                "CPU does not support f16 data type.");
-
-        bool is_bf16bf16f32 = true
-                && data_traits<a_dt>::data_type == memory::data_type::bf16
-                && data_traits<b_dt>::data_type == memory::data_type::bf16
-                && data_traits<c_dt>::data_type == memory::data_type::f32;
-
-        SKIP_IF(is_bf16bf16f32 && get_test_engine_kind() == engine::kind::cpu
-                        && !impl::cpu::mayiuse(impl::cpu::avx512_core),
-                "Skip test for systems that do not support avx512_core.");
+        SKIP_IF(unsupported_data_type(data_traits<a_dt>::data_type),
+                "Engine does not support this data type.");
 
         bool pack = (p.pack_params.pack_a || p.pack_params.pack_b);
         SKIP_IF(get_test_engine_kind() == engine::kind::gpu && pack,
                 "GPU does not support packed GEMM.");
+        SKIP_IF(!DNNL_X64 && pack,
+                "Packed GEMM does not support non-x64 CPUs.");
         SKIP_IF((p.alpha != 1.f || p.igemm_params.oa() != 0
                         || p.igemm_params.ob() != 0)
                         && pack,
@@ -1250,16 +1171,7 @@ protected:
     }
     void Test() {
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-        struct scoped_threadpool {
-            scoped_threadpool() {
-                impl::threadpool_utils::activate_threadpool(
-                        impl::threadpool_utils::get_active_threadpool());
-            }
-            ~scoped_threadpool() {
-                impl::threadpool_utils::deactivate_threadpool();
-            }
-        };
-        scoped_threadpool stp;
+        testing::scoped_tp_activation_t sta;
 #endif
         const auto &p = ::testing::TestWithParam<test_params>::GetParam();
         run_test_gemm<a_dt, b_dt, c_dt>::call(p);

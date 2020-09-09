@@ -14,16 +14,16 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef CPU_STREAM_HPP
-#define CPU_STREAM_HPP
-
-#include "common/c_types_map.hpp"
-#include "common/dnnl_thread.hpp"
-#include "common/stream.hpp"
+#ifndef CPU_CPU_STREAM_HPP
+#define CPU_CPU_STREAM_HPP
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
 #include "dnnl_threadpool_iface.hpp"
 #endif
+
+#include "common/c_types_map.hpp"
+#include "common/dnnl_thread.hpp"
+#include "common/stream.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -34,19 +34,19 @@ struct cpu_stream_t : public stream_t {
         : stream_t(engine, flags, attr) {}
     virtual ~cpu_stream_t() = default;
 
-    virtual dnnl::impl::status_t wait() override {
+    dnnl::impl::status_t wait() override {
         // CPU execution is synchronous so return immediately
         return dnnl::impl::status::success;
     }
 
 #if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    virtual void before_exec_hook() override {
+    void before_exec_hook() override {
         threadpool_iface *tp;
         auto rc = this->attr()->get_threadpool(&tp);
         if (rc == status::success) threadpool_utils::activate_threadpool(tp);
     }
 
-    virtual void after_exec_hook() override {
+    void after_exec_hook() override {
         threadpool_utils::deactivate_threadpool();
     }
 #endif

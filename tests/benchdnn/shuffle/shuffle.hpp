@@ -47,7 +47,6 @@ struct settings_t {
     std::vector<std::string> tag {tag::abx};
     std::vector<int64_t> group {1};
     std::vector<int> axis {1};
-    bool allow_unimpl = false;
 
     const char *perf_template_csv
             = "perf,%engine%,%dir%,%dt%,%tag%,%group%,%axis%,%DESC%,%-time%,%"
@@ -88,17 +87,15 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_desc(std::ostream &s) const override { s << p_->dims; }
+    void dump_desc(std::ostream &s) const override { s << p_->dims; }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
-        s << p_->dims;
-    }
+    void dump_desc_csv(std::ostream &s) const override { s << p_->dims; }
 
-    virtual const int *axis() const override { return &p_->axis; }
-    virtual const int64_t *group() const override { return &p_->group; }
-    virtual const dir_t *dir() const override { return &p_->dir; }
-    virtual const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    virtual const std::string *tag() const override { return &p_->tag; }
+    const int *axis() const override { return &p_->axis; }
+    const int64_t *group() const override { return &p_->group; }
+    const dir_t *dir() const override { return &p_->dir; }
+    const dnnl_data_type_t *dt() const override { return &p_->dt; }
+    const std::string *tag() const override { return &p_->tag; }
 
 private:
     const prb_t *p_ = NULL;

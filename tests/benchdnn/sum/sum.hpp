@@ -41,10 +41,9 @@ struct settings_t {
 
     std::vector<std::vector<dnnl_data_type_t>> sdt {{dnnl_f32, dnnl_f32}};
     std::vector<dnnl_data_type_t> ddt {dnnl_f32};
-    std::vector<std::vector<std::string>> stag;
+    std::vector<std::vector<std::string>> stag {{tag::abx}};
     std::vector<std::string> dtag {tag::undef};
     std::vector<std::vector<float>> scales {{0.25}, {1}, {4}};
-    bool allow_unimpl = false;
 
     const char *perf_template_csv
             = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%DESC%,%-time%,%0time%";
@@ -92,20 +91,16 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_desc(std::ostream &s) const override { s << p_->dims; }
+    void dump_desc(std::ostream &s) const override { s << p_->dims; }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
-        s << p_->dims;
-    }
+    void dump_desc_csv(std::ostream &s) const override { s << p_->dims; }
 
-    virtual const std::vector<dnnl_data_type_t> *sdt() const override {
+    const std::vector<dnnl_data_type_t> *sdt() const override {
         return &p_->sdt;
     }
-    virtual const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
-    virtual const std::vector<std::string> *stag() const override {
-        return &p_->stag;
-    }
-    virtual const std::string *dtag() const override { return &p_->dtag; }
+    const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
+    const std::vector<std::string> *stag() const override { return &p_->stag; }
+    const std::string *dtag() const override { return &p_->dtag; }
 
 private:
     const prb_t *p_ = NULL;

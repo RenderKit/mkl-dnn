@@ -40,10 +40,9 @@ struct settings_t {
     std::vector<dims_t> sdims;
 
     std::vector<dnnl_data_type_t> sdt {dnnl_f32}, ddt {dnnl_f32};
-    std::vector<std::vector<std::string>> stag;
+    std::vector<std::vector<std::string>> stag {{tag::abx}};
     std::vector<std::string> dtag {tag::undef};
     std::vector<int> axis {1};
-    bool allow_unimpl = false;
 
     const char *perf_template_csv
             = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%axis%,%DESC%,%-time%,%"
@@ -106,21 +105,15 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_desc(std::ostream &s) const override { s << p_->sdims; }
+    void dump_desc(std::ostream &s) const override { s << p_->sdims; }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
-        s << p_->sdims;
-    }
+    void dump_desc_csv(std::ostream &s) const override { s << p_->sdims; }
 
-    virtual const int *axis() const override { return &p_->axis; }
-    virtual const std::vector<dnnl_data_type_t> *sdt() const override {
-        return &sdt_;
-    }
-    virtual const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
-    virtual const std::vector<std::string> *stag() const override {
-        return &p_->stag;
-    }
-    virtual const std::string *dtag() const override { return &p_->dtag; }
+    const int *axis() const override { return &p_->axis; }
+    const std::vector<dnnl_data_type_t> *sdt() const override { return &sdt_; }
+    const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
+    const std::vector<std::string> *stag() const override { return &p_->stag; }
+    const std::string *dtag() const override { return &p_->dtag; }
 
 private:
     const prb_t *p_ = NULL;

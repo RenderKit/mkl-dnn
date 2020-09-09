@@ -29,11 +29,6 @@
 #include "dnnl_memory.hpp"
 #include "perf_report.hpp"
 
-namespace deconv {
-/* some extra control parameters which shouldn't be placed in prb_t */
-extern bool allow_unimpl; /* true means do not treat unimplemented as error */
-} // namespace deconv
-
 namespace conv {
 
 enum alg_t { DIRECT, WINO, AUTO };
@@ -48,11 +43,27 @@ struct desc_t {
     int64_t kd, kh, kw;
     int64_t sd, sh, sw;
     int64_t pd, ph, pw;
+    int64_t pd_r, ph_r, pw_r; // End side padding for each dimension
     int64_t dd, dh, dw;
     bool has_groups;
 
     const char *name;
     int ndims;
+
+    // Initialize dependent opposite-side paddings values
+    // from the shape parameters
+    void init_pad_r(bool is_deconv) {
+        pw_r = opp_pad(is_deconv, iw, ow, kw, sw, pw, dw);
+        ph_r = opp_pad(is_deconv, ih, oh, kh, sh, ph, dh);
+        pd_r = opp_pad(is_deconv, id, od, kd, sd, pd, dd);
+    }
+
+private:
+    int64_t opp_pad(bool is_deconv, int64_t i, int64_t o, int64_t k, int64_t s,
+            int64_t p, int64_t d) {
+        return is_deconv ? (i - 1) * s - o + ((k - 1) * (d + 1) + 1) - p
+                         : (o - 1) * s - i + ((k - 1) * (d + 1) + 1) - p;
+    }
 };
 
 int str2desc(desc_t *desc, const char *str, bool is_deconv);
@@ -97,15 +108,16 @@ struct settings_t {
         this->perf_template = perf_template;
     }
 
-    desc_t desc;
+    desc_t desc {};
 
     std::vector<dir_t> dir {FWD_B};
     std::vector<const dt_conf_t *> cfg {conf_f32};
     std::vector<std::string> stag {tag::any}, wtag {tag::any}, dtag {tag::any};
     std::vector<int64_t> mb {0};
-    alg_t alg = DIRECT;
+    std::vector<alg_t> alg {DIRECT};
+    std::vector<attr_t::scale_t> oscale {attr_t::scale_t()};
+    std::vector<attr_t::post_ops_t> post_ops {attr_t::post_ops_t()};
     attr_t attr = {};
-    bool allow_unimpl = false;
     const char *pattern = NULL;
 
     const char *perf_template_csv
@@ -119,6 +131,7 @@ struct settings_t {
     void reset() { *this = settings_t(perf_template); }
 };
 
+// moved out of prb_t to support fusion
 float *generate_oscales(const attr_t::scale_t &oscale, int N);
 
 struct prb_t : public desc_t {
@@ -169,17 +182,15 @@ struct perf_report_t : public base_perf_report_t {
         base_report(r, prb_str);
     }
 
-    virtual void dump_alg(std::ostream &s) const override {
-        s << alg2str(p_->alg);
-    }
+    void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
 
-    virtual void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
+    void dump_cfg(std::ostream &s) const override { s << p_->cfg; }
 
-    virtual void dump_desc(std::ostream &s) const override {
+    void dump_desc(std::ostream &s) const override {
         s << static_cast<const desc_t &>(*p_);
     }
 
-    virtual void dump_desc_csv(std::ostream &s) const override {
+    void dump_desc_csv(std::ostream &s) const override {
         s << p_->g << ',' << p_->mb << ','
 
           << p_->ic << ',' << p_->id << ',' << p_->ih << ',' << p_->iw << ','
@@ -195,17 +206,14 @@ struct perf_report_t : public base_perf_report_t {
           << p_->dd << ',' << p_->dh << ',' << p_->dw;
     }
 
-    virtual double ops() const override { return p_->ops; }
-    virtual const attr_t *attr() const override { return &p_->attr; }
-    virtual const char *name() const override { return p_->name; }
-    virtual const dir_t *dir() const override { return &p_->dir; }
+    double ops() const override { return p_->ops; }
+    const attr_t *attr() const override { return &p_->attr; }
+    const char *name() const override { return p_->name; }
+    const dir_t *dir() const override { return &p_->dir; }
 
 private:
     const prb_t *p_ = NULL;
 };
-
-/* some extra control parameters which shouldn't be placed in prb_t */
-extern bool allow_unimpl; /* true means do not treat unimplemented as error */
 
 inline int64_t src_off_f(const prb_t *p, int64_t mb, int64_t g, int64_t ic,
         int64_t id, int64_t ih, int64_t iw) {

@@ -23,6 +23,7 @@
 
 #include "common/c_types_map.hpp"
 #include "common/engine.hpp"
+#include "common/primitive_iterator.hpp"
 #include "gpu/compute/device_info.hpp"
 #include "gpu/compute/dispatch.hpp"
 #include "gpu/compute/kernel.hpp"
@@ -49,13 +50,37 @@ public:
         std::vector<kernel_t> kernels(1);
         auto status = create_kernels(&kernels, {kernel_name}, kernel_ctx);
         if (status == status::success) *kernel = kernels[0];
-
         return status;
     }
 
-    virtual status_t create_kernels(std::vector<kernel_t> *kernels,
+    virtual status_t create_kernel(compute::kernel_t *kernel,
+            const char *kernel_name,
+            const std::vector<unsigned char> &binary) const = 0;
+
+    virtual status_t create_kernels(std::vector<compute::kernel_t> *kernels,
             const std::vector<const char *> &kernel_names,
-            const kernel_ctx_t &kernel_ctx) const = 0;
+            const compute::kernel_ctx_t &kernel_ctx) const = 0;
+
+    virtual status_t create_kernels_from_ocl_source(
+            std::vector<compute::kernel_t> *kernels,
+            const std::vector<const char *> &kernel_names,
+            const char **source_strings,
+            const compute::kernel_ctx_t &kernel_ctx) const = 0;
+
+    status_t get_zero_pad_primitive(primitive_t *&result) {
+        status_t status = status::success;
+        if (zero_pad_primitive_ == nullptr) {
+            zero_pad_desc_t desc;
+            desc.primitive_kind = primitive_kind::zero_pad;
+            dnnl_primitive_desc_iterator it(
+                    this, (op_desc_t *)&desc, nullptr, nullptr);
+            ++it;
+            std::unique_ptr<primitive_desc_t> zero_pad_pd(it.fetch_once());
+            status = zero_pad_pd->create_primitive(zero_pad_primitive_, this);
+        }
+        result = zero_pad_primitive_.get();
+        return status;
+    };
 
     bool mayiuse(device_ext_t ext) const { return device_info_->has(ext); }
 
@@ -63,8 +88,11 @@ public:
         return dispatch_t(this, md);
     }
 
+    virtual bool mayiuse_ngen_kernels() { return false; }
+
 private:
     std::unique_ptr<device_info_t> device_info_;
+    std::shared_ptr<primitive_t> zero_pad_primitive_;
 };
 
 } // namespace compute

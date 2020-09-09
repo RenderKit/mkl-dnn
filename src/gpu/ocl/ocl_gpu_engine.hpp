@@ -43,47 +43,60 @@ public:
                 new ocl_gpu_device_info_t(adevice))
         , device_(adevice)
         , context_(nullptr)
-        , is_user_context_(false) {}
+        , is_user_context_(false)
+        , enable_ngen_kernels_(false)
+        , checked_ngen_kernels_(false) {}
     ocl_gpu_engine_t(cl_device_id adevice, cl_context acontext)
         : compute::compute_engine_t(engine_kind::gpu, runtime_kind::ocl,
                 new ocl_gpu_device_info_t(adevice))
         , device_(adevice)
         , context_(acontext)
-        , is_user_context_(true) {}
-    virtual ~ocl_gpu_engine_t() override {
+        , is_user_context_(true)
+        , enable_ngen_kernels_(false)
+        , checked_ngen_kernels_(false) {}
+    ~ocl_gpu_engine_t() override {
         if (context_) { clReleaseContext(context_); }
     }
 
     status_t init();
 
-    virtual status_t create_memory_storage(memory_storage_t **storage,
-            unsigned flags, size_t size, void *handle) override;
+    status_t create_memory_storage(memory_storage_t **storage, unsigned flags,
+            size_t size, void *handle) override;
 
-    virtual status_t create_stream(stream_t **stream, unsigned flags,
+    status_t create_stream(stream_t **stream, unsigned flags,
             const stream_attr_t *attr) override;
     status_t create_stream(stream_t **stream, cl_command_queue queue);
 
-    virtual status_t create_kernels(std::vector<compute::kernel_t> *kernels,
+    status_t create_kernel(compute::kernel_t *kernel, const char *kernel_name,
+            const std::vector<unsigned char> &binary) const override;
+
+    status_t create_kernels(std::vector<compute::kernel_t> *kernels,
             const std::vector<const char *> &kernel_names,
             const compute::kernel_ctx_t &kernel_ctx) const override;
 
-    virtual const concat_primitive_desc_create_f *
+    status_t create_kernels_from_ocl_source(
+            std::vector<compute::kernel_t> *kernels,
+            const std::vector<const char *> &kernel_names,
+            const char **source_strings,
+            const compute::kernel_ctx_t &kernel_ctx) const override;
+
+    const concat_primitive_desc_create_f *
     get_concat_implementation_list() const override {
         return gpu_impl_list_t::get_concat_implementation_list();
     }
 
-    virtual const reorder_primitive_desc_create_f *
-    get_reorder_implementation_list(const memory_desc_t *src_md,
+    const reorder_primitive_desc_create_f *get_reorder_implementation_list(
+            const memory_desc_t *src_md,
             const memory_desc_t *dst_md) const override {
         return gpu_impl_list_t::get_reorder_implementation_list(src_md, dst_md);
     }
 
-    virtual const sum_primitive_desc_create_f *
+    const sum_primitive_desc_create_f *
     get_sum_implementation_list() const override {
         return gpu_impl_list_t::get_sum_implementation_list();
     }
 
-    virtual const primitive_desc_create_f *get_implementation_list(
+    const primitive_desc_create_f *get_implementation_list(
             const op_desc_t *desc) const override {
         UNUSED(desc);
         return gpu_impl_list_t::get_implementation_list();
@@ -92,14 +105,27 @@ public:
     virtual cl_device_id device() const { return device_; }
     virtual cl_context context() const { return context_; }
 
-    stream_t *service_stream() const { return service_stream_.get(); }
+    intptr_t device_id() const override {
+        return reinterpret_cast<intptr_t>(device());
+    }
+
+    virtual bool mayiuse_ngen_kernels() override {
+        check_mayiuse_ngen_kernels();
+        return enable_ngen_kernels_;
+    }
+
+    stream_t *service_stream() const override { return service_stream_.get(); }
 
 private:
     cl_device_id device_;
     cl_context context_;
     bool is_user_context_;
+    bool enable_ngen_kernels_;
+    bool checked_ngen_kernels_;
 
     std::unique_ptr<stream_t> service_stream_;
+
+    void check_mayiuse_ngen_kernels();
 };
 
 } // namespace ocl

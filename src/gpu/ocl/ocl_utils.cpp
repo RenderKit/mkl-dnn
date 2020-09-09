@@ -87,10 +87,16 @@ status_t get_ocl_kernel_arg_type(
     CASE(uint)
     CASE(ulong)
     CASE(ushort)
+    CASE(zero_pad_mask_t)
 #undef CASE
 
     assert(!"Not expected");
     return status::runtime_error;
+}
+
+cl_mem clCreateBuffer_wrapper(cl_context context, cl_mem_flags flags,
+        size_t size, void *host_ptr, cl_int *errcode_ret) {
+    return clCreateBuffer(context, flags, size, host_ptr, errcode_ret);
 }
 
 } // namespace ocl

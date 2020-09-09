@@ -177,23 +177,7 @@
 #define SRC_TO_DST8(x) TO_DST8(SRC_TO_REF8(x))
 #endif
 
-#if SCALE_QUANT
-
-#define REORDER(_out, _src, _a, _b) \
-    do { \
-        const float _x = SRC_TO_REF(_src); \
-        const float _s = _a * _x + _b; \
-        _out = TO_DST(_s); \
-    } while (0)
-#define REORDER8(_out, _src, _a, _b) \
-    do { \
-        const float8 _x = convert_float8(SRC_TO_REF8(_src)); \
-        const float8 _s = _a * _x + _b; \
-        _out = TO_DST8(_s); \
-    } while (0)
-
-#elif WITH_SUM_A
-
+#if WITH_SUM_A
 #define REORDER(_dst, _src, _a, _b) \
     do { \
         const float _x = SRC_TO_REF(_src); \
@@ -208,7 +192,6 @@
     } while (0)
 
 #elif WITH_SUM_AB
-
 #define REORDER(_dst, _src, _a, _b) \
     do { \
         const float _x = SRC_TO_REF(_src); \
@@ -224,8 +207,21 @@
         _dst = TO_DST8(_s); \
     } while (0)
 
-#else // WITH_SUM_AB == 0
+#elif SCALE_QUANT
+#define REORDER(_out, _src, _a, _b) \
+    do { \
+        const float _x = SRC_TO_REF(_src); \
+        const float _s = _a * _x + _b; \
+        _out = TO_DST(_s); \
+    } while (0)
+#define REORDER8(_out, _src, _a, _b) \
+    do { \
+        const float8 _x = convert_float8(SRC_TO_REF8(_src)); \
+        const float8 _s = _a * _x + _b; \
+        _out = TO_DST8(_s); \
+    } while (0)
 
+#else // WITH_SUM_AB == 0
 #define REORDER(_dst, _src, _a, _b) \
     do { \
         _dst = SRC_TO_DST(_src); \
@@ -312,6 +308,19 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
     }
 
 #else // REF_REORDER == 0
+#if USE_DENSE_VECT
+    const int d0_blk_start = GWS_GET_D0();
+    const int d0_blk_end = d0_blk_start + (GWS_GET_D0_BLOCK() * 16);
+    for (int d0 = d0_blk_start; d0 < d0_blk_end; d0 += 128) {
+        SRC_DATA8_T src_tmp = SRC_BLOCK_READ8(&src[d0]);
+        DST_DATA8_T dst_tmp;
+#if WITH_SUM_AB
+        dst_tmp = DST_BLOCK_READ8(&dst[d0]);
+#endif
+        REORDER8(dst_tmp, src_tmp, alpha, beta);
+        DST_BLOCK_WRITE8(&dst[d0], dst_tmp);
+    }
+#else
 
     const int d0 = GWS_GET_D0();
     const int d1 = GWS_GET_D1();
@@ -515,5 +524,6 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
 #endif // (SRC_16B16C || SRC_16C16B) && (DST_16B16C || DST_16C16B)
 #endif // SRC_16B16C || DST_16B16C || SRC_16C16B || DST_16C16B
 
+#endif // USE_DENSE_VECT
 #endif // REF_REORDER
 }

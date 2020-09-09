@@ -28,10 +28,9 @@ namespace {
 
 memory_storage_t *create_scratchpad_memory_storage(
         engine_t *engine, size_t size) {
-    memory_storage_t *mem_storage;
+    memory_storage_t *mem_storage = nullptr;
     auto status = engine->create_memory_storage(&mem_storage, size);
-    assert(status == status::success);
-    MAYBE_UNUSED(status);
+    UNUSED(status);
     return mem_storage;
 }
 
@@ -44,15 +43,21 @@ memory_storage_t *create_scratchpad_memory_storage(
 struct concurrent_scratchpad_t : public scratchpad_t {
     concurrent_scratchpad_t(engine_t *engine, size_t size) {
         auto *mem_storage = create_scratchpad_memory_storage(engine, size);
+        size_ = size;
+        if (mem_storage == nullptr) size_ = 0;
+
         mem_storage_.reset(mem_storage);
     }
 
-    virtual const memory_storage_t *get_memory_storage() const override {
+    const memory_storage_t *get_memory_storage() const override {
         return mem_storage_.get();
     }
 
+    size_t size() const override { return size_; }
+
 private:
     std::unique_ptr<memory_storage_t> mem_storage_;
+    size_t size_;
 
     DNNL_DISALLOW_COPY_AND_ASSIGN(concurrent_scratchpad_t);
 };
@@ -67,8 +72,14 @@ struct global_scratchpad_t : public scratchpad_t {
         UNUSED(engine);
         if (size > size_) {
             delete mem_storage_;
+            // Try to expand the global scratchpad to the necessary size
             mem_storage_ = create_scratchpad_memory_storage(engine, size);
-            size_ = size;
+            if (mem_storage_ == nullptr) {
+                // Recreate scratchpad with original capacity
+                mem_storage_ = create_scratchpad_memory_storage(engine, size_);
+                if (mem_storage_ == nullptr) size_ = 0;
+            } else
+                size_ = size;
         }
         reference_count_++;
     }
@@ -82,9 +93,11 @@ struct global_scratchpad_t : public scratchpad_t {
         }
     }
 
-    virtual const memory_storage_t *get_memory_storage() const override {
+    const memory_storage_t *get_memory_storage() const override {
         return mem_storage_;
     }
+
+    size_t size() const override { return size_; }
 
 private:
     thread_local static memory_storage_t *mem_storage_;
