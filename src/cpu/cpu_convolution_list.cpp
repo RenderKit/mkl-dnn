@@ -36,14 +36,14 @@
 //#include "cpu/x64/jit_avx2_x8s8s32x_1x1_convolution.hpp"
 //#include "cpu/x64/jit_avx2_x8s8s32x_convolution.hpp"
 //#include "cpu/x64/jit_avx512_common_1x1_convolution.hpp"
-//#include "cpu/x64/jit_avx512_common_convolution.hpp"
+#include "cpu/x64/jit_avx512_common_convolution.hpp"
 //#include "cpu/x64/jit_avx512_common_convolution_winograd.hpp"
 //#include "cpu/x64/jit_avx512_core_amx_1x1_convolution.hpp"
 //#include "cpu/x64/jit_avx512_core_amx_convolution.hpp"
 //#include "cpu/x64/jit_avx512_core_bf16_1x1_convolution.hpp"
 //#include "cpu/x64/jit_avx512_core_bf16_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_f32_wino_conv_2x3.hpp"
-#include "cpu/x64/jit_avx512_core_f32_wino_conv_4x3.hpp"
+//#include "cpu/x64/jit_avx512_core_f32_wino_conv_2x3.hpp"
+//#include "cpu/x64/jit_avx512_core_f32_wino_conv_4x3.hpp"
 //#include "cpu/x64/jit_avx512_core_u8s8s32x_wino_convolution.hpp"
 //#include "cpu/x64/jit_avx512_core_x8s8s32x_1x1_convolution.hpp"
 //#include "cpu/x64/jit_avx512_core_x8s8s32x_convolution.hpp"
@@ -87,10 +87,10 @@ static const std::map<conv_impl_key_t, std::vector<pd_create_f>> impl_list_map {
     {{forward, f32, f32, f32}, {
         //CPU_INSTANCE_X64(jit_avx512_common_dw_convolution_fwd_t)
         //CPU_INSTANCE_X64(jit_avx512_common_1x1_convolution_fwd_f32_t)
-        CPU_INSTANCE_X64(jit_avx512_core_f32_wino_conv_2x3_fwd_t)
-        CPU_INSTANCE_X64(jit_avx512_core_f32_wino_conv_4x3_fwd_t)
+        //CPU_INSTANCE_X64(jit_avx512_core_f32_wino_conv_2x3_fwd_t)
+        //CPU_INSTANCE_X64(jit_avx512_core_f32_wino_conv_4x3_fwd_t)
         //CPU_INSTANCE_X64(jit_avx512_common_convolution_winograd_fwd_t)
-        //CPU_INSTANCE_X64(jit_avx512_common_convolution_fwd_t<f32>)
+        CPU_INSTANCE_X64(jit_avx512_common_convolution_fwd_t<f32>)
         //CPU_INSTANCE_X64(jit_avx2_dw_convolution_fwd_t)
         //CPU_INSTANCE_X64(jit_avx2_1x1_convolution_fwd_t)
         //CPU_INSTANCE_X64(jit_sse41_dw_convolution_fwd_t)

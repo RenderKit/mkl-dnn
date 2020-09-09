@@ -24,12 +24,12 @@
 #include "cpu/cpu_engine.hpp"
 #include "cpu/cpu_reorder_pd.hpp"
 
-#include "cpu/rnn/rnn_reorders.hpp"
+//#include "cpu/rnn/rnn_reorders.hpp"
 #include "cpu/simple_reorder.hpp"
 
 #if DNNL_X64
 #include "cpu/x64/jit_uni_reorder.hpp"
-#include "cpu/x64/wino_reorder.hpp"
+//#include "cpu/x64/wino_reorder.hpp"
 #endif
 
 namespace dnnl {
@@ -165,7 +165,7 @@ static const impl_list_map_t regular_impl_list_map {
     }},
     */
     {{f32, f32, 4}, {
-        DNNL_X64_ONLY(x64::wino_reorder_t<f32, f32>::pd_t::create,)
+        //DNNL_X64_ONLY(x64::wino_reorder_t<f32, f32>::pd_t::create,)
 
         REG_FAST_DIRECT_COPY_F32_F32_COMMA
 
