@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -45,21 +45,19 @@ struct gen9_binary_t : public gpu_primitive_t {
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine);
 
-            const auto blocking = src_md(0)->format_desc.blocking;
             const auto attr_skip_mask = sm::post_ops | sm::scales;
-            bool ok = set_default_params() == status::success
-                    && blocking.inner_nblks == 1 && blocking.inner_idxs[0] == 1
-                    && blocking.inner_blks[0] == 16 && is_broadcast()
-                    && src_md(0)->dims[1] % 16 == 0
-                    && (utils::everyone_is(f32, src_md(0)->data_type,
+
+            bool ok = set_default_params() == status::success && is_broadcast()
+                    && (utils::everyone_is(bf16, src_md(0)->data_type,
                                 src_md(1)->data_type, dst_md()->data_type)
-                            || utils::everyone_is(bf16, src_md(0)->data_type,
-                                    src_md(1)->data_type, dst_md()->data_type)
-                            || utils::everyone_is(f16, src_md(0)->data_type,
-                                    src_md(1)->data_type, dst_md()->data_type)
-                            || utils::one_of(src_md(0)->data_type, s8, u8))
+                            || (utils::one_of(
+                                        src_md(0)->data_type, f16, f32, s8, u8)
+                                    && utils::one_of(src_md(1)->data_type, f16,
+                                            f32, s8, u8)
+                                    && utils::one_of(dst_md()->data_type, f16,
+                                            f32, s8, u8)))
                     && IMPLICATION(!attr()->scales_.has_default_values(),
-                            utils::one_of(src_md(0)->data_type, s8, u8)
+                            utils::one_of(dst_md()->data_type, s8, u8)
                                     && utils::one_of(
                                             attr()->output_scales_.mask_, 0,
                                             1 << 1))
@@ -74,7 +72,8 @@ struct gen9_binary_t : public gpu_primitive_t {
                                     && compute_engine->mayiuse(
                                             compute::device_ext_t::
                                                     intel_subgroups_short))
-                    && attr_post_ops_ok();
+                    && post_ops_with_binary_ok(
+                            attr(), dst_md()->data_type, MAX_NDIMS);
 
             if (!ok) return status::unimplemented;
 
@@ -112,16 +111,15 @@ struct gen9_binary_t : public gpu_primitive_t {
 
     status_t execute(const exec_ctx_t &ctx) const override {
 
+        status_t status = status::success;
+
         auto &src0 = CTX_IN_STORAGE(DNNL_ARG_SRC_0);
         auto &src1 = CTX_IN_STORAGE(DNNL_ARG_SRC_1);
-        auto &dst = CTX_OUT_STORAGE(DNNL_ARG_DST);
+        auto &dst = CTX_OUT_CLEAN_STORAGE(DNNL_ARG_DST, status);
+        CHECK(status);
 
         const auto &conf = pd()->conf;
 
-        auto eltwise_scale = conf.attr_info.eltwise_scale;
-        auto eltwise_alpha = conf.attr_info.eltwise_alpha;
-        auto eltwise_beta = conf.attr_info.eltwise_beta;
-        auto sum_scale = conf.attr_info.sum_scale;
         auto src0_scale = conf.attr_info.src0_scale;
         auto src1_scale = conf.attr_info.src1_scale;
 
@@ -129,16 +127,16 @@ struct gen9_binary_t : public gpu_primitive_t {
         arg_list.set(0, src0);
         arg_list.set(1, src1);
         arg_list.set(2, dst);
-        arg_list.set(3, eltwise_alpha);
-        arg_list.set(4, eltwise_beta);
-        arg_list.set(5, eltwise_scale);
-        arg_list.set(6, sum_scale);
-        arg_list.set(7, src0_scale);
-        arg_list.set(8, src1_scale);
+
+        unsigned arg_idx = append_post_ops_to_arg_list(
+                ctx, arg_list, 3, conf.attr_info.all_post_ops);
+
+        arg_list.set(arg_idx++, src0_scale);
+        arg_list.set(arg_idx, src1_scale);
 
         auto nd_range = conf.dispatch.nd_range();
 
-        status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
+        status = parallel_for(ctx, nd_range, kernel_, arg_list);
         return status;
     }
 

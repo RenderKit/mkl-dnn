@@ -24,16 +24,16 @@
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
 
+#include "cpu/primitive_attr_postops.hpp"
+
 #include "cpu/cpu_convolution_pd.hpp"
-#include "cpu/ref_eltwise.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
 
-template <impl::data_type_t src_type, impl::data_type_t wei_type = src_type,
-        impl::data_type_t dst_type = src_type,
-        impl::data_type_t acc_type = dst_type>
+template <data_type_t src_type, data_type_t wei_type = src_type,
+        data_type_t dst_type = src_type, data_type_t acc_type = dst_type>
 struct ref_convolution_fwd_t : public primitive_t {
     struct pd_t : public cpu_convolution_fwd_pd_t {
         using cpu_convolution_fwd_pd_t::cpu_convolution_fwd_pd_t;
@@ -42,8 +42,9 @@ struct ref_convolution_fwd_t : public primitive_t {
 
         status_t init(engine_t *engine) {
             using namespace data_type;
+            using smask_t = primitive_attr_t::skip_mask_t;
 
-            bool ok = true && is_fwd()
+            bool ok = is_fwd()
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(src_type, wei_type, data_type::undef,
                             dst_type, acc_type)
@@ -51,18 +52,18 @@ struct ref_convolution_fwd_t : public primitive_t {
                     && platform::has_data_type_support(wei_type)
                     && platform::has_data_type_support(dst_type)
                     && IMPLICATION(with_bias(),
-                            true
-                                    && IMPLICATION(src_type == u8,
-                                            utils::one_of(bias_md_.data_type,
-                                                    f32, s32, s8, u8))
+                            IMPLICATION(src_type == u8,
+                                    utils::one_of(bias_md_.data_type, f32, s32,
+                                            s8, u8))
                                     && IMPLICATION(src_type == f32,
                                             bias_md_.data_type == f32))
                     && set_default_formats()
-                    && attr()->has_default_values(
-                            primitive_attr_t::skip_mask_t::oscale
-                                    | primitive_attr_t::skip_mask_t::post_ops,
+                    && attr()->has_default_values(smask_t::oscale
+                                    | smask_t::zero_points_runtime
+                                    | smask_t::post_ops,
                             dst_type)
-                    && output_scales_mask_ok() && post_ops_ok();
+                    && output_scales_mask_ok() && zero_points_ok()
+                    && post_ops_ok();
             return ok ? status::success : status::unimplemented;
         }
 
@@ -84,40 +85,31 @@ struct ref_convolution_fwd_t : public primitive_t {
                     && (mask == 0 || mask == 1 << 1);
         }
 
-        bool post_ops_ok() const {
-            // to be consistent with other primitives and documentation
-            // the number and sequence of post op is limited
-            using namespace dnnl::impl::primitive_kind;
-            auto const &po = attr()->post_ops_;
-            auto is_eltwise
-                    = [&](int idx) { return po.entry_[idx].is_eltwise(); };
+        bool zero_points_ok() const {
+            using namespace data_type;
+            int mask_src = 0, mask_dst = 0;
+            attr()->zero_points_.get(DNNL_ARG_SRC, nullptr, &mask_src, nullptr);
+            attr()->zero_points_.get(DNNL_ARG_DST, nullptr, &mask_dst, nullptr);
 
-            switch (po.len_) {
-                case 0: return true;
-                case 1: return is_eltwise(0) || po.contain(sum, 0);
-                case 2:
-                    return (po.contain(sum, 0) && is_eltwise(1))
-                            || (po.contain(sum, 1) && is_eltwise(0));
-                default: return false;
-            }
-            return false;
+            return IMPLICATION(!utils::one_of(src_type, s8, u8),
+                           attr()->zero_points_.has_default_values())
+                    && attr()->zero_points_.has_default_values(DNNL_ARG_WEIGHTS)
+                    && (mask_src == 0 || mask_src == 1 << 1)
+                    && (mask_dst == 0 || mask_dst == 1 << 1);
+        }
+
+        bool post_ops_ok() const {
+            return attr()->post_ops_.find(primitive_kind::convolution) == -1;
         }
     };
 
-    ref_convolution_fwd_t(const pd_t *apd) : primitive_t(apd) {
-        for (int idx = 0; idx < dnnl_post_ops::capacity; ++idx)
-            eltwises_[idx] = nullptr;
-        auto &post_ops = pd()->attr()->post_ops_;
-        for (int idx = 0; idx < post_ops.len_; ++idx) {
-            const auto &e = post_ops.entry_[idx];
-            if (e.kind != dnnl_sum)
-                eltwises_[idx] = new ref_eltwise_scalar_fwd_t(e.eltwise);
-        }
-    }
+    ref_convolution_fwd_t(const pd_t *apd) : primitive_t(apd) {}
 
-    ~ref_convolution_fwd_t() {
-        for (int idx = 0; idx < dnnl_post_ops::capacity; ++idx)
-            if (eltwises_[idx] != nullptr) delete eltwises_[idx];
+    status_t init(engine_t *engine) override {
+        ref_post_ops
+                = utils::make_unique<ref_post_ops_t>(pd()->attr()->post_ops_);
+        if (!ref_post_ops) return status::out_of_memory;
+        return status::success;
     }
 
     typedef typename prec_traits<src_type>::type src_data_t;
@@ -126,19 +118,17 @@ struct ref_convolution_fwd_t : public primitive_t {
     typedef typename prec_traits<acc_type>::type acc_data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
-        execute_forward(ctx);
-        return status::success;
+        return execute_forward(ctx);
     }
 
 private:
-    void execute_forward(const exec_ctx_t &ctx) const;
+    status_t execute_forward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    ref_eltwise_scalar_fwd_t *eltwises_[dnnl_post_ops::capacity];
+    std::unique_ptr<ref_post_ops_t> ref_post_ops;
 };
 
-template <impl::data_type_t diff_src_type, impl::data_type_t wei_type,
-        impl::data_type_t diff_dst_type,
-        impl::data_type_t acc_type = diff_src_type>
+template <data_type_t diff_src_type, data_type_t wei_type,
+        data_type_t diff_dst_type, data_type_t acc_type = diff_src_type>
 struct ref_convolution_bwd_data_t : public primitive_t {
     struct pd_t : public cpu_convolution_bwd_data_pd_t {
         using cpu_convolution_bwd_data_pd_t::cpu_convolution_bwd_data_pd_t;
@@ -161,7 +151,9 @@ struct ref_convolution_bwd_data_t : public primitive_t {
             return ok ? status::success : status::unimplemented;
         }
 
-        bool support_bias() const override { return true; }
+        // Bias support is disabled to enable highly optimized conv impl in
+        // reference deconv impl and apply bias there.
+        bool support_bias() const override { return false; }
 
     protected:
         bool set_default_formats() {
@@ -190,18 +182,16 @@ struct ref_convolution_bwd_data_t : public primitive_t {
     typedef typename prec_traits<acc_type>::type acc_data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
-        execute_backward_data(ctx);
-        return status::success;
+        return execute_backward_data(ctx);
     }
 
 private:
-    void execute_backward_data(const exec_ctx_t &ctx) const;
+    status_t execute_backward_data(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 
-template <impl::data_type_t src_type, impl::data_type_t diff_wei_type,
-        impl::data_type_t diff_dst_type,
-        impl::data_type_t acc_type = diff_wei_type>
+template <data_type_t src_type, data_type_t diff_wei_type,
+        data_type_t diff_dst_type, data_type_t acc_type = diff_wei_type>
 struct ref_convolution_bwd_weights_t : public primitive_t {
     struct pd_t : public cpu_convolution_bwd_weights_pd_t {
         using cpu_convolution_bwd_weights_pd_t::
@@ -240,12 +230,11 @@ struct ref_convolution_bwd_weights_t : public primitive_t {
     typedef typename prec_traits<acc_type>::type acc_data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
-        execute_backward_weights(ctx);
-        return status::success;
+        return execute_backward_weights(ctx);
     }
 
 private:
-    void execute_backward_weights(const exec_ctx_t &ctx) const;
+    status_t execute_backward_weights(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 

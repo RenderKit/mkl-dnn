@@ -72,7 +72,7 @@ endif()
 
 set(PROJECT_NAME "oneDNN")
 set(PROJECT_FULL_NAME "oneAPI Deep Neural Network Library (oneDNN)")
-set(PROJECT_VERSION "1.6.0")
+set(PROJECT_VERSION "2.2.3")
 
 set(LIB_NAME dnnl)
 
@@ -91,8 +91,10 @@ endif()
 if(NOT DNNL_TARGET_ARCH)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64.*|AARCH64.*|arm64.*|ARM64.*)")
         set(DNNL_TARGET_ARCH "AARCH64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64.*|PPC64.*)")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64.*|PPC64.*|powerpc64.*)")
         set(DNNL_TARGET_ARCH "PPC64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(s390x.*|S390X.*)")
+        set(DNNL_TARGET_ARCH "S390X")
     else()
         set(DNNL_TARGET_ARCH "X64")
     endif()
@@ -104,26 +106,32 @@ set(CMAKE_SRC_CCXX_FLAGS)       # SRC specifics
 set(CMAKE_EXAMPLE_CCXX_FLAGS)   # EXAMPLE specifics
 set(CMAKE_TEST_CCXX_FLAGS)      # TESTS specifics
 
-if(UNIX OR MINGW)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-endif()
-
 include("cmake/mkldnn_compat.cmake")
 
 include("cmake/utils.cmake")
 include("cmake/options.cmake")
+include("cmake/SYCL.cmake")
 include("cmake/OpenMP.cmake")
 include("cmake/TBB.cmake")
 include("cmake/Threadpool.cmake")
 include("cmake/OpenCL.cmake")
 include("cmake/platform.cmake")
 include("cmake/SDL.cmake")
+include("cmake/ACL.cmake")
 include("cmake/blas.cmake")
 include("cmake/Doxygen.cmake")
 include("cmake/version.cmake")
 include("cmake/coverage.cmake")
 include("cmake/build_types.cmake")
+include("cmake/testing.cmake")
+
+if(UNIX OR MINGW)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
+    # Let SYCL to choose the C++ standard it needs.
+    if(NOT DNNL_WITH_SYCL)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+    endif()
+endif()
 
 # Handle cases when OpenMP runtime is requested but not found: override CPU
 # runtime to be sequential
@@ -136,9 +144,19 @@ enable_testing()
 
 include_directories(include)
 
+if(DNNL_CPU_SYCL)
+    if(TBB_FOUND)
+        set(DNNL_CPU_THREADING_RUNTIME "TBB")
+    else()
+        set(DNNL_CPU_THREADING_RUNTIME "SEQ")
+    endif()
+else()
+    set(DNNL_CPU_THREADING_RUNTIME "${DNNL_CPU_RUNTIME}")
+endif()
+
 configure_file(
-    "${PROJECT_SOURCE_DIR}/include/dnnl_config.h.in"
-    "${PROJECT_BINARY_DIR}/include/dnnl_config.h"
+    "${PROJECT_SOURCE_DIR}/include/oneapi/dnnl/dnnl_config.h.in"
+    "${PROJECT_BINARY_DIR}/include/oneapi/dnnl/dnnl_config.h"
 )
 include_directories(${PROJECT_BINARY_DIR}/include)
 

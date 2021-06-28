@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 
 #include "cpu/x64/jit_generator.hpp"
 
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
+#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
 #include "cpu/x64/jit_uni_softmax.hpp"
 
 #if __INTEL_COMPILER && __INTEL_COMPILER < 1900
@@ -63,8 +63,7 @@ struct jit_softmax_base_t : public jit_generator {
     const softmax_pd_t *pd_;
     const memory_desc_wrapper data_d_;
 
-    void (*ker)(const call_params_t *);
-    void operator()(const call_params_t *p) { (*ker)(p); }
+    virtual void operator()(const call_params_t *p) = 0;
     std::unique_ptr<jit_uni_eltwise_injector_f32<isa>> exp_injector_;
     std::unique_ptr<jit_uni_eltwise_injector_f32<isa>> log_injector_;
 
@@ -92,10 +91,12 @@ struct jit_softmax_base_t : public jit_generator {
     Vmm vsum = Vmm(isa == avx512_common ? 30 : 14);
     Vmm vmax = Vmm(isa == avx512_common ? 31 : 15);
     Vmm vsbr = vsum; // must be not equal to vmax
+    Vmm vzeropad = Vmm(isa == avx512_common ? 21 : 11);
 
     bool is_bf16_ = false;
     bool is_softmax_ = pd_->is_softmax();
     bool is_logsoftmax_ = pd_->is_logsoftmax();
+    bool axis_is_blocked_;
 
     size_t data_type_size_ = 0;
     size_t simd_w_ = 0;
@@ -113,6 +114,8 @@ struct jit_softmax_base_t : public jit_generator {
         n_loops_ = axis_simd_full_ / unroll_regs_;
         loop_tail_ = axis_simd_full_ - n_loops_ * unroll_regs_;
         axis_stride_ = compute_axis_stride();
+        axis_is_blocked_ = (pd_->src_md(0)->padded_dims[pd_->axis()]
+                != pd_->src_md(0)->dims[pd_->axis()]);
     }
 
     size_t compute_axis_stride() {
@@ -224,7 +227,7 @@ struct jit_softmax_base_t : public jit_generator {
     // either this stub or duplication at each jit_binary_t ctor due to methods
     // that are participated are not defined at the moment of base ctor
     // initialization.
-    void get_code() {
+    void generate() override {
         if (pd_->is_fwd() || is_logsoftmax_)
             exp_injector_.reset(new jit_uni_eltwise_injector_f32<isa>(this,
                     alg_kind::eltwise_exp, 0.0f, 0.0f, 1.0f, true,
@@ -249,12 +252,12 @@ struct jit_softmax_base_t : public jit_generator {
         postamble();
         if (exp_injector_) exp_injector_->prepare_table();
         if (log_injector_) log_injector_->prepare_table();
-
-        ker = reinterpret_cast<decltype(ker)>(const_cast<uint8_t *>(getCode()));
     }
 
     jit_softmax_base_t(const softmax_pd_t *pd)
-        : pd_(pd), data_d_(pd_->dst_md()) {
+        : jit_generator(nullptr, MAX_CODE_SIZE, true, isa)
+        , pd_(pd)
+        , data_d_(pd_->dst_md()) {
         is_bf16_ = data_d_.data_type() == data_type::bf16;
         data_type_size_ = is_bf16_ ? sizeof(bfloat16_t) : sizeof(float);
         simd_w_ = vlen / sizeof(float); // bf16 works on ymms
@@ -279,15 +282,29 @@ struct jit_softmax_t<avx512_common> : public jit_softmax_base_t<avx512_common> {
 
     void store(const Address &addr, const Vmm &vmm, bool tail = false) {
         auto effective_addr = addr;
-        if (tail) effective_addr = addr | tail_opmask;
+        Vmm src_vmm = vmm;
+
+        if (tail) {
+            if (axis_is_blocked_) {
+                src_vmm = vzeropad | tail_opmask;
+                uni_vxorps(vzeropad, vzeropad, vzeropad);
+                uni_vmovups(src_vmm, vmm);
+                src_vmm = vzeropad;
+                effective_addr = addr;
+            } else {
+                effective_addr = addr | tail_opmask;
+            }
+        }
+
         if (is_bf16_) {
             if (bf16_emu_)
-                bf16_emu_->vcvtneps2bf16(bf16_cvt_ymm, vmm);
+                bf16_emu_->vcvtneps2bf16(bf16_cvt_ymm, src_vmm);
             else
-                vcvtneps2bf16(bf16_cvt_ymm, vmm);
+                vcvtneps2bf16(bf16_cvt_ymm, src_vmm);
             vmovdqu16(effective_addr, bf16_cvt_ymm);
-        } else
-            uni_vmovups(effective_addr, vmm);
+        } else {
+            uni_vmovups(effective_addr, src_vmm);
+        }
     };
 
     void load(const Vmm &vmm, const Address &addr, bool tail = false) {
@@ -428,7 +445,10 @@ struct jit_softmax_t<avx512_common> : public jit_softmax_base_t<avx512_common> {
             bf16_emu_.reset(new bf16_emulation_t(this, bf16_emu_zmm_1,
                     bf16_emu_zmm_2, bf16_emu_zmm_3, bf16_emu_gpr,
                     bf16_emu_zmm_4, bf16_emu_zmm_5));
-        get_code();
+    }
+
+    void operator()(const call_params_t *p) override {
+        return jit_generator::operator()(p);
     }
 };
 
@@ -533,16 +553,25 @@ struct jit_softmax_t<avx2> : public jit_softmax_base_t<avx2> {
                         uni_vmulps(vreg_tmp_src, vreg_tmp_src, vsum);
                     if (is_logsoftmax_)
                         uni_vsubps(vreg_tmp_src, vreg_tmp_src, vsum);
-                    uni_vmovups_tail(dst_ptr(axis_stride_ * i), tail_vmask,
-                            vreg_tmp_src);
+
+                    if (axis_is_blocked_) {
+                        uni_vxorps(vzeropad, vzeropad, vzeropad);
+                        vpblendvb(vzeropad, vzeropad, vreg_tmp_src, tail_vmask);
+                        uni_vmovups(dst_ptr(axis_stride_ * i), vzeropad);
+                    } else {
+                        uni_vmovups_tail(dst_ptr(axis_stride_ * i), tail_vmask,
+                                vreg_tmp_src);
+                    }
                 }
             }
         });
     }
 
-    jit_softmax_t(const softmax_pd_t *pd) : jit_softmax_base_t(pd) {
-        get_code();
+    void operator()(const call_params_t *p) override {
+        return jit_generator::operator()(p);
     }
+
+    jit_softmax_t(const softmax_pd_t *pd) : jit_softmax_base_t(pd) {}
 };
 
 template <>
@@ -668,9 +697,11 @@ struct jit_softmax_t<sse41> : public jit_softmax_base_t<sse41> {
         });
     }
 
-    jit_softmax_t(const softmax_pd_t *pd) : jit_softmax_base_t(pd) {
-        get_code();
+    void operator()(const call_params_t *p) override {
+        return jit_generator::operator()(p);
     }
+
+    jit_softmax_t(const softmax_pd_t *pd) : jit_softmax_base_t(pd) {}
 };
 
 } // namespace
@@ -683,6 +714,11 @@ jit_uni_softmax_fwd_t<isa>::jit_uni_softmax_fwd_t(const pd_t *apd)
 template <cpu_isa_t isa>
 jit_uni_softmax_fwd_t<isa>::~jit_uni_softmax_fwd_t() {
     delete softmax_driver_;
+}
+
+template <cpu_isa_t isa>
+status_t jit_uni_softmax_fwd_t<isa>::init(engine_t *engine) {
+    return softmax_driver_->create_kernel();
 }
 
 template <cpu_isa_t isa>
@@ -721,6 +757,11 @@ jit_uni_softmax_bwd_t<isa>::jit_uni_softmax_bwd_t(const pd_t *apd)
 template <cpu_isa_t isa>
 jit_uni_softmax_bwd_t<isa>::~jit_uni_softmax_bwd_t() {
     delete softmax_driver_;
+}
+
+template <cpu_isa_t isa>
+status_t jit_uni_softmax_bwd_t<isa>::init(engine_t *engine) {
+    return softmax_driver_->create_kernel();
 }
 
 template <cpu_isa_t isa>
@@ -778,6 +819,8 @@ struct driver_t : public c_compatible {
         p.diff_dst = diff_dst;
         ker_(&p);
     }
+
+    status_t create_kernel() { return ker_.create_kernel(); }
 
 private:
     const softmax_pd_t *pd_;

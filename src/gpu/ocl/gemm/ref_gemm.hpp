@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -38,13 +38,19 @@ struct ref_gemm_t : public gpu_gemm_t {
             using namespace data_type;
             using smask_t = primitive_attr_t::skip_mask_t;
 
-            const auto a_dt = desc()->a_type;
-            const auto b_dt = desc()->b_type;
-            const auto c_dt = desc()->c_type;
-            const auto acc_dt = desc()->acc_type;
-            const auto bia_dt = desc()->bias_type;
+            bool ok = set_default_formats();
+            if (!ok) return status::unimplemented;
 
-            bool ok = IMPLICATION(acc_dt == s32, attr()->zero_points_.common())
+            const auto a_dt = desc()->a_type();
+            const auto b_dt = desc()->b_type();
+            const auto c_dt = desc()->c_type();
+            const auto acc_dt = desc()->acc_type;
+            const auto bia_dt = desc()->bias_type();
+
+            ok = IMPLICATION(acc_dt == s32, attr()->zero_points_.common())
+                    && !has_blocks() && desc()->c_desc.ndims <= 3
+                    && IMPLICATION(desc()->is_batched(),
+                            desc()->a_desc.dims[0] == desc()->b_desc.dims[0])
                     && IMPLICATION(acc_dt != s32,
                             attr()->zero_points_.has_default_values())
                     && attr()->has_default_values(smask_t::oscale_runtime
@@ -72,6 +78,10 @@ struct ref_gemm_t : public gpu_gemm_t {
             return status::success;
         }
 
+        bool set_default_formats() {
+            return gpu_gemm_pd_t::set_default_formats();
+        }
+
         bool attr_oscale_ok() const {
             const auto &oscale = attr()->output_scales_;
             return oscale.mask_ == 0;
@@ -87,7 +97,7 @@ struct ref_gemm_t : public gpu_gemm_t {
             using namespace primitive_kind;
             using namespace data_type;
             const auto &p = attr()->post_ops_;
-            switch (p.len_) {
+            switch (p.len()) {
                 case 0: return true;
                 case 1: return p.contain(sum, 0) || p.contain(eltwise, 0);
                 case 2: return p.contain(sum, 0) && p.contain(eltwise, 1);
@@ -95,7 +105,9 @@ struct ref_gemm_t : public gpu_gemm_t {
             }
         }
 
-        bool with_bias() const { return desc()->bias_type != data_type::undef; }
+        bool with_bias() const {
+            return desc()->bias_type() != data_type::undef;
+        }
 
         attr_info_t attr_info = {};
     };
@@ -110,17 +122,17 @@ struct ref_gemm_t : public gpu_gemm_t {
                 "NON_DEFAULT_ATTRS", !pd()->attr()->has_default_values());
 
         const auto d = pd()->desc();
-        kernel_ctx.set_data_type(d->c_type);
+        kernel_ctx.set_data_type(d->c_type());
         def_attr_info(kernel_ctx, pd()->attr_info);
 
-        const auto bias_type = d->bias_type != data_type::undef
-                ? d->bias_type
+        const auto bias_type = d->bias_type() != data_type::undef
+                ? d->bias_type()
                 : data_type::f32;
-        def_data_type(kernel_ctx, d->a_type, "A");
-        def_data_type(kernel_ctx, d->b_type, "B");
-        def_data_type(kernel_ctx, d->c_type, "C");
+        def_data_type(kernel_ctx, d->a_type(), "A");
+        def_data_type(kernel_ctx, d->b_type(), "B");
+        def_data_type(kernel_ctx, d->c_type(), "C");
         def_data_type(kernel_ctx, d->acc_type, "ACC");
-        def_data_type(kernel_ctx, bias_type, "BIAS");
+        def_data_type(kernel_ctx, bias_type, "BIA");
         create_kernel(engine, &kernel_, "ref_gemm", kernel_ctx);
         if (!kernel_) return status::runtime_error;
 

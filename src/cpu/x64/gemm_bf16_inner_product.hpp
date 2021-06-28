@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -58,7 +58,9 @@ struct gemm_bf16_inner_product_fwd_t : public primitive_t {
                             one_of(weights_md(1)->data_type, f32, bf16))
                     && attr()->has_default_values(
                             primitive_attr_t::skip_mask_t::post_ops)
-                    && post_ops_ok() && set_default_params() == status::success
+                    && inner_product_utils::post_ops_ok(
+                            attr()->post_ops_, &dst_md_)
+                    && set_default_params() == status::success
                     && dense_gemm_consitency_check(
                             src_md(), weights_md(), dst_md());
             if (!ok) return status::unimplemented;
@@ -73,20 +75,6 @@ struct gemm_bf16_inner_product_fwd_t : public primitive_t {
         bool dst_is_acc_;
 
     protected:
-        bool post_ops_ok() const {
-            auto const &po = attr()->post_ops_;
-            auto is_eltwise
-                    = [&](int idx) { return po.entry_[idx].is_eltwise(false); };
-            auto is_sum = [&](int idx) { return po.entry_[idx].is_sum(false); };
-            switch (po.len_) {
-                case 0: return true; // no post_ops
-                case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
-                case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
-                default: return false;
-            }
-            return false;
-        }
-
         void init_scratchpad() {
             if (!dst_is_acc_) {
                 auto scratchpad = scratchpad_registry().registrar();
@@ -97,27 +85,34 @@ struct gemm_bf16_inner_product_fwd_t : public primitive_t {
         }
     };
 
-    gemm_bf16_inner_product_fwd_t(const pd_t *apd) : primitive_t(apd) {
-        bool has_bias = pd()->with_bias(),
-             has_eltwise
-                = pd()->attr()->post_ops_.find(primitive_kind::eltwise) >= 0,
-             has_sum_as_postops = !pd()->dst_is_acc_;
-        postops_in_ip_ = false
-                || !pd()->dst_is_acc_ /* includes has_sum_as_postops */
-                || has_bias || has_eltwise;
-        if (postops_in_ip_)
-            pp_kernel_.reset(pp_kernel_t::create(pd(), !has_sum_as_postops));
-
-        auto sum_idx = pd()->attr()->post_ops_.find(primitive_kind::sum);
-        beta_ = sum_idx >= 0 && !has_sum_as_postops
-                ? pd()->attr()->post_ops_.entry_[sum_idx].sum.scale
-                : 0.0;
-    }
+    gemm_bf16_inner_product_fwd_t(const pd_t *apd) : primitive_t(apd) {}
 
     typedef typename prec_traits<dst_data_type>::type dst_data_t;
     typedef typename prec_traits<data_type::f32>::type acc_data_t;
     typedef typename prec_traits<data_type::bf16>::type src_data_t;
     typedef typename prec_traits<data_type::bf16>::type wei_data_t;
+
+    status_t init(engine_t *engine) override {
+        const bool has_bias = pd()->with_bias();
+        const bool has_eltwise
+                = pd()->attr()->post_ops_.find(primitive_kind::eltwise) >= 0;
+        const bool has_binary
+                = pd()->attr()->post_ops_.find(primitive_kind::binary) >= 0;
+        const bool has_sum_as_postops = !pd()->dst_is_acc_;
+        postops_in_ip_ = false
+                || !pd()->dst_is_acc_ /* includes has_sum_as_postops */
+                || has_bias || has_eltwise || has_binary;
+        if (postops_in_ip_)
+            CHECK(safe_ptr_assign(pp_kernel_,
+                    pp_kernel_t::create(pd(), !has_sum_as_postops)));
+
+        auto sum_idx = pd()->attr()->post_ops_.find(primitive_kind::sum);
+        beta_ = sum_idx >= 0 && !has_sum_as_postops
+                ? pd()->attr()->post_ops_.entry_[sum_idx].sum.scale
+                : 0.0;
+
+        return (pp_kernel_) ? pp_kernel_->create_kernel() : status::success;
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         return execute_forward(ctx);
@@ -270,10 +265,14 @@ struct gemm_bf16_inner_product_bwd_weights_t : public primitive_t {
         }
     };
 
-    gemm_bf16_inner_product_bwd_weights_t(const pd_t *apd) : primitive_t(apd) {
+    gemm_bf16_inner_product_bwd_weights_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
         if (pd()->with_bias())
-            bias_reduction_.reset(new jit_avx512_core_cvt_bf16_to_ps_t(
-                    true, (size_t)pd()->OC()));
+            CHECK(safe_ptr_assign(bias_reduction_,
+                    new jit_avx512_core_cvt_bf16_to_ps_t(
+                            true, (size_t)pd()->OC())));
+        return status::success;
     }
 
     typedef typename prec_traits<data_type::bf16>::type diff_dst_data_t;

@@ -62,12 +62,14 @@ struct settings_t {
     std::vector<std::string> tag {tag::abx};
     std::vector<alg_t> alg {ACROSS};
     std::vector<int64_t> mb {0};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
 
     const char *perf_template_csv
-            = "perf,%engine%,%name%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%"
-              "0time%";
+            = "perf,%engine%,%impl%,%name%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-"
+              "time%,%0time%";
     const char *perf_template_def
-            = "perf,%engine%,%name%,%prb%,%-time%,%0time%";
+            = "perf,%engine%,%impl%,%name%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -75,8 +77,14 @@ struct settings_t {
 
 struct prb_t : public desc_t {
     prb_t(const desc_t &desc, int64_t mb, dir_t dir, dnnl_data_type_t dt,
-            const std::string &tag, alg_t alg)
-        : desc_t(desc), dir(dir), dt(dt), tag(tag), alg(alg) {
+            const std::string &tag, alg_t alg, const attr_t &attr)
+        : desc_t(desc)
+        , dir(dir)
+        , dt(dt)
+        , tag(tag)
+        , alg(alg)
+        , attr(attr)
+        , user_mb(mb) {
         if (mb) this->mb = mb;
     }
     ~prb_t() {}
@@ -85,17 +93,20 @@ struct prb_t : public desc_t {
     dnnl_data_type_t dt;
     std::string tag;
     alg_t alg;
+    attr_t attr;
+    int64_t user_mb;
 
     BENCHDNN_DISALLOW_COPY_AND_ASSIGN(prb_t);
 };
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
-        base_report(r, prb_str);
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
+        tag_ = normalize_tag(p_->tag, p_->ndims);
+        base_report(res, prb_str);
     }
 
     void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
@@ -110,24 +121,24 @@ struct perf_report_t : public base_perf_report_t {
           << ',' << p_->k;
     }
 
+    const int64_t *user_mb() const override { return &p_->user_mb; }
     const char *name() const override { return p_->name; }
     const dir_t *dir() const override { return &p_->dir; }
     const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    const std::string *tag() const override { return &p_->tag; }
+    const std::string *tag() const override { return &tag_; }
 
 private:
     const prb_t *p_ = NULL;
+    std::string tag_;
 };
 
-/* some extra control parameters which shouldn't be placed in prb_t */
-
-inline int compute_n_summands(const prb_t *p) {
-    if (p->alg == ACROSS) {
-        return p->ls;
-    } else if (p->alg == WITHIN) {
+inline int compute_n_summands(const prb_t *prb) {
+    if (prb->alg == ACROSS) {
+        return prb->ls;
+    } else if (prb->alg == WITHIN) {
         int n_summands = 1;
-        for (int64_t d = p->ndims - 2; d > 0; --d)
-            n_summands *= p->ls;
+        for (int64_t d = prb->ndims - 2; d > 0; --d)
+            n_summands *= prb->ls;
         return n_summands;
     } else {
         assert(!"unknown algorithm");
@@ -135,31 +146,16 @@ inline int compute_n_summands(const prb_t *p) {
     }
 }
 
-inline size_t data_off(const prb_t *p, int64_t mb, int64_t c, int64_t d,
+inline size_t data_off(const prb_t *prb, int64_t mb, int64_t c, int64_t d,
         int64_t h, int64_t w) {
-    return (((mb * p->ic + c) * p->id + d) * p->ih + h) * p->iw + w;
+    return (((mb * prb->ic + c) * prb->id + d) * prb->ih + h) * prb->iw + w;
 }
 
-inline void inv_data_off(const prb_t *p, size_t off, int64_t &mb, int64_t &c,
-        int64_t &d, int64_t &h, int64_t &w) {
-    w = off % p->iw;
-    off /= p->iw;
-    h = off % p->ih;
-    off /= p->ih;
-    d = off % p->id;
-    off /= p->id;
-    c = off % p->ic;
-    off /= p->ic;
-    mb = off % p->mb;
-    off /= p->mb;
-    assert(off == 0);
-}
-
-void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &dst);
-void compute_ref_bwd(const prb_t *p, const dnn_mem_t &src,
+void compute_ref_fwd(const prb_t *prb, const dnn_mem_t &src, dnn_mem_t &dst);
+void compute_ref_bwd(const prb_t *prb, const dnn_mem_t &src,
         const dnn_mem_t &d_dst, dnn_mem_t &d_src);
 
-int doit(const prb_t *p, res_t *res);
+int doit(const prb_t *prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace lrn

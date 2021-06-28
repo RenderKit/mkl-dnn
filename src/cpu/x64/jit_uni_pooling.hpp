@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -55,7 +55,9 @@ struct jit_uni_pooling_fwd_t : public primitive_t {
                     && is_fwd() && !has_zero_dim_memory()
                     && everyone_is(
                             d_type, src_md()->data_type, dst_md()->data_type)
-                    && attr()->has_default_values();
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops, d_type)
+                    && !is_dilated();
             if (!ok) return status::unimplemented;
 
             const bool is_training
@@ -78,13 +80,15 @@ struct jit_uni_pooling_fwd_t : public primitive_t {
 
     using data_t = typename prec_traits<d_type>::type;
 
+    status_t init(engine_t *engine) override;
+
     status_t execute(const exec_ctx_t &ctx) const override {
         auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
         auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
         auto ws = CTX_OUT_MEM(char *, DNNL_ARG_WORKSPACE);
 
         if (pd()->ndims() == 5)
-            execute_forward_3d(src, dst, ws);
+            execute_forward_3d(src, dst, ws, ctx);
         else
             execute_forward(src, dst, ws, ctx);
 
@@ -94,10 +98,10 @@ struct jit_uni_pooling_fwd_t : public primitive_t {
 private:
     void execute_forward(const data_t *src, data_t *dst, char *indices,
             const exec_ctx_t &ctx) const;
-    void execute_forward_3d(
-            const data_t *src, data_t *dst, char *indices) const;
+    void execute_forward_3d(const data_t *src, data_t *dst, char *indices,
+            const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    void init_ncsp_trans_ctx();
+    status_t init_ncsp_trans_ctx();
 
     std::unique_ptr<jit_uni_pool_kernel<isa>> kernel_;
     std::unique_ptr<jit_uni_pooling_utils::trans_context_t> trans_ctx_;
@@ -119,7 +123,7 @@ struct jit_uni_pooling_bwd_t : public primitive_t {
                     && !is_fwd() && !has_zero_dim_memory()
                     && everyone_is(d_type, diff_src_md()->data_type,
                             diff_dst_md()->data_type)
-                    && attr()->has_default_values();
+                    && attr()->has_default_values() && !is_dilated();
             if (!ok) return status::unimplemented;
 
             if (desc()->alg_kind == alg_kind::pooling_max) {
@@ -141,13 +145,15 @@ struct jit_uni_pooling_bwd_t : public primitive_t {
 
     using data_t = typename prec_traits<d_type>::type;
 
+    status_t init(engine_t *engine) override;
+
     status_t execute(const exec_ctx_t &ctx) const override {
         auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
         auto ws = CTX_IN_MEM(const char *, DNNL_ARG_WORKSPACE);
         auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
 
         if (pd()->ndims() == 5)
-            execute_backward_3d(diff_dst, ws, diff_src);
+            execute_backward_3d(diff_dst, ws, diff_src, ctx);
         else
             execute_backward(diff_dst, ws, diff_src, ctx);
 
@@ -158,9 +164,9 @@ private:
     void execute_backward(const data_t *diff_dst, const char *indices,
             data_t *diff_src, const exec_ctx_t &ctx) const;
     void execute_backward_3d(const data_t *diff_dst, const char *indices,
-            data_t *diff_src) const;
+            data_t *diff_src, const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    void init_ncsp_trans_ctx();
+    status_t init_ncsp_trans_ctx();
 
     std::unique_ptr<jit_uni_pool_kernel<isa>> kernel_;
     std::unique_ptr<jit_uni_pooling_utils::trans_context_t> trans_ctx_;

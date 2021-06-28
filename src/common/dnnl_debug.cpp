@@ -18,8 +18,8 @@
 #include <cinttypes>
 #include <stdio.h>
 
-#include "dnnl_debug.h"
-#include "dnnl_types.h"
+#include "oneapi/dnnl/dnnl_debug.h"
+#include "oneapi/dnnl/dnnl_types.h"
 
 #include "c_types_map.hpp"
 #include "type_helpers.hpp"
@@ -42,6 +42,9 @@ const char *dnnl_runtime2str(unsigned runtime) {
         case DNNL_RUNTIME_TBB: return "TBB";
         case DNNL_RUNTIME_OCL: return "OpenCL";
         case DNNL_RUNTIME_THREADPOOL: return "threadpool";
+#ifdef DNNL_WITH_SYCL
+        case DNNL_RUNTIME_SYCL: return "DPC++";
+#endif
         default: return "unknown";
     }
 }
@@ -137,7 +140,7 @@ int dnnl_md2dim_str(
 
 #define DPRINT_RT(val) \
     do { \
-        if ((val) == DNNL_RUNTIME_DIM_VAL) \
+        if (is_runtime_value(val)) \
             DPRINT("*"); \
         else \
             DPRINT("%" PRId64, (val)); \

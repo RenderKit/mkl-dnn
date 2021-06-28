@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include <algorithm>
 #include <memory>
@@ -26,10 +26,10 @@
 
 namespace dnnl {
 
-class submemory_test_cpp : public ::testing::TestWithParam<dnnl_engine_kind_t> {
-};
+class submemory_test_cpp_t
+    : public ::testing::TestWithParam<dnnl_engine_kind_t> {};
 
-HANDLE_EXCEPTIONS_FOR_TEST_P(submemory_test_cpp, SubmemoryMemoryInteraction) {
+HANDLE_EXCEPTIONS_FOR_TEST_P(submemory_test_cpp_t, SubmemoryMemoryInteraction) {
     auto engine_kind = static_cast<engine::kind>(GetParam());
 
     SKIP_IF(engine::get_count(engine_kind) == 0,
@@ -41,17 +41,21 @@ HANDLE_EXCEPTIONS_FOR_TEST_P(submemory_test_cpp, SubmemoryMemoryInteraction) {
     const memory::dim copy_size = 1;
 
     float src_buf[1] = {35};
-    memory src({{1}, memory::data_type::f32, memory::format_tag::a}, eng);
+    auto src = test::make_memory(
+            {{1}, memory::data_type::f32, memory::format_tag::a}, eng);
     {
         auto mapped_src_ptr = map_memory<float>(src);
+        GTEST_EXPECT_NE(mapped_src_ptr, nullptr);
         std::copy(src_buf, src_buf + sizeof(src_buf) / sizeof(src_buf[0]),
                 static_cast<float *>(mapped_src_ptr));
     }
 
     float dst_buf[2] = {1, 0};
-    memory dst({{2}, memory::data_type::f32, memory::format_tag::a}, eng);
+    auto dst = test::make_memory(
+            {{2}, memory::data_type::f32, memory::format_tag::a}, eng);
     {
         auto mapped_dst_ptr = map_memory<float>(dst);
+        GTEST_EXPECT_NE(mapped_dst_ptr, nullptr);
         std::copy(dst_buf, dst_buf + sizeof(dst_buf) / sizeof(dst_buf[0]),
                 static_cast<float *>(mapped_dst_ptr));
     }
@@ -70,13 +74,14 @@ HANDLE_EXCEPTIONS_FOR_TEST_P(submemory_test_cpp, SubmemoryMemoryInteraction) {
     dst_buf[dst_offset] = src_buf[0];
     {
         auto mapped_dst_ptr = map_memory<float>(dst);
+        GTEST_EXPECT_NE(mapped_dst_ptr, nullptr);
         for (size_t i = 0; i < sizeof(dst_buf) / sizeof(dst_buf[0]); ++i)
             ASSERT_EQ(mapped_dst_ptr[i], dst_buf[i]) << "at position " << i;
     }
 }
 
 namespace {
-struct PrintToStringParamName {
+struct print_to_string_param_name_t {
     template <class ParamType>
     std::string operator()(
             const ::testing::TestParamInfo<ParamType> &info) const {
@@ -88,7 +93,7 @@ auto all_engine_kinds = ::testing::Values(dnnl_cpu, dnnl_gpu);
 
 } // namespace
 
-INSTANTIATE_TEST_SUITE_P(AllEngineKinds, submemory_test_cpp, all_engine_kinds,
-        PrintToStringParamName());
+INSTANTIATE_TEST_SUITE_P(AllEngineKinds, submemory_test_cpp_t, all_engine_kinds,
+        print_to_string_param_name_t());
 
 } // namespace dnnl

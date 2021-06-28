@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,141 +14,214 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <algorithm>
 #include <atomic>
+#include <memory>
 #include <numeric>
+#include <string>
 
+#include "oneapi/dnnl/dnnl.h"
+
+#ifdef DNNL_WITH_SYCL
+#include "oneapi/dnnl/dnnl_sycl.hpp"
+#endif
+
+#include "dnn_types.hpp"
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
-#include "dnnl_reorder.hpp"
 
 #include "tests/test_thread.hpp"
 
-int dnn_mem_t::reorder(const dnn_mem_t &rhs, const attr_bundle_t *attr_bundle) {
-    if (this == &rhs) return OK;
-    return execute_reorder(rhs, *this, attr_bundle);
-}
+int execute_reorder(const dnn_mem_t &src, dnn_mem_t &dst,
+        const_dnnl_primitive_attr_t attr) {
+    std::shared_ptr<const dnn_mem_t> r_src(&src, [](const dnn_mem_t *) {});
+    std::shared_ptr<dnn_mem_t> r_dst(&dst, [](dnn_mem_t *) {});
 
-#if defined(_WIN32) && !defined(__GNUC__)
-#include "windows.h"
+    dnnl_primitive_desc_t r_pd = nullptr;
+    dnnl_primitive_t r {};
 
-static size_t get_cpu_ram_size() {
-    MEMORYSTATUSEX s {};
-    s.dwLength = sizeof(s);
-    GlobalMemoryStatusEx(&s);
-    return s.ullTotalPhys;
-}
-#elif defined(__APPLE__) || defined(__FreeBSD__)
-#include <unistd.h>
-#include <sys/sysctl.h>
+    // Optimization to reduce testing time for GPU.
+    //
+    // For CPU <-> GPU reorders, the library creates GPU-side kernels.
+    // Benchdnn heavily relies on reorders and this greatly increases execution
+    // time because of big overhead on building OpenCL kernels.
+    //
+    // First, try to create CPU reorder for the requested GPU reorder. If
+    // succeeded, then create CPU memory object wrapping mapped pointers of
+    // source and destination and execute CPU reorder. If CPU reorder can't be
+    // create, then just execute a regular GPU reorder.
+    //
+    // This optimization is skipped when testing reorder, sum and concat
+    // primitives because they are used specifically to test GPU reorders.
+#if (DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL) \
+        || (DNNL_GPU_RUNTIME == DNNL_RUNTIME_SYCL)
+    std::string driver = std::string(driver_name);
+    bool is_reorder_related_driver = (driver == std::string("reorder")
+            || driver == std::string("sum") || driver == std::string("concat"));
+    const auto &cpu_engine = get_cpu_engine();
+    if (!is_reorder_related_driver
+            && (src.engine_kind() == dnnl_gpu
+                    || dst.engine_kind() == dnnl_gpu)) {
 
-static size_t get_cpu_ram_size() {
-#ifdef __APPLE__
-    int query_ram[] = {CTL_HW, HW_MEMSIZE};
-#else
-    int query_ram[] = {CTL_HW, HW_PHYSMEM};
+        dnnl_status_t status = dnnl_reorder_primitive_desc_create(
+                &r_pd, &src.md_, cpu_engine, &dst.md_, cpu_engine, attr);
+        if (status == dnnl_success) {
+            // Create CPU memory objects wrapping mapped pointers of source and
+            // destination
+            r_src = std::make_shared<dnn_mem_t>(dnn_mem_t::create_from_host_ptr(
+                    src.md_, cpu_engine, (void *)src));
+            r_dst = std::make_shared<dnn_mem_t>(dnn_mem_t::create_from_host_ptr(
+                    dst.md_, cpu_engine, (void *)dst));
+        }
+    }
 #endif
-    int query_ram_len = sizeof(query_ram) / sizeof(*query_ram);
-    size_t totalram = 0;
-    size_t length = sizeof(totalram);
 
-    sysctl(query_ram, query_ram_len, &totalram, &length, NULL, 0);
-    return totalram;
-}
-#else
-#include <sys/sysinfo.h>
+    if (!r_pd) {
+        DNN_SAFE(dnnl_reorder_primitive_desc_create(&r_pd, &src.md_,
+                         src.engine(), &dst.md_, dst.engine(), attr),
+                CRIT);
+    }
 
-static size_t get_cpu_ram_size() {
-    struct sysinfo s {};
-    sysinfo(&s);
-    return s.totalram;
-}
-#endif
-
-static size_t get_gpu_ram_size() {
-// TODO: consider DPCPP run-time as well.
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
-    cl_int status = CL_SUCCESS;
-    cl_device_id ocl_device = 0;
-    // Get single device attached to the engine.
-    engine_t engine_tgt(engine_tgt_kind);
-    dnnl_engine_get_ocl_device(engine_tgt, &ocl_device);
-
-    cl_ulong ram_size = 0;
-    status = clGetDeviceInfo(ocl_device, CL_DEVICE_GLOBAL_MEM_SIZE,
-            sizeof(cl_ulong), &ram_size, NULL);
-    if (status == CL_SUCCESS) return (size_t)ram_size;
-#endif
-    return 0;
-}
-
-int dnn_mem_t::check_mem_size(const_dnnl_primitive_desc_t const_pd) {
-    if (!mem_check) return OK;
-
-    static uint64_t cpu_device_capacity = get_cpu_ram_size();
-    static uint64_t gpu_device_capacity = get_gpu_ram_size();
-
-    const uint64_t devices_max_capacity = engine_tgt_kind == dnnl_cpu
-            ? cpu_device_capacity
-            : MIN2(cpu_device_capacity, gpu_device_capacity);
-    // 0.75f is taken randomly. A subject to change in future.
-    const double benchdnn_limit = 0.75f * devices_max_capacity;
-
-    // get all amount of memories to collect mem_size over all of them
-    const int n_memories = dnnl_primitive_desc_query_s32(
-                                   const_pd, dnnl_query_num_of_inputs_s32, 0)
-            + dnnl_primitive_desc_query_s32(
-                    const_pd, dnnl_query_num_of_outputs_s32, 0);
-
-    const auto get_mem_size = [const_pd](dnnl_query_t query, int index = 0) {
-        const auto md = dnnl_primitive_desc_query_md(const_pd, query, index);
-        auto mem_size = dnnl_memory_desc_get_size(md);
-        // reference memories are always fp32, hence need rescaling factor
-        size_t ref_mem_factor = 1;
-        if (md->data_type != dnnl_data_type_undef)
-            ref_mem_factor = ::sizeof_dt(dnnl_f32) / ::sizeof_dt(md->data_type);
-        // runtime mem size is not defined
-        if (mem_size == DNNL_RUNTIME_SIZE_VAL) mem_size = 0;
-        return (1 + ref_mem_factor) * mem_size;
+    const auto q = [&](int index = 0) -> const dnnl_memory_desc_t & {
+        return *dnnl_primitive_desc_query_md(
+                r_pd, dnnl_query_exec_arg_md, index);
     };
+    const auto &scratchpad_md = q(DNNL_ARG_SCRATCHPAD);
+    dnn_mem_t scratchpad(scratchpad_md, src.engine());
 
-    double total_mem_size = 0;
-
-#define MD(name) dnnl_query_##name##_md
-    for (auto query : {MD(src), MD(diff_src), MD(weights), MD(diff_weights),
-                 MD(dst), MD(diff_dst)}) {
-        for (int idx = 0; idx < n_memories; ++idx)
-            total_mem_size += get_mem_size(query, idx);
+    DNN_SAFE(dnnl_primitive_create(&r, r_pd), CRIT);
+    dnnl_status_t pd_destroy_status = dnnl_primitive_desc_destroy(r_pd);
+    if (pd_destroy_status != dnnl_success) {
+        dnnl_primitive_destroy(r);
+        DNN_SAFE(pd_destroy_status, CRIT);
     }
 
-    for (auto query : {MD(workspace), MD(scratchpad)})
-        total_mem_size += get_mem_size(query);
-#undef MD
+    args_t args;
+    args.set(DNNL_ARG_FROM, *r_src);
+    args.set(DNNL_ARG_TO, *r_dst);
+    args.set(DNNL_ARG_SCRATCHPAD, scratchpad);
 
-    int64_t library_internal_mem_size = 0;
-    dnnl_primitive_desc_query(const_pd, dnnl_query_memory_consumption_s64, 0,
-            &library_internal_mem_size);
-    total_mem_size += library_internal_mem_size;
+    SAFE(execute_and_wait(r, args), CRIT);
+    DNN_SAFE(dnnl_primitive_destroy(r), CRIT);
 
-    const bool fits_device_ram = total_mem_size <= benchdnn_limit;
-    if (!fits_device_ram) {
-        auto GB = [](double bytes) { return bytes / powf(2, 30); };
+    return OK;
+}
+int dnn_mem_t::reorder(const dnn_mem_t &rhs, const_dnnl_primitive_attr_t attr) {
+    if (this == &rhs) return OK;
+    return execute_reorder(rhs, *this, attr);
+}
 
-        BENCHDNN_PRINT(2,
-                "benchdnn: not enough RAM for a problem.\nRequested: %g GB, "
-                "benchdnn limit: %g GB, CPU RAM capacity: %g GB, GPU RAM "
-                "capacity: %g GB\n",
-                GB(total_mem_size), GB(benchdnn_limit), GB(cpu_device_capacity),
-                GB(gpu_device_capacity));
+int dnn_mem_t::initialize_memory_create_sycl(const handle_info_t &handle_info) {
+#ifdef DNNL_WITH_SYCL
+    if (is_nvidia_gpu(engine_)) {
+        // USM is not supported with Nvidia so ignore sycl_memory_kind and
+        // force SYCL buffers.
+        DNN_SAFE(dnnl_sycl_interop_memory_create(&m_, &md_, engine_,
+                         dnnl_sycl_interop_buffer, handle_info.ptr),
+                CRIT);
+        return OK;
     }
 
-    return fits_device_ram ? OK : FAIL;
+    if (handle_info.is_host_ptr) {
+        // Ignore sycl_memory_kind with host pointers and force USM.
+        DNN_SAFE(dnnl_sycl_interop_memory_create(&m_, &md_, engine_,
+                         dnnl_sycl_interop_usm, handle_info.ptr),
+                CRIT);
+        return OK;
+    }
+
+    switch (sycl_memory_kind) {
+        case sycl_memory_kind_ext_t::usm:
+            DNN_SAFE(dnnl_sycl_interop_memory_create(&m_, &md_, engine_,
+                             dnnl_sycl_interop_usm, handle_info.ptr),
+                    CRIT);
+            break;
+        case sycl_memory_kind_ext_t::buffer:
+            DNN_SAFE(dnnl_sycl_interop_memory_create(&m_, &md_, engine_,
+                             dnnl_sycl_interop_buffer, handle_info.ptr),
+                    CRIT);
+            break;
+        case sycl_memory_kind_ext_t::usm_device:
+        case sycl_memory_kind_ext_t::usm_shared: {
+            SAFE(handle_info.is_allocate() ? OK : FAIL, CRIT);
+            is_data_owner_ = true;
+            size_t sz = dnnl_memory_desc_get_size(&md_);
+            auto eng = dnnl::engine(engine_, true);
+            auto dev = dnnl::sycl_interop::get_device(eng);
+            auto ctx = dnnl::sycl_interop::get_context(eng);
+            if (sycl_memory_kind == sycl_memory_kind_ext_t::usm_device) {
+                data_ = cl::sycl::malloc_device(sz, dev, ctx);
+            } else {
+                data_ = cl::sycl::malloc_shared(sz, dev, ctx);
+            }
+            DNN_SAFE((sz > 0 && !data_) ? dnnl_out_of_memory : dnnl_success,
+                    CRIT);
+            DNN_SAFE(dnnl_sycl_interop_memory_create(
+                             &m_, &md_, engine_, dnnl_sycl_interop_usm, data_),
+                    CRIT);
+            break;
+        }
+        default: assert(!"not expected");
+    }
+#else
+    (void)handle_info;
+#endif
+    return OK;
+}
+
+int dnn_mem_t::initialize_memory_create(const handle_info_t &handle_info) {
+    bool is_sycl = is_sycl_engine(engine_);
+
+    if (handle_info.is_host_ptr) {
+        // Host pointer can be used with CPU memory only.
+        // XXX: assumption is that SYCL can work with native host pointers.
+        SAFE(is_cpu(engine_) ? OK : FAIL, CRIT);
+    }
+
+    if (is_cpu(engine_) && handle_info.is_allocate() && !is_sycl) {
+        // Allocate memory for native runtime directly.
+        is_data_owner_ = true;
+        const size_t alignment = 2 * 1024 * 1024;
+        size_t sz = dnnl_memory_desc_get_size(&md_);
+        data_ = zmalloc(sz, alignment);
+        DNN_SAFE(!data_ ? dnnl_out_of_memory : dnnl_success, CRIT);
+        DNN_SAFE(dnnl_memory_create(&m_, &md_, engine_, data_), CRIT);
+    } else if (is_sycl) {
+        SAFE(initialize_memory_create_sycl(handle_info), CRIT);
+    } else {
+        is_data_owner_ = false;
+        data_ = nullptr;
+        DNN_SAFE(dnnl_memory_create(&m_, &md_, engine_, handle_info.ptr), CRIT);
+    }
+    return OK;
+}
+
+int dnn_mem_t::cleanup_sycl() {
+#ifdef DNNL_WITH_SYCL
+    switch (sycl_memory_kind) {
+        case sycl_memory_kind_ext_t::usm_device:
+        case sycl_memory_kind_ext_t::usm_shared: {
+            auto eng = dnnl::engine(engine_, true);
+            auto ctx = dnnl::sycl_interop::get_context(eng);
+            cl::sycl::free(data_, ctx);
+            break;
+        }
+        default: break;
+    }
+#endif
+    return OK;
+}
+
+dnn_mem_t dnn_mem_t::create_from_host_ptr(
+        const dnnl_memory_desc_t &md, dnnl_engine_t engine, void *host_ptr) {
+    return dnn_mem_t(md, engine, {true, host_ptr});
 }
 
 // Returns physical offset by logical one. Logical offset is represented by an
 // array pos. If is_pos_padded is true pos represents the position in already
 // padded area.
-static dnnl_dim_t md_off_v(const dnnl_memory_desc_t &md, const dnnl_dims_t pos,
-        bool is_pos_padded = false) {
+dnnl_dim_t md_off_v(const dnnl_memory_desc_t &md, const dnnl_dims_t pos,
+        bool is_pos_padded) {
     assert(md.format_kind == dnnl_blocked);
     const auto &blk = md.format_desc.blocking;
 
@@ -182,7 +255,7 @@ static dnnl_dim_t md_off_v(const dnnl_memory_desc_t &md, const dnnl_dims_t pos,
 // Returns physical offset by logical one. logical offset is represented by a
 // scalar l_offset. If is_pos_padded is true, l_offset represents logical
 // offset in already padded area.
-dnnl_dim_t md_off_l(dnnl_dims_t _pos, const dnnl_memory_desc_t &md,
+static dnnl_dim_t md_off_l(dnnl_dims_t _pos, const dnnl_memory_desc_t &md,
         dnnl_dim_t l_offset, bool is_pos_padded = false) {
     dnnl_dims_t pos;
     for (int rd = 0; rd < md.ndims; ++rd) {
@@ -197,7 +270,7 @@ dnnl_dim_t md_off_l(dnnl_dims_t _pos, const dnnl_memory_desc_t &md,
 }
 
 template <typename T>
-int check_zero_padding_impl(const dnn_mem_t &mem, int arg) {
+int check_zero_padding_impl(const dnn_mem_t &mem, int arg, int *error_count) {
     const int ndims = mem.md_.ndims;
     const auto *dims = mem.md_.dims;
     const auto *pdims = mem.md_.padded_dims;
@@ -257,20 +330,17 @@ int check_zero_padding_impl(const dnn_mem_t &mem, int arg) {
     }
 
     if (!ok) {
-        BENCHDNN_PRINT(0,
-                "@@@ [arg:%d] check_zero_padding failed (will turn into an "
-                "error soon) err:%d\n",
-                arg, (int)errors);
+        BENCHDNN_PRINT(0, "@@@ [arg:%d] check_zero_padding failed\n", arg);
     }
 
-    // TODO: Return FAIL in case of a failure. Temporarily, return OK
-    // regardless of the check result until all failures are fixed.
-    return OK;
+    if (error_count != nullptr) *error_count = errors;
+
+    return ok ? OK : FAIL;
 }
 
-int check_zero_padding(const dnn_mem_t &mem, int arg) {
+int check_zero_padding(const dnn_mem_t &mem, int arg, int *error_count) {
 #define CASE(dt, type) \
-    case dt: return check_zero_padding_impl<type>(mem, arg);
+    case dt: return check_zero_padding_impl<type>(mem, arg, error_count);
 
     switch (mem.md_.data_type) {
         case dnnl_data_type_undef:

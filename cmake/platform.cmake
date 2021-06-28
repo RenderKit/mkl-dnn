@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2020 Intel Corporation
+# Copyright 2016-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,6 +49,24 @@ if($ENV{DNNL_WERROR})
     set(DNNL_WERROR $ENV{DNNL_WERROR})
 endif()
 
+if(WIN32 AND DNNL_WITH_SYCL)
+    # XXX: Intel oneAPI DPC++ Compiler defines __GNUC__ and __STDC__ macros on
+    # Windows. It is not aligned with clang behavior so manually undefine them.
+    add_definitions(-U__GNUC__ -U__STDC__)
+    # XXX: workaround for 'unknown type name IUnknown' from combaseapi.h
+    add_definitions(-DCINTERFACE)
+    # XXX: Intel oneAPI DPC++ Compiler generates a lot of warnings
+    append(CMAKE_CCXX_FLAGS "-w")
+    # XXX: ignore __declspec warning
+    append(CMAKE_CCXX_FLAGS "-Wno-ignored-attributes")
+    # XXX: ignore 'XXX is deprecated' coming from Intel TBB headers
+    append(CMAKE_CCXX_FLAGS "-Wno-deprecated-declarations")
+    # Ignore warning LNK4078: multiple '__CLANG_OFFLOAD_BUNDLE__sycl-spi'
+    # sections found with different attributes
+    append(CMAKE_EXE_LINKER_FLAGS "-Xlinker /IGNORE:4078")
+    append(CMAKE_SHARED_LINKER_FLAGS "-Xlinker /IGNORE:4078")
+endif()
+
 if(MSVC)
     set(USERCONFIG_PLATFORM "x64")
     append_if(DNNL_WERROR CMAKE_CCXX_FLAGS "/WX")
@@ -93,8 +111,22 @@ if(MSVC)
         # We don't want to optimize jit gemm kernels to reduce compile time
         append(CMAKE_CCXX_FLAGS "-Wno-overriding-t-option")
     endif()
+    if(DNNL_WITH_SYCL OR CMAKE_BASE_NAME STREQUAL "icx" OR CMAKE_BASE_NAME STREQUAL "icpx")
+        # Default fp-model in icx and dpcpp (unlike clang) may be precise or
+        # fast=1 depending on the version.
+        append(CMAKE_CCXX_FLAGS "/fp:precise")
+    endif()
 elseif(UNIX OR MINGW)
     append(CMAKE_CCXX_FLAGS "-Wall -Wno-unknown-pragmas")
+    if(DNNL_WITH_SYCL)
+        # XXX: Intel oneAPI DPC++ Compiler generates a lot of warnings
+        append(CMAKE_CCXX_FLAGS "-w")
+    endif()
+    if(DNNL_WITH_SYCL OR CMAKE_BASE_NAME STREQUAL "icx" OR CMAKE_BASE_NAME STREQUAL "icpx")
+        # Default fp-model in icx and dpcpp (unlike clang) may be precise or
+        # fast=1 depending on the version.
+        append(CMAKE_CCXX_FLAGS "-ffp-model=precise -fno-reciprocal-math")
+    endif()
     append_if(DNNL_WERROR CMAKE_CCXX_FLAGS "-Werror")
     append(CMAKE_CCXX_FLAGS "-fvisibility=internal")
     append(CMAKE_CXX_FLAGS "-fvisibility-inlines-hidden")
@@ -102,16 +134,28 @@ elseif(UNIX OR MINGW)
     # compiler specific settings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         if(DNNL_TARGET_ARCH STREQUAL "AARCH64")
-             set(DEF_ARCH_OPT_FLAGS "-O3")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
              # For native compilation tune for the host processor
              if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
                  append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
              endif()
         elseif(DNNL_TARGET_ARCH STREQUAL "PPC64")
-             set(DEF_ARCH_OPT_FLAGS "-O3")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
              # For native compilation tune for the host processor
              if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
                  append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "S390X")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-march=native")
              endif()
         elseif(DNNL_TARGET_ARCH STREQUAL "X64")
              set(DEF_ARCH_OPT_FLAGS "-msse4.1")
@@ -158,19 +202,50 @@ elseif(UNIX OR MINGW)
                 "sanitizer (experimental!)")
             append(CMAKE_CCXX_SANITIZER_FLAGS "-g -fno-omit-frame-pointer")
         endif()
+
+        if (DNNL_USE_CLANG_TIDY MATCHES "(CHECK|FIX)" AND ${CMAKE_VERSION} VERSION_LESS "3.6.0")
+            message(FATAL_ERROR "Using clang-tidy requires CMake 3.6.0 or newer")
+        elseif(DNNL_USE_CLANG_TIDY MATCHES "(CHECK|FIX)")
+            find_program(CLANG_TIDY NAMES clang-tidy)
+            if(NOT CLANG_TIDY)
+                message(FATAL_ERROR "Clang-tidy not found")
+            else()
+                if(DNNL_USE_CLANG_TIDY STREQUAL "CHECK")
+                    set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY})
+                    message(STATUS "Using clang-tidy to run checks")
+                elseif(DNNL_USE_CLANG_TIDY STREQUAL "FIX")
+                    set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY} -fix)
+                    message(STATUS "Using clang-tidy to run checks and fix found issues")
+                endif()
+            endif()
+        endif()
+
     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         if(DNNL_TARGET_ARCH STREQUAL "AARCH64")
-             set(DEF_ARCH_OPT_FLAGS "-O3")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
              # For native compilation tune for the host processor
              if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
                  append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
              endif()
         elseif(DNNL_TARGET_ARCH STREQUAL "PPC64")
-             set(DEF_ARCH_OPT_FLAGS "-O3")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
              # In GCC, -ftree-vectorize is turned on under -O3 since 2007.
              # For native compilation tune for the host processor
              if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
                  append(DEF_ARCH_OPT_FLAGS "-mcpu=native")
+             endif()
+        elseif(DNNL_TARGET_ARCH STREQUAL "S390X")
+             if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+                 set(DEF_ARCH_OPT_FLAGS "-O3")
+             endif()
+             # In GCC, -ftree-vectorize is turned on under -O3 since 2007.
+             # For native compilation tune for the host processor
+             if (CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+                 append(DEF_ARCH_OPT_FLAGS "-march=native")
              endif()
         elseif(DNNL_TARGET_ARCH STREQUAL "X64")
              set(DEF_ARCH_OPT_FLAGS "-msse4.1")

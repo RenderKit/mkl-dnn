@@ -17,7 +17,7 @@
 #ifndef COMMON_DECONVOLUTION_PD_HPP
 #define COMMON_DECONVOLUTION_PD_HPP
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "convolution_pd.hpp"
@@ -211,7 +211,9 @@ struct deconvolution_fwd_pd_t : public deconvolution_pd_t {
         return &glob_zero_md;
     }
 
-    int n_inputs() const override { return 2 + with_bias(); }
+    int n_inputs() const override {
+        return 2 + with_bias() + n_binary_po_inputs();
+    }
     int n_outputs() const override { return 1; }
 
 protected:

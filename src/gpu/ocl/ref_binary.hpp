@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -44,20 +44,19 @@ struct ref_binary_t : public gpu_primitive_t {
 
             const auto attr_skip_mask = sm::post_ops | sm::scales;
             bool ok = set_default_params() == status::success
-                    && (utils::everyone_is(f32, src_md(0)->data_type,
+                    && (utils::everyone_is(bf16, src_md(0)->data_type,
                                 src_md(1)->data_type, dst_md()->data_type)
-                            || utils::everyone_is(bf16, src_md(0)->data_type,
-                                    src_md(1)->data_type, dst_md()->data_type)
-                            || utils::everyone_is(f16, src_md(0)->data_type,
-                                    src_md(1)->data_type, dst_md()->data_type)
-                            || utils::one_of(src_md(0)->data_type, s8, u8))
+                            || (utils::one_of(
+                                        src_md(0)->data_type, f16, f32, s8, u8)
+                                    && utils::one_of(src_md(1)->data_type, f16,
+                                            f32, s8, u8)
+                                    && utils::one_of(dst_md()->data_type, f16,
+                                            f32, s8, u8)))
                     && IMPLICATION(!attr()->scales_.has_default_values(),
-                            utils::one_of(src_md(0)->data_type, s8, u8)
-                                    && utils::one_of(
-                                            attr()->output_scales_.mask_, 0,
-                                            1 << 1))
+                            check_scales_mask())
                     && attr()->has_default_values(attr_skip_mask)
-                    && attr_post_ops_ok();
+                    && post_ops_with_binary_ok(
+                            attr(), dst_md()->data_type, MAX_NDIMS);
 
             if (!ok) return status::unimplemented;
 
@@ -126,6 +125,14 @@ struct ref_binary_t : public gpu_primitive_t {
         }
 
         binary_conf_t conf;
+
+    private:
+        bool check_scales_mask() const {
+            for (const auto &s : attr()->scales_.scales_) {
+                if (s.second.mask_ != 0) return false;
+            }
+            return true;
+        }
     };
 
     ref_binary_t(const pd_t *apd) : gpu_primitive_t(apd) {}

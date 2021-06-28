@@ -6,8 +6,8 @@ oneDNN supports the following build-time options.
 | CMake Option                | Supported values (defaults in bold) | Description
 | :---                        | :---                                | :---
 | DNNL_LIBRARY_TYPE           | **SHARED**, STATIC                  | Defines the resulting library type
-| DNNL_CPU_RUNTIME            | **OMP**, TBB, SEQ, THREADPOOL       | Defines the threading runtime for CPU engines
-| DNNL_GPU_RUNTIME            | **NONE**, OCL                       | Defines the offload runtime for GPU engines
+| DNNL_CPU_RUNTIME            | **OMP**, TBB, SEQ, THREADPOOL, DPCPP| Defines the threading runtime for CPU engines
+| DNNL_GPU_RUNTIME            | **NONE**, OCL, DPCPP                | Defines the offload runtime for GPU engines
 | DNNL_BUILD_EXAMPLES         | **ON**, OFF                         | Controls building the examples
 | DNNL_BUILD_TESTS            | **ON**, OFF                         | Controls building the tests
 | DNNL_ARCH_OPT_FLAGS         | *compiler flags*                    | Specifies compiler optimization flags (see warning note below)
@@ -15,10 +15,14 @@ oneDNN supports the following build-time options.
 | DNNL_ENABLE_JIT_PROFILING   | **ON**, OFF                         | Enables [integration with performance profilers](@ref dev_guide_profilers)
 | DNNL_ENABLE_PRIMITIVE_CACHE | **ON**, OFF                         | Enables [primitive cache](@ref dev_guide_primitive_cache)
 | DNNL_ENABLE_MAX_CPU_ISA     | **ON**, OFF                         | Enables [CPU dispatcher controls](@ref dev_guide_cpu_dispatcher_control)
+| DNNL_ENABLE_CPU_ISA_HINTS   | **ON**, OFF                         | Enables [CPU ISA hints](@ref dev_guide_cpu_isa_hints)
 | DNNL_VERBOSE                | **ON**, OFF                         | Enables [verbose mode](@ref dev_guide_verbose)
+| DNNL_AARCH64_USE_ACL        | ON, **OFF**                         | Enables integration with Arm Compute Library for AArch64 builds
+| DNNL_BLAS_VENDOR            | **NONE**, ARMPL                     | Defines an external BLAS library to link to for GEMM-like operations
+| DNNL_GPU_VENDOR             | **INTEL**, NVIDIA                   | Defines GPU vendor for GPU engines
 
-All other building options that can be found in CMake files are dedicated for
-the development/debug purposes and are subject to change without any notice.
+All other building options or values that can be found in CMake files are intended for
+development/debug purposes and are subject to change without notice.
 Please avoid using them.
 
 ## Common options
@@ -55,6 +59,13 @@ on.  There are situations when it is necessary to control this behavior at
 run-time to, for example, test SSE4.1 code on an AVX2-capable processor. The
 `DNNL_ENABLE_MAX_CPU_ISA` build option controls the availability of this
 feature. See @ref dev_guide_cpu_dispatcher_control for more information.
+
+### Runtime CPU ISA hints
+For performance reasons, sometimes oneDNN JIT needs to be provided with extra
+hints so as to prefer or avoid particular CPU ISA feature. For example, one
+might want to disable Zmm registers usage in order to take advantage of higher
+clock speed. The `DNNL_ENABLE_CPU_ISA_HINTS` build option makes this feature
+available at runtime. See @ref dev_guide_cpu_isa_hints for more information.
 
 ### Runtimes
 CPU engine can use OpenMP, Threading Building Blocks (TBB) or sequential
@@ -115,6 +126,55 @@ TBB plus more:
   responsible for balancing the static decomposition from the previous item
   across available worker threads.
 
+### AArch64 Options
+
+oneDNN includes experimental support for Arm 64-bit Architecture (AArch64).
+By default, AArch64 builds will use the reference implementations throughout.
+The following options enable the use of AArch64 optimised implementations
+for a limited number of operations, provided by AArch64 libraries.
+
+| AArch64 build configuration           | CMake Option              | Environment variables                         | Dependencies
+| :---                                  | :---                      | :---                                          | :---
+| Arm Compute Library based primitives  | DNNL_AARCH64_USE_ACL=ON   | ACL_ROOT_DIR=*Arm Compute Library location*   | [Arm Compute Library](https://github.com/ARM-software/ComputeLibrary)
+| Vendor BLAS library support           | DNNL_BLAS_VENDOR=ARMPL    | None                                          | [Arm Performance Libraries](https://developer.arm.com/tools-and-software/server-and-hpc/downloads/arm-performance-libraries)
+
+#### Arm Compute Library
+Arm Compute Library is an open-source library for machine learning applications.
+The development repository is available from
+[mlplatform.org](https://review.mlplatform.org/#/admin/projects/ml/ComputeLibrary),
+and releases are also available on [GitHub](https://github.com/ARM-software/ComputeLibrary).
+The `DNNL_AARCH64_USE_ACL` CMake option is used to enable Compute Library integration:
+
+~~~sh
+$ cmake -DDNNL_AARCH64_USE_ACL=ON ..
+~~~
+
+This assumes that the environment variable `ACL_ROOT_DIR` is
+set to the location of Arm Compute Library, which must be downloaded and built
+independently of oneDNN.
+
+@warning
+For a debug build of oneDNN it is advisable to specify a Compute Library build
+which has also been built with debug enabled.
+
+@warning
+oneDNN is only compatible with Compute Library builds v21.02 or later.
+
+#### Vendor BLAS libraries
+oneDNN can use a standard BLAS library for GEMM operations.
+The `DNNL_BLAS_VENDOR` build option controls BLAS library selection, and
+defaults to `NONE`. For AArch64 builds with GCC, use the
+[Arm Performance Libraries](https://developer.arm.com/tools-and-software/server-and-hpc/downloads/arm-performance-libraries):
+
+~~~sh
+$ cmake -DDNNL_BLAS_VENDOR=ARMPL ..
+~~~
+
+Additional options available for development/debug purposes. These options are
+subject to change without notice, see
+[`cmake/options.cmake`](https://github.com/oneapi-src/oneDNN/blob/master/cmake/options.cmake)
+for details.
+
 ## GPU Options
 Intel Processor Graphics is supported by oneDNN GPU engine. GPU engine
 is disabled in the default build configuration.
@@ -129,5 +189,5 @@ OpenCL runtime requires Intel(R) SDK for OpenCL\* applications. You can
 explicitly specify the path to the SDK using `-DOPENCLROOT` CMake option.
 
 ~~~sh
-cmake -DDNNL_GPU_RUNTIME=OCL -DOPENCLROOT=/path/to/opencl/sdk ..
+$ cmake -DDNNL_GPU_RUNTIME=OCL -DOPENCLROOT=/path/to/opencl/sdk ..
 ~~~

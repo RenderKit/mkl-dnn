@@ -24,7 +24,9 @@ namespace cpu {
 namespace x64 {
 
 jit_avx_kernel_b0_sgemm_kern::jit_avx_kernel_b0_sgemm_kern()
-    : jit_generator(nullptr, F32_COMPUTE_KERNEL_CODE_SIZE) {
+    : jit_generator(nullptr, F32_COMPUTE_KERNEL_CODE_SIZE) {}
+
+void jit_avx_kernel_b0_sgemm_kern::generate() {
 
 #ifndef _WIN32
 
@@ -45,8 +47,8 @@ jit_avx_kernel_b0_sgemm_kern::jit_avx_kernel_b0_sgemm_kern()
 #define CO1 r13
 #define CO2 r14
 
-#define OLD_C 8 + stacksize + rsp
-#define OLD_LDC 16 + stacksize + rsp
+#define OLD_C (8 + stacksize + rsp)
+#define OLD_LDC (16 + stacksize + rsp)
 
 #else
 

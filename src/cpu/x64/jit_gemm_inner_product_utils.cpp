@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@
 #include "common/math_utils.hpp"
 #include "cpu/simple_q10n.hpp"
 
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 #include "cpu/x64/jit_gemm_inner_product_utils.hpp"
 
@@ -36,43 +36,61 @@ using namespace dnnl::impl::cpu::inner_product_utils;
 using namespace Xbyak;
 
 template <data_type_t acc_type, data_type_t dst_type>
-struct jit_pp_kernel_t : public pp_kernel_t<acc_type, dst_type>, jit_generator {
+struct jit_pp_kernel_t : public pp_kernel_t<acc_type, dst_type>,
+                         public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(inner_product_utils::jit_pp_kernel_t);
 
-    jit_pp_kernel_t(size_t OC, size_t MB, const primitive_attr_t *attr,
-            data_type_t bias_dt, bool skip_sum);
+    jit_pp_kernel_t(size_t OC, size_t MB, dim_t dst_mb_stride,
+            const primitive_attr_t *attr, data_type_t bias_dt,
+            const memory_desc_t *dst_md, bool skip_sum);
 
-    typedef typename prec_traits<acc_type>::type acc_data_t;
-    typedef typename prec_traits<dst_type>::type dst_data_t;
+    using acc_data_t = typename prec_traits<acc_type>::type;
+    using dst_data_t = typename prec_traits<dst_type>::type;
 
     void operator()(dst_data_t *dst, const acc_data_t *acc, const char *bias,
             const float *scales, size_t start, size_t end, size_t runtime_oc,
-            const float *dst_zero_points) const override;
+            dim_t dst_mb_stride, const float *dst_zero_points,
+            const void *post_ops_binary_rhs_arg_vec, const void *dst_orig,
+            const exec_ctx_t &ctx, const memory_desc_t &dst_md) const override;
+
+    status_t create_kernel() override { return jit_generator::create_kernel(); }
 
 private:
-    void generate();
+    void apply_postops(const bool apply_mask, const int vmm_idx);
+    void generate() override;
     void compute_oc_channel_blk();
     void compute_mb_blk(); // vectorize across minibatch
+    template <typename T>
+    void advance_binary_postops_off(const T &offset);
+    void zero_binary_postops_off();
 
-    struct ker_args {
-        dst_data_t *dst;
-        const acc_data_t *acc;
-        const char *bias;
-        const float *scales;
-        const float *dst_zero_points;
-        float nslope;
-        size_t oc;
-        size_t len;
-        size_t oc_offset;
+    struct ker_args_t {
+        dst_data_t *dst = nullptr;
+        const acc_data_t *acc = nullptr;
+        const char *bias = nullptr;
+        const float *scales = nullptr;
+        const float *dst_zero_points = nullptr;
+        float nslope = 0;
+        size_t oc = 0;
+        size_t len = 0;
+        size_t oc_offset = 0;
+        dim_t dst_mb_stride = 0;
+        const void *post_ops_binary_rhs_arg_vec = nullptr;
+        const void *dst_orig = nullptr;
     };
 
     enum { default_OC_loop_unroll_ = 4 };
 
-    void (*ker_)(const ker_args *args) = nullptr;
+    std::unique_ptr<injector::jit_uni_postops_injector_t<avx512_core>>
+            postops_injector_;
 
-    std::unique_ptr<jit_uni_eltwise_injector_f32<avx512_core>>
-            eltwise_injector_;
     std::unique_ptr<bf16_emulation_t> bf16_emu_;
+
+#ifdef _WIN32
+    const Xbyak::Reg64 reg_binary_inj_param_ = abi_not_param1;
+#else
+    const Xbyak::Reg64 reg_binary_inj_param_ = abi_param1;
+#endif
 
     Xbyak::Reg64 reg_param = abi_param1;
     Xbyak::Reg64 reg_dst = rdx;
@@ -86,20 +104,25 @@ private:
     Xbyak::Reg64 reg_oc_offset = r9;
     Xbyak::Reg64 reg_rem_mask = r10;
     Xbyak::Opmask kreg_rem_mask = k1;
+    const Xbyak::Opmask &opmask_binary = k3;
     // register used for temp computation, needs not to be preserved
     Xbyak::Reg64 reg_tmp_comp = r15;
+
+    // *mb_stride used only in matmul_pp_kernel && compute_oc_channel_blk()
+    Xbyak::Reg64 reg_dst_mb_stride = r12;
+    Xbyak::Reg64 reg_acc_mb_stride = r14;
 
     // Will be assigned in constructor
     Xbyak::Zmm vreg_zero, vreg_saturation_ubound, vreg_scale, vreg_sum_scale,
             vreg_dst_zero_points;
 
-    Xbyak::Reg64 eltwise_reserved_1_ = r11;
-    Xbyak::Opmask eltwise_reserved_2_ = k2;
+    Xbyak::Reg64 eltwise_reserved_gpr_ = r11;
+    const Xbyak::Opmask &eltwise_reserved_opmask_ = k2;
 
     Xbyak::Zmm bf16_emu_reserv_1 = Xbyak::Zmm(28);
     Xbyak::Zmm bf16_emu_reserv_2 = Xbyak::Zmm(29);
     Xbyak::Zmm bf16_emu_reserv_3 = Xbyak::Zmm(30);
-    Xbyak::Reg64 bf16_emu_reserv_4 = r12;
+    Xbyak::Reg64 bf16_emu_reserv_4 = reg_tmp_comp;
     Xbyak::Zmm bf16_emu_reserv_5 = Xbyak::Zmm(31);
 
     cpu_isa_t isa_ = isa_any;
@@ -111,12 +134,17 @@ private:
     int compute_vreg_prev_dst_shift_ = 0;
 
     const size_t vlen = cpu_isa_traits<avx512_core>::vlen / sizeof(float);
+    constexpr static int reg64_size = sizeof(int64_t);
+    constexpr static int reg_binary_post_op_oc_off = 0;
+    constexpr static int stack_space_needed = 1 * reg64_size;
 
-    Xbyak::Zmm vreg_dst(int iter) {
+    int vreg_dst_idx(const int iter) const {
         int idx = idx_compute_vreg_start_ + iter * compute_vregs_per_iter_;
         assert(idx <= idx_compute_vreg_max_);
-        return Xbyak::Zmm(idx);
+        return idx;
     }
+
+    Xbyak::Zmm vreg_dst(int iter) { return Xbyak::Zmm(vreg_dst_idx(iter)); }
 
     Xbyak::Zmm vreg_prev_dst(int iter) {
         int idx = idx_compute_vreg_start_ + iter * compute_vregs_per_iter_
@@ -135,8 +163,10 @@ private:
 
 template <data_type_t acc_type, data_type_t dst_type>
 jit_pp_kernel_t<acc_type, dst_type>::jit_pp_kernel_t(size_t OC, size_t MB,
-        const primitive_attr_t *attr, data_type_t bias_dt, bool skip_sum)
-    : pp_kernel_t<acc_type, dst_type>(OC, MB, attr, bias_dt, skip_sum) {
+        dim_t dst_mb_stride, const primitive_attr_t *attr, data_type_t bias_dt,
+        const memory_desc_t *dst_md, bool skip_sum)
+    : pp_kernel_t<acc_type, dst_type>(
+            OC, MB, dst_mb_stride, attr, bias_dt, skip_sum) {
     assert(mayiuse(avx512_core));
 
     if (this->do_scale_) vreg_scale = Zmm(idx_compute_vreg_start_++);
@@ -171,12 +201,77 @@ jit_pp_kernel_t<acc_type, dst_type>::jit_pp_kernel_t(size_t OC, size_t MB,
             / compute_vregs_per_iter_;
     max_OC_loop_unroll_ = nstl::min(max_OC_loop_unroll_, max_unroll);
 
-    if (this->do_eltwise_)
-        eltwise_injector_.reset(new jit_uni_eltwise_injector_f32<avx512_core>(
-                this, this->eltwise_, true, eltwise_reserved_1_,
-                eltwise_reserved_2_));
+    if (this->do_eltwise_ || this->do_binary_) {
+#define PARAM_OFF(field) offsetof(ker_args_t, field)
+        static constexpr bool preserve_gpr = true;
+        static constexpr bool preserve_vmm = true;
+        static constexpr size_t helper_vmm_idx = 31;
+        static constexpr size_t tail_size = 1;
+        static constexpr bool use_exact_tail_scalar_bcast = false;
+        const binary_injector::rhs_arg_static_params_t rhs_arg_static_params {
+                helper_vmm_idx, eltwise_reserved_gpr_, r14, preserve_gpr,
+                preserve_vmm, PARAM_OFF(post_ops_binary_rhs_arg_vec),
+                memory_desc_wrapper(*dst_md), tail_size, kreg_rem_mask,
+                use_exact_tail_scalar_bcast};
 
-    generate();
+        const binary_injector::static_params_t binary_static_params {
+                reg_binary_inj_param_, rhs_arg_static_params};
+        static constexpr bool save_state = true;
+        const eltwise_injector::static_params_t eltwise_static_params {
+                save_state, reg_tmp_comp, eltwise_reserved_opmask_};
+
+        postops_injector_ = utils::make_unique<
+                injector::jit_uni_postops_injector_t<avx512_core>>(this,
+                this->post_ops_, binary_static_params, eltwise_static_params);
+    }
+#undef PARAM_OFF
+}
+
+template <data_type_t acc_type, data_type_t dst_type>
+template <typename T>
+void jit_pp_kernel_t<acc_type, dst_type>::advance_binary_postops_off(
+        const T &offset) {
+    const auto binary_post_op_oc_off_reg = reg_tmp_comp;
+    const auto binary_post_op_oc_off_on_stack
+            = ptr[rsp + reg_binary_post_op_oc_off];
+    mov(binary_post_op_oc_off_reg, binary_post_op_oc_off_on_stack);
+    add(binary_post_op_oc_off_reg, offset);
+
+    Xbyak::Label end;
+    cmp(binary_post_op_oc_off_reg, this->OC_);
+    jl(end, T_NEAR);
+    xor_(binary_post_op_oc_off_reg, binary_post_op_oc_off_reg);
+    L(end);
+
+    mov(binary_post_op_oc_off_on_stack, binary_post_op_oc_off_reg);
+}
+
+template <data_type_t acc_type, data_type_t dst_type>
+void jit_pp_kernel_t<acc_type, dst_type>::zero_binary_postops_off() {
+    mov(EVEX_compress_addr(rsp, reg_binary_post_op_oc_off), 0);
+}
+
+template <data_type_t acc_type, data_type_t dst_type>
+void jit_pp_kernel_t<acc_type, dst_type>::apply_postops(
+        const bool apply_mask, const int vmm_idx) {
+#define PARAM_OFF(x) offsetof(ker_args_t, x)
+    if (this->do_eltwise_ || this->do_binary_) {
+        if (this->do_binary_) {
+            binary_injector::rhs_arg_dynamic_params_t rhs_arg_params;
+            const auto oc_off_oprnd = reg_tmp_comp;
+            rhs_arg_params.vmm_idx_to_oc_off_oprnd.emplace(
+                    vmm_idx, oc_off_oprnd);
+            rhs_arg_params.vmm_idx_to_out_off_oprnd.emplace(
+                    vmm_idx, oc_off_oprnd);
+            if (apply_mask) rhs_arg_params.vmm_tail_idx_.emplace(vmm_idx);
+
+            mov(oc_off_oprnd, ptr[rsp + reg_binary_post_op_oc_off]);
+
+            postops_injector_->compute_vector(vmm_idx, rhs_arg_params);
+        } else
+            postops_injector_->compute_vector(vmm_idx);
+    }
+#undef PARAM_OFF
 }
 
 template <data_type_t acc_type, data_type_t dst_type>
@@ -195,7 +290,13 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
             vmovups(vreg_scale_msk_, scale_addr);
         }
 
-        auto vreg_dst_ = vreg_dst(idx);
+        if (this->do_binary_) {
+            if (offset) advance_binary_postops_off(vlen);
+            if (apply_mask) kmovq(opmask_binary, kreg_rem_mask);
+        }
+
+        const int dst_idx = vreg_dst_idx(idx);
+        auto vreg_dst_ = Zmm(dst_idx);
         auto vreg_dst_msk_ = apply_mask ? vreg_dst_ | kreg_rem_mask : vreg_dst_;
 
         switch (acc_type) {
@@ -260,8 +361,7 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
             vfmadd231ps(vreg_dst_, vreg_prev_dst_, vreg_sum_scale);
         }
 
-        if (this->do_eltwise_)
-            eltwise_injector_->compute_vector(vreg_dst_.getIdx());
+        apply_postops(apply_mask, dst_idx);
 
         if (this->do_dst_zero_points_)
             vaddps(vreg_dst_, vreg_dst_, vreg_dst_zero_points);
@@ -299,16 +399,26 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
         if (this->do_scale_ && this->scale_idx_mult_ == 1)
             add(reg_scales, offset * sizeof(float));
         if (this->do_bias()) add(reg_bias, offset * this->bias_data_type_size_);
+        if (this->do_binary_) advance_binary_postops_off(vlen);
     };
 
     // Advance all pointers by a value stored in a register
-    auto advance_ptrs_reg = [&](Reg64 offset) {
+    auto advance_ptrs_reg = [&](const Reg64 &offset) {
         lea(reg_dst, ptr[reg_dst + offset * sizeof(dst_data_t)]);
         lea(reg_acc, ptr[reg_acc + offset * sizeof(acc_data_t)]);
         if (this->do_scale_ && this->scale_idx_mult_ == 1)
             lea(reg_scales, ptr[reg_scales + offset * sizeof(float)]);
         if (this->do_bias())
             lea(reg_bias, ptr[reg_bias + offset * this->bias_data_type_size_]);
+        if (this->do_binary_) advance_binary_postops_off(offset);
+    };
+
+    // incase of non-trivial dst_mb_strides, fixup the reg_dst and reg_acc
+    auto maybe_advance_mb_stride = [&]() {
+        if (!this->has_trivial_mb_stride()) {
+            lea(reg_dst, ptr[reg_dst + reg_dst_mb_stride * sizeof(dst_data_t)]);
+            lea(reg_acc, ptr[reg_acc + reg_acc_mb_stride * sizeof(acc_data_t)]);
+        }
     };
 
     // Rewind pointers that point to data that is indexed by output channel
@@ -319,6 +429,7 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
             lea(reg_bias, ptr[reg_bias + reg_oc * this->bias_data_type_size_]);
         if (this->do_scale_ && this->scale_idx_mult_ == 1)
             lea(reg_scales, ptr[reg_scales + reg_oc * sizeof(float)]);
+        if (this->do_binary_) zero_binary_postops_off();
         neg(reg_oc);
     };
 
@@ -372,7 +483,6 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
         cmp(reg_tmp, reg_len);
         cmovg(reg_tmp, reg_len);
         sub(reg_len, reg_tmp);
-
         process_runtime_oc();
         rewind_ptrs();
     }
@@ -392,6 +502,7 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
             rewind_ptrs();
 
             sub(reg_len, reg_oc);
+            maybe_advance_mb_stride();
             cmp(reg_len, reg_oc);
             jge(l_main_loop, T_NEAR);
         }
@@ -441,6 +552,7 @@ void jit_pp_kernel_t<acc_type, dst_type>::compute_oc_channel_blk() {
 
             rewind_ptrs();
             sub(reg_len, reg_oc);
+            maybe_advance_mb_stride();
             cmp(reg_len, reg_oc);
             jge(l_main_loop, T_NEAR);
         }
@@ -598,7 +710,14 @@ template <data_type_t acc_type, data_type_t dst_type>
 void jit_pp_kernel_t<acc_type, dst_type>::generate() {
     preamble();
 
-#define PARAM_OFF(x) offsetof(ker_args, x)
+#ifdef _WIN32
+    // binary postops injector needs params held (in case of WIN32)
+    // in rcx register that is also used as a temp reg, so the pointer to
+    // params needs to be stored in extra reg
+    if (this->do_binary_) mov(reg_binary_inj_param_, param1);
+#endif
+
+#define PARAM_OFF(x) offsetof(ker_args_t, x)
     mov(reg_dst, ptr[reg_param + PARAM_OFF(dst)]);
     mov(reg_acc, ptr[reg_param + PARAM_OFF(acc)]);
     mov(reg_bias, ptr[reg_param + PARAM_OFF(bias)]);
@@ -614,8 +733,22 @@ void jit_pp_kernel_t<acc_type, dst_type>::generate() {
         mov(reg_oc, this->OC_);
     mov(reg_len, ptr[reg_param + PARAM_OFF(len)]);
     mov(reg_oc_offset, ptr[reg_param + PARAM_OFF(oc_offset)]);
+    if (this->do_binary_) {
+        // zero initialize binary post_ops offset accumulator (store on stack)
+        sub(rsp, stack_space_needed);
+        mov(ptr[rsp + reg_binary_post_op_oc_off], reg_oc_offset);
+    }
     if (this->do_scale_ && this->scale_idx_mult_ == 0)
         vbroadcastss(vreg_scale, dword[reg_scales]);
+    if (!this->has_trivial_mb_stride()) {
+        mov(reg_dst_mb_stride, ptr[reg_param + PARAM_OFF(dst_mb_stride)]);
+        sub(reg_dst_mb_stride, reg_oc);
+        // if dst and acc point to same address (in-place), then strides must be
+        // similar, else assume acc buffer is dense.
+        xor_(reg_acc_mb_stride, reg_acc_mb_stride);
+        cmp(reg_dst, reg_acc);
+        cmove(reg_acc_mb_stride, reg_dst_mb_stride);
+    }
 #undef PARAM_OFF
 
     if (this->do_sum_) {
@@ -632,58 +765,76 @@ void jit_pp_kernel_t<acc_type, dst_type>::generate() {
     bool dim_restrict = !this->runtime_oc() && !this->runtime_mb()
             && (this->OC_ <= vlen / 2) && (this->MB_ >= vlen);
     bool supported_postops = this->do_scale_ || this->do_eltwise_
-            || this->do_sum_ || this->do_dst_zero_points_;
+            || this->do_binary_ || this->do_sum_ || this->do_dst_zero_points_;
 
-    if (this->do_bias() && !supported_postops && dim_restrict) {
+    if (this->do_bias() && !supported_postops && dim_restrict
+            && this->has_trivial_mb_stride()) {
         this->mb_blk_kernel_ = true;
         compute_mb_blk();
     } else {
         compute_oc_channel_blk();
     }
 
+    if (this->do_binary_) add(rsp, stack_space_needed);
     postamble();
 
-    if (this->do_eltwise_) eltwise_injector_->prepare_table();
-
-    ker_ = getCode<decltype(ker_)>();
+    if (this->do_eltwise_) postops_injector_->prepare_table();
 }
 
 template <data_type_t acc_type, data_type_t dst_type>
 void jit_pp_kernel_t<acc_type, dst_type>::operator()(dst_data_t *dst,
         const acc_data_t *acc, const char *bias, const float *scales,
-        size_t start, size_t end, size_t runtime_oc,
-        const float *dst_zero_points) const {
-    assert(ker_);
+        size_t start, size_t end, size_t runtime_oc, dim_t dst_mb_stride,
+        const float *dst_zero_points, const void *post_ops_binary_rhs_arg_vec,
+        const void *dst_orig, const exec_ctx_t & /* ctx */,
+        const memory_desc_t & /* dst_md */) const {
 
     if (end <= start) return;
 
     const size_t OC = this->runtime_oc() ? runtime_oc : this->OC_;
 
-    ker_args args;
+    ker_args_t args;
     size_t oc_offset = start % OC;
-    args.dst = dst + start;
-    args.acc = acc + start;
+    if (this->has_trivial_mb_stride()) {
+        args.dst = dst + start;
+        args.acc = acc + start;
+    } else {
+        const dim_t offt = (start / OC) * dst_mb_stride + oc_offset;
+        args.dst = dst + offt;
+        // if dst and acc point to same address (inplace), then strides
+        // must be similar, else assume acc buffer is dense.
+        if (dst == (dst_data_t *)acc)
+            args.acc = acc + offt;
+        else
+            args.acc = acc + start;
+    }
     args.bias = bias + oc_offset * this->bias_data_type_size_;
     args.scales = scales + this->scale_idx_mult_ * oc_offset;
     args.dst_zero_points = dst_zero_points;
     args.oc = OC;
     args.len = end - start;
     args.oc_offset = oc_offset;
-    ker_(&args);
+    args.dst_mb_stride = dst_mb_stride;
+
+    args.post_ops_binary_rhs_arg_vec = post_ops_binary_rhs_arg_vec;
+    args.dst_orig = dst_orig;
+    jit_generator::operator()(&args);
 }
 
 template <data_type_t acc_type, data_type_t dst_type>
 pp_kernel_t<acc_type, dst_type> *jit_pp_kernel_create(size_t OC, size_t MB,
-        const primitive_attr_t *attr, data_type_t bias_dt, bool skip_sum) {
-    if (!mayiuse(avx512_core)) return nullptr;
+        dim_t dst_mb_stride, const primitive_attr_t *attr, data_type_t bias_dt,
+        const memory_desc_t *dst_md, bool skip_sum) {
+    if (!mayiuse(jit_pp_kernel_supported_isa())) return nullptr;
     return new jit_pp_kernel_t<acc_type, dst_type>(
-            OC, MB, attr, bias_dt, skip_sum);
+            OC, MB, dst_mb_stride, attr, bias_dt, dst_md, skip_sum);
 }
 
 #define INST(acc_type, dst_type) \
     template pp_kernel_t<acc_type, dst_type> * \
     jit_pp_kernel_create<acc_type, dst_type>(size_t OC, size_t MB, \
-            const primitive_attr_t *attr, data_type_t bias_dt, bool skip_sum);
+            dim_t dst_mb_stride, const primitive_attr_t *attr, \
+            data_type_t bias_dt, const memory_desc_t *dst_md, bool skip_sum);
 
 using namespace data_type;
 INST(f32, f32);

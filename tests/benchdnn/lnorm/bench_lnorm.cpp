@@ -37,11 +37,15 @@ void check_correctness(const settings_t &s) {
     for_(const auto &i_tag : s.tag)
     for_(const auto &i_stat_tag : s.stat_tag)
     for_(const auto &i_flags : s.flags)
+    for_(const auto &i_scratchpad_mode : s.scratchpad_mode)
     for (auto i_inplace : s.inplace) {
-        const prb_t p(s.dims, i_tag, i_stat_tag, i_dir, i_dt, i_flags,
+        attr_t attr;
+        attr.insert(i_scratchpad_mode);
+
+        const prb_t prb(s.dims, i_tag, i_stat_tag, i_dir, i_dt, i_flags, attr,
                 i_inplace, s.check_alg);
         std::stringstream ss;
-        ss << p;
+        ss << prb;
         const std::string cpp_pstr = ss.str();
         const char *pstr = cpp_pstr.c_str();
 
@@ -49,14 +53,14 @@ void check_correctness(const settings_t &s) {
         BENCHDNN_PRINT(1, "run: %s\n", pstr);
 
         res_t res {};
-        const int status = doit(&p, &res);
+        const int status = doit(&prb, &res);
 
         bool want_perf_report = false;
         parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
-            pr.report(&p, &res, pstr);
+            pr.report(&prb, &res, pstr);
         }
 
         benchdnn_stat.tests++;
@@ -78,6 +82,8 @@ int bench(int argc, char **argv) {
                 || parse_vector_option(
                         s.flags, def.flags, str2flags, argv[0], "flags")
                 || parse_inplace(s.inplace, def.inplace, argv[0])
+                || parse_attr_scratchpad_mode(
+                        s.scratchpad_mode, def.scratchpad_mode, argv[0])
                 || parse_test_pattern_match(s.pattern, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])

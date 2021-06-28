@@ -17,7 +17,7 @@
 #ifndef CPU_X64_GEMM_F32_JIT_AVX_GEMM_F32_HPP
 #define CPU_X64_GEMM_F32_JIT_AVX_GEMM_F32_HPP
 
-#include "dnnl_types.h"
+#include "oneapi/dnnl/dnnl_types.h"
 
 #include "cpu/gemm/f32/gemm_utils_f32.hpp"
 
@@ -26,18 +26,18 @@ namespace impl {
 namespace cpu {
 namespace x64 {
 
-dnnl_status_t jit_avx_gemm_f32(const char *transa, const char *transb,
-        const dim_t *M, const dim_t *N, const dim_t *K, const float *alpha,
-        const float *A, const dim_t *lda, const float *B, const dim_t *ldb,
-        const float *beta, float *C, const dim_t *ldc,
+dnnl_status_t jit_avx_gemm_f32(int nthrs, const char *transa,
+        const char *transb, const dim_t *M, const dim_t *N, const dim_t *K,
+        const float *alpha, const float *A, const dim_t *lda, const float *B,
+        const dim_t *ldb, const float *beta, float *C, const dim_t *ldc,
         const float *bias = nullptr);
 
 namespace avx_gemm_f32 {
 
-void sgemm_nocopy_driver(const char *transa, const char *transb, dim_t m,
-        dim_t n, dim_t k, const float *alpha, const float *a, dim_t lda,
-        const float *b, dim_t ldb, const float *beta, float *c, dim_t ldc,
-        const float *bias, float *ws);
+dnnl_status_t sgemm_nocopy_driver(const char *transa, const char *transb,
+        dim_t m, dim_t n, dim_t k, const float *alpha, const float *a,
+        dim_t lda, const float *b, dim_t ldb, const float *beta, float *c,
+        dim_t ldc, const float *bias, float *ws);
 }
 
 } // namespace x64

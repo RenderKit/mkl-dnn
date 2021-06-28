@@ -31,12 +31,14 @@ namespace ocl {
 
 class ocl_gpu_kernel_t : public compute::kernel_impl_t {
 public:
-    ocl_gpu_kernel_t(const std::vector<unsigned char> &binary,
-            const std::string &binary_name)
+    ocl_gpu_kernel_t(const std::shared_ptr<compute::binary_t> &binary,
+            const std::string &binary_name,
+            const std::vector<gpu::compute::scalar_type_t> &arg_types)
         : state_(state_t::binary)
         , ocl_kernel_(nullptr)
         , binary_(binary)
-        , binary_name_(binary_name) {
+        , binary_name_(binary_name)
+        , arg_types_(arg_types) {
         MAYBE_UNUSED(state_);
     }
 
@@ -50,25 +52,40 @@ public:
     status_t parallel_for(stream_t &stream, const compute::nd_range_t &range,
             const compute::kernel_arg_list_t &arg_list) const override;
 
-    status_t realize(
-            compute::kernel_t *kernel, engine_t *engine) const override;
+    status_t realize(compute::kernel_t *kernel, const engine_t *engine,
+            compute::program_list_t *programs) const override;
 
     const char *name() const {
         assert(state_ == state_t::binary);
         return binary_name_.c_str();
     }
 
+    const std::shared_ptr<compute::binary_t> &binary() const {
+        assert(state_ == state_t::binary);
+        return binary_;
+    }
+
+    const std::vector<gpu::compute::scalar_type_t> &arg_types() const {
+        return arg_types_;
+    }
+
     enum class state_t { binary, kernel };
 
 protected:
-    ocl_gpu_kernel_t(cl_kernel ocl_kernel)
-        : state_(state_t::kernel), ocl_kernel_(ocl_kernel) {}
+    ocl_gpu_kernel_t(cl_kernel ocl_kernel,
+            const std::vector<gpu::compute::scalar_type_t> &arg_types)
+        : state_(state_t::kernel)
+        , ocl_kernel_(ocl_kernel)
+        , arg_types_(arg_types) {
+        OCL_CHECK_V(clRetainKernel(ocl_kernel_));
+    }
 
-private:
     state_t state_;
     cl_kernel ocl_kernel_;
-    std::vector<unsigned char> binary_;
+    std::shared_ptr<compute::binary_t> binary_;
     std::string binary_name_;
+
+    std::vector<gpu::compute::scalar_type_t> arg_types_;
 };
 
 } // namespace ocl

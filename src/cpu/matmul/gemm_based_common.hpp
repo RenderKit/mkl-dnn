@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -47,6 +47,10 @@ struct params_t {
     // should be invoked after gemm
     bool has_pp_kernel_ = false;
 
+    // indicates if src batch dims can be fused into M, so that a single
+    // GeMM call can be made
+    bool can_fuse_src_batch_dims_ = false;
+
     // an attribute for post processing kernel
     primitive_attr_t pp_attr_;
 
@@ -65,16 +69,67 @@ struct params_t {
     }
 };
 
+inline bool check_gemm_compatible_formats(const matmul_pd_t &pd) {
+
+    const memory_desc_wrapper dst_d(pd.dst_md());
+    const int ndims = dst_d.ndims();
+
+    auto check_input_format = [=](const memory_desc_t *md) {
+        memory_desc_wrapper mdw(md);
+
+        if (!mdw.is_plain()) return false;
+
+        const dims_t &strides = mdw.blocking_desc().strides;
+
+        // disable md with zero stride for a particular dimension
+        for (int dim = 0; dim < ndims; ++dim)
+            if (strides[dim] == 0) return false;
+
+        // for GeMM atleast one of the two innermost axes must be contiguous
+        return utils::one_of(1, strides[ndims - 1], strides[ndims - 2]);
+    };
+
+    bool ok = check_input_format(pd.src_md())
+            && check_input_format(pd.weights_md()) && dst_d.is_plain()
+            && dst_d.blocking_desc().strides[ndims - 1] == 1;
+
+    return ok;
+}
+
+inline size_t get_scratchpad_size(const dim_t batch, dim_t M, const dim_t N,
+        const bool can_fuse_src_batch_dims) {
+    assert(batch > 0);
+    assert(M > 0);
+    assert(N > 0);
+    size_t buffer_size;
+    if (can_fuse_src_batch_dims || batch == 1) {
+        buffer_size = (size_t)batch * M * N;
+    } else {
+        const int nthr = dnnl_get_max_threads();
+        const size_t work_per_thr = utils::div_up((size_t)batch * M * N, nthr);
+        if (work_per_thr >= (size_t)N) {
+            buffer_size = nstl::min<size_t>(
+                    (size_t)M * N, utils::rnd_dn(work_per_thr, N));
+        } else {
+            buffer_size = work_per_thr;
+        }
+    }
+    return utils::rnd_up(buffer_size, 64);
+}
+
 inline void book_acc_scratchpad(
         matmul_pd_t &pd, const params_t &params, size_t sizeof_acc_data) {
-    bool is_runtime_dims
-            = utils::one_of(DNNL_RUNTIME_DIM_VAL, pd.batch(), pd.M(), pd.N());
-    if (!params.dst_is_acc_ && !is_runtime_dims) {
+
+    if (!params.dst_is_acc_
+            && !memory_desc_wrapper(pd.dst_md()).has_runtime_dims()) {
+        const size_t buffer_size = get_scratchpad_size(
+                pd.batch(), pd.M(), pd.N(), params.can_fuse_src_batch_dims_);
+        const size_t sp_size = params.can_fuse_src_batch_dims_
+                ? buffer_size
+                : buffer_size * dnnl_get_max_threads();
         auto scratchpad = pd.scratchpad_registry().registrar();
         scratchpad.book(memory_tracking::names::key_matmul_dst_in_acc_dt,
-                nstl::min(pd.batch(), (dim_t)dnnl_get_max_threads()) * pd.M()
-                        * pd.N(),
-                sizeof_acc_data);
+                sp_size, sizeof_acc_data);
     }
 }
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -31,68 +31,14 @@ namespace dnnl {
 namespace impl {
 namespace cpu {
 
-typedef struct {
-    alg_kind_t alg;
-    bool do_sum;
-    float sum_scale;
-    const std::unique_ptr<ref_eltwise_scalar_fwd_t> &eltwise_ker;
-    const scales_t *scales;
-    bool do_scale_src0;
-    bool do_scale_src1;
-} params_t;
-
-template <typename data_t>
-data_t compute_alg(data_t x, data_t y, alg_kind_t alg) {
-    data_t d = 0;
-    if (alg == alg_kind::binary_add) {
-        d = x + y;
-    } else if (alg == alg_kind::binary_mul) {
-        d = x * y;
-    } else if (alg == alg_kind::binary_max) {
-        d = nstl::max(x, y);
-    } else if (alg == alg_kind::binary_min) {
-        d = nstl::min(x, y);
-    } else {
-        assert(!"not supported operation!");
-    }
-    return d;
-}
-
-template <typename src0_data_t, typename src1_data_t, typename dst_data_t>
-typename utils::enable_if<nstl::is_integral<src0_data_t>::value>::type
-perform_op(
-        dst_data_t *dst, src0_data_t x, src1_data_t y, const params_t &params) {
-    float x_f = (float)x;
-    float y_f = (float)y;
-    float dst_f = (float)dst[0];
-
-    if (params.do_scale_src0) x_f *= params.scales[0].scales_[0];
-    if (params.do_scale_src1) y_f *= params.scales[1].scales_[0];
-
-    float acc = compute_alg<float>(x_f, y_f, params.alg);
-    float scaled_dst = params.do_sum ? params.sum_scale * dst_f : 0.f;
-    acc += scaled_dst;
-    if (params.eltwise_ker) acc = params.eltwise_ker->compute_scalar(acc);
-    dst[0] = qz_a1b0<float, dst_data_t>()(acc);
-}
-
-template <typename src0_data_t, typename src1_data_t, typename dst_data_t>
-typename utils::enable_if<!nstl::is_integral<src0_data_t>::value>::type
-perform_op(
-        dst_data_t *dst, src0_data_t x, src1_data_t y, const params_t &params) {
-    float acc = compute_alg<float>(x, y, params.alg);
-    float scaled_dst = params.do_sum ? params.sum_scale * dst[0] : 0.f;
-    acc += scaled_dst;
-    if (params.eltwise_ker) acc = params.eltwise_ker->compute_scalar(acc);
-    dst[0] = (dst_data_t)acc;
-}
-
 template <data_type_t src0_type, data_type_t src1_type, data_type_t dst_type>
 status_t ref_binary_t<src0_type, src1_type, dst_type>::execute_ref(
         const exec_ctx_t &ctx) const {
+    status_t status = status::success;
     const auto src0 = CTX_IN_MEM(const src0_data_t *, DNNL_ARG_SRC_0);
     const auto src1 = CTX_IN_MEM(const src1_data_t *, DNNL_ARG_SRC_1);
-    auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
+    auto dst = CTX_OUT_CLEAN_MEM(dst_data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
 
     const memory_desc_wrapper src0_d(pd()->src_md(0));
     const memory_desc_wrapper src1_d(pd()->src_md(1));
@@ -105,49 +51,47 @@ status_t ref_binary_t<src0_type, src1_type, dst_type>::execute_ref(
     scales_t scales[nargs];
     int args[nargs] = {DNNL_ARG_SRC_0, DNNL_ARG_SRC_1};
 
-    if (nstl::is_integral<src0_data_t>::value)
-        CHECK(scales[0].copy_from(pd()->attr()->scales_.get(args[0])));
-
-    if (nstl::is_integral<src0_data_t>::value)
-        CHECK(scales[1].copy_from(pd()->attr()->scales_.get(args[1])));
+    CHECK(scales[0].copy_from(pd()->attr()->scales_.get(args[0])));
+    CHECK(scales[1].copy_from(pd()->attr()->scales_.get(args[1])));
 
     bool do_scale_src0 = !scales[0].has_default_values();
     bool do_scale_src1 = !scales[1].has_default_values();
 
-    const dims_t &dims_bcast = pd()->broadcast_dims();
-    const dims_t &dims_A = src0_d.dims();
-    const int ndims = pd()->ndims();
-    const auto nelems_A = src0_d.nelems();
-    const bool is_tensor_op = pd()->is_tensor_op();
+    const auto nelems = dst_d.nelems();
+    const auto ndims = pd()->ndims();
 
-    const auto &po = pd()->attr()->post_ops_;
-    const bool do_sum = po.contain(primitive_kind::sum, 0)
-            && po.entry_[0].sum.scale != 0.f;
-    const float sum_scale = do_sum ? po.entry_[0].sum.scale : 0.f;
+    parallel_nd(nelems, [&](dim_t i) {
+        dims_t dims_src0, dims_src1; // decomposition for physical offsets
+        utils::l_dims_by_l_offset(dims_src0, i, dst_d.dims(), ndims);
+        utils::l_dims_by_l_offset(dims_src1, i, dst_d.dims(), ndims);
+        auto off_C = dst_d.off_v(dims_src0);
 
-    params_t params {alg, do_sum, sum_scale, eltwise_ker_, scales,
-            do_scale_src0, do_scale_src1};
+        int mask_src0
+                = utils::get_dims_mask(dst_d.dims(), src0_d.dims(), ndims);
+        utils::apply_mask_on_dims(dims_src0, ndims, mask_src0);
+        const auto off_A = src0_d.off_v(dims_src0);
+        int mask_src1
+                = utils::get_dims_mask(dst_d.dims(), src1_d.dims(), ndims);
+        utils::apply_mask_on_dims(dims_src1, ndims, mask_src1);
+        const auto off_B = src1_d.off_v(dims_src1);
 
-    auto map_idx_B = [&](dim_t off) {
-        dims_t dims;
-        for (int d = ndims - 1; d >= 0; --d) {
-            dims[d] = off % dims_A[d];
-            off /= dims_A[d];
-        }
-        assert(off == 0);
+        float x_f = (float)src0[off_A];
+        float y_f = (float)src1[off_B];
+        float dst_f = (float)dst[off_C];
 
-        for (int d = 0; d < ndims; ++d) {
-            dims[d] *= (!dims_bcast[d]);
-        }
+        if (do_scale_src0) x_f *= scales[0].scales_[0];
+        if (do_scale_src1) y_f *= scales[1].scales_[0];
 
-        return src1_d.off_v(dims);
-    };
+        float acc = compute_binary_scalar(alg, x_f, y_f);
 
-    parallel_nd(nelems_A, [&](dim_t i) {
-        auto off_A = src0_d.off_l(i);
-        auto off_B = is_tensor_op ? src1_d.off_l(i) : map_idx_B(i);
-        auto off_C = dst_d.off_l(i);
-        perform_op(&dst[off_C], src0[off_A], src1[off_B], params);
+        ref_post_ops_t::args_t args;
+        args.dst_val = dst_f;
+        args.ctx = &ctx;
+        args.l_offset = i;
+        args.dst_md = pd()->dst_md();
+        ref_post_ops->execute(acc, args);
+
+        dst[off_C] = cpu::saturate_and_round<dst_data_t>(acc);
     });
 
     return status::success;
@@ -157,10 +101,24 @@ using namespace data_type;
 
 template struct ref_binary_t<f32>;
 template struct ref_binary_t<bf16>;
-template struct ref_binary_t<s8, u8, s8>;
 template struct ref_binary_t<s8, s8, s8>;
+template struct ref_binary_t<s8, u8, s8>;
+template struct ref_binary_t<u8, s8, s8>;
+template struct ref_binary_t<u8, u8, s8>;
+template struct ref_binary_t<s8, s8, u8>;
+template struct ref_binary_t<s8, u8, u8>;
 template struct ref_binary_t<u8, s8, u8>;
 template struct ref_binary_t<u8, u8, u8>;
+template struct ref_binary_t<s8, f32, s8>;
+template struct ref_binary_t<s8, f32, u8>;
+template struct ref_binary_t<u8, f32, s8>;
+template struct ref_binary_t<u8, f32, u8>;
+template struct ref_binary_t<f32, s8, s8>;
+template struct ref_binary_t<f32, s8, u8>;
+template struct ref_binary_t<f32, u8, s8>;
+template struct ref_binary_t<f32, u8, u8>;
+template struct ref_binary_t<f32, f32, s8>;
+template struct ref_binary_t<f32, f32, u8>;
 
 } // namespace cpu
 } // namespace impl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -38,6 +38,10 @@
  *                                         convenience)
  */
 
+#if defined(DNNL_ENABLE_ITT_TASKS)
+#include "common/ittnotify.hpp"
+#endif
+
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
 #include "counting_barrier.hpp"
 #endif
@@ -47,7 +51,7 @@ namespace impl {
 
 namespace {
 inline int adjust_num_threads(int nthr, size_t work_amount) {
-    if (nthr == 0) nthr = dnnl_get_max_threads();
+    if (nthr == 0) nthr = dnnl_get_current_num_threads();
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_OMP
     return (work_amount == 1 || omp_in_parallel()) ? 1 : nthr;
 #else
@@ -64,6 +68,10 @@ void parallel(int nthr, F f) {
     assert(nthr == 1);
     f(0, 1);
 #else
+#if defined(DNNL_ENABLE_ITT_TASKS)
+    auto task_primitive_kind = itt::primitive_task_get_current_kind();
+    bool itt_enable = itt::get_itt(itt::__itt_task_level_high);
+#endif
     if (nthr == 1) {
         f(0, 1);
         return;
@@ -74,29 +82,59 @@ void parallel(int nthr, F f) {
         int nthr_ = omp_get_num_threads();
         int ithr_ = omp_get_thread_num();
         assert(nthr_ == nthr);
+#if defined(DNNL_ENABLE_ITT_TASKS)
+        if (ithr_ && itt_enable) itt::primitive_task_start(task_primitive_kind);
+#endif
         f(ithr_, nthr_);
+#if defined(DNNL_ENABLE_ITT_TASKS)
+        if (ithr_ && itt_enable) itt::primitive_task_end();
+#endif
     }
 #elif DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_TBB
     tbb::parallel_for(
-            0, nthr, [&](int ithr) { f(ithr, nthr); },
+            0, nthr,
+            [&](int ithr) {
+#if defined(DNNL_ENABLE_ITT_TASKS)
+                bool mark_task = itt::primitive_task_get_current_kind()
+                        == primitive_kind::undefined;
+                if (mark_task && itt_enable)
+                    itt::primitive_task_start(task_primitive_kind);
+#endif
+                f(ithr, nthr);
+#if defined(DNNL_ENABLE_ITT_TASKS)
+                if (mark_task && itt_enable) itt::primitive_task_end();
+#endif
+            },
             tbb::static_partitioner());
 #elif DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
     using namespace dnnl::impl::threadpool_utils;
-    dnnl::threadpool_iface *tp = get_active_threadpool();
+    dnnl::threadpool_interop::threadpool_iface *tp = get_active_threadpool();
     if (!tp || dnnl_in_parallel()) {
         threadpool_utils::deactivate_threadpool();
-        for (int ithr = 0; ithr < nthr; ithr++)
+        for (int ithr = 0; ithr < nthr; ithr++) {
             f(ithr, nthr);
+        }
         threadpool_utils::activate_threadpool(tp);
     } else {
-        bool async = tp->get_flags() & dnnl::threadpool_iface::ASYNCHRONOUS;
+        bool async = tp->get_flags()
+                & dnnl::threadpool_interop::threadpool_iface::ASYNCHRONOUS;
         counting_barrier_t b;
         if (async) b.init(nthr);
-        tp->parallel_for(nthr, [tp, &f, &b, async](int ithr, int nthr) {
+        tp->parallel_for(nthr, [&, tp](int ithr, int nthr) {
             bool is_master = threadpool_utils::get_active_threadpool() == tp;
-            if (!is_master) threadpool_utils::activate_threadpool(tp);
+            if (!is_master) {
+                threadpool_utils::activate_threadpool(tp);
+#if defined(DNNL_ENABLE_ITT_TASKS)
+                if (itt_enable) itt::primitive_task_start(task_primitive_kind);
+#endif
+            }
             f(ithr, nthr);
-            if (!is_master) threadpool_utils::deactivate_threadpool();
+            if (!is_master) {
+#if defined(DNNL_ENABLE_ITT_TASKS)
+                if (itt_enable) itt::primitive_task_end();
+#endif
+                threadpool_utils::deactivate_threadpool();
+            }
             if (async) b.notify();
         });
         if (async) b.wait();
@@ -390,7 +428,7 @@ void parallel_nd_ext(int nthr, const T0 &D0, const T1 &D1, const T2 &D2,
 template <typename T0, typename F>
 void parallel_nd(const T0 &D0, F f) {
     const size_t work_amount = (size_t)D0;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr, [&](int ithr, int nthr) { for_nd(ithr, nthr, D0, f); });
 }
@@ -398,7 +436,7 @@ void parallel_nd(const T0 &D0, F f) {
 template <typename T0, typename T1, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, F f) {
     const size_t work_amount = (size_t)D0 * D1;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr,
                 [&](int ithr, int nthr) { for_nd(ithr, nthr, D0, D1, f); });
@@ -407,7 +445,7 @@ void parallel_nd(const T0 &D0, const T1 &D1, F f) {
 template <typename T0, typename T1, typename T2, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, F f) {
     const size_t work_amount = (size_t)D0 * D1 * D2;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr,
                 [&](int ithr, int nthr) { for_nd(ithr, nthr, D0, D1, D2, f); });
@@ -416,7 +454,7 @@ void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, F f) {
 template <typename T0, typename T1, typename T2, typename T3, typename F>
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3, F f) {
     const size_t work_amount = (size_t)D0 * D1 * D2 * D3;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr, [&](int ithr, int nthr) {
             for_nd(ithr, nthr, D0, D1, D2, D3, f);
@@ -428,7 +466,7 @@ template <typename T0, typename T1, typename T2, typename T3, typename T4,
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3,
         const T4 &D4, F f) {
     const size_t work_amount = (size_t)D0 * D1 * D2 * D3 * D4;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr, [&](int ithr, int nthr) {
             for_nd(ithr, nthr, D0, D1, D2, D3, D4, f);
@@ -440,7 +478,7 @@ template <typename T0, typename T1, typename T2, typename T3, typename T4,
 void parallel_nd(const T0 &D0, const T1 &D1, const T2 &D2, const T3 &D3,
         const T4 &D4, const T5 &D5, F f) {
     const size_t work_amount = (size_t)D0 * D1 * D2 * D3 * D4 * D5;
-    int nthr = adjust_num_threads(dnnl_get_max_threads(), work_amount);
+    int nthr = adjust_num_threads(dnnl_get_current_num_threads(), work_amount);
     if (nthr)
         parallel(nthr, [&](int ithr, int nthr) {
             for_nd(ithr, nthr, D0, D1, D2, D3, D4, D5, f);

@@ -19,7 +19,7 @@
 
 #include <assert.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "primitive_desc.hpp"
@@ -90,30 +90,50 @@ struct matmul_pd_t : public primitive_desc_t {
         return index == 0 ? &dst_md_ : &glob_zero_md;
     }
 
-    int n_inputs() const override { return 2 + with_bias(); }
+    int n_inputs() const override {
+        return 2 + with_bias() + n_binary_po_inputs();
+    }
     int n_outputs() const override { return 1; }
 
     bool has_zero_dim_memory() const {
         return memory_desc_wrapper(dst_md(0)).has_zero_dim();
     }
 
+    bool has_runtime_dims_or_strides() const {
+        return memory_desc_wrapper(src_md_).has_runtime_dims_or_strides()
+                || memory_desc_wrapper(weights_md_)
+                           .has_runtime_dims_or_strides()
+                || memory_desc_wrapper(dst_md_).has_runtime_dims_or_strides();
+    };
+
     int ndims() const { return dst_md_.ndims; }
 
-    bool with_bias() const { return bias_md_.ndims != 0; }
-    bool batched() const { return ndims() == 3; }
+    dim_t ldc() const {
+        return memory_desc_wrapper(dst_md(0))
+                .blocking_desc()
+                .strides[ndims() - 2];
+    }
 
-    dim_t batch() const { return batched() ? dst_md_.dims[0] : 1; }
-    dim_t M() const { return dst_md_.dims[batched() + 0]; }
-    dim_t N() const { return dst_md_.dims[batched() + 1]; }
-    dim_t K() const { return src_md_.dims[batched() + 1]; }
+    bool with_bias() const { return bias_md_.ndims != 0; }
+    bool batched() const { return ndims() > 2; }
+
+    dim_t batch() const {
+        return utils::array_product(dst_md_.dims, ndims() - 2);
+    }
+    dim_t M() const { return dst_md_.dims[ndims() - 2]; }
+    dim_t N() const { return dst_md_.dims[ndims() - 1]; }
+    dim_t K() const { return src_md_.dims[ndims() - 1]; }
 
     bool is_bias_1xN() const {
         if (!with_bias()) return false;
 
-        const auto &bia_md = *weights_md(1);
-        return bia_md.dims[0] == 1
-                && IMPLICATION(batched(), bia_md.dims[1] == 1)
-                && bia_md.dims[batched() + 1] == dst_md()->dims[batched() + 1];
+        const auto &dims = weights_md(1)->dims;
+        const int n_dims = ndims();
+        for (int i = 0; i < n_dims - 1; ++i) {
+            if (dims[i] != 1) return false;
+        }
+
+        return dims[n_dims - 1] == N();
     }
 
 protected:

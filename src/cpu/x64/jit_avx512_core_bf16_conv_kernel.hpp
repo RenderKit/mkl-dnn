@@ -20,10 +20,10 @@
 #include "common/c_types_map.hpp"
 #include "common/memory_tracking.hpp"
 
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -32,38 +32,17 @@ namespace x64 {
 
 template <typename Vmm>
 struct _jit_avx512_core_bf16_fwd_kernel : public jit_generator {
-
-    _jit_avx512_core_bf16_fwd_kernel(
-            const jit_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jit_generator(nullptr, ker_code_size)
-        , jcp(ajcp)
-        , attr_(attr)
-        , eltwise_injector_(nullptr)
-        , bf16_emu_(nullptr) {
-        if (jcp.with_eltwise)
-            eltwise_injector_ = new jit_uni_eltwise_injector_f32<avx512_core>(
-                    this, jcp.eltwise);
-        if (!isa_has_bf16(jcp.isa))
-            bf16_emu_ = new bf16_emulation_t(this, bf16_emu_reserv_1,
-                    bf16_emu_reserv_2, bf16_emu_reserv_3, bf16_emu_scratch,
-                    bf16_emu_reserv_4, bf16_emu_reserv_5);
-
-        generate();
-        jit_ker_ = (decltype(jit_ker_))getCode();
-    }
-
-    ~_jit_avx512_core_bf16_fwd_kernel() {
-        delete bf16_emu_;
-        delete eltwise_injector_;
-    }
+    _jit_avx512_core_bf16_fwd_kernel(const jit_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md);
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(_jit_avx512_core_bf16_fwd_kernel)
 
     const jit_conv_conf_t &jcp;
     const primitive_attr_t &attr_;
-    void (*jit_ker_)(jit_conv_call_s *);
 
 private:
+    constexpr static int isa_simd_width_
+            = cpu_isa_traits<avx512_core>::vlen / sizeof(float);
     using Vmm_down_t =
             typename utils::conditional<std::is_same<Vmm, Xbyak::Zmm>::value,
                     Xbyak::Ymm, Xbyak::Xmm>::type;
@@ -83,11 +62,8 @@ private:
     reg64_t aux_reg_src = r12;
     reg64_t aux_reg_ker = r13;
 
-    reg64_t aux_reg_ker_d = r14;
-    reg64_t aux_reg_src_d = r15;
-
     reg64_t reg_ic = rax;
-    reg64_t reg_oc = aux_reg_src_d;
+    reg64_t reg_oc = r15;
     reg64_t reg_bias = rbx;
 
     reg64_t reg_kj = abi_not_param1;
@@ -95,13 +71,10 @@ private:
     reg64_t reg_oi = rdx;
     reg64_t reg_kh = rsi;
 
-    reg64_t reg_dst_long_offt = r14;
+    reg64_t reg_long_offt = r14;
 
-    Vmm vmm_dst(int i_ur, int i_oc) {
-        int idx = i_ur + i_oc * jcp.ur_w;
-        assert(idx < ker_reg_base_idx);
-        return Vmm(idx);
-    }
+    int vmm_dst_idx(const int i_ur, const int i_oc) const;
+    Vmm vmm_dst(const int i_ur, const int i_oc) const;
 
     Vmm vmm_src(int i_ic, int nb_x_blocking) {
         int idx = i_ic + nb_x_blocking * jcp.ur_w;
@@ -145,15 +118,22 @@ private:
     Xbyak::Opmask even_load_mask = Xbyak::Opmask(3);
     Xbyak::Opmask k_oc_tail_mask = Xbyak::Opmask(4);
     Xbyak::Opmask k_oc_tail_mask_extended = Xbyak::Opmask(5);
+    const Xbyak::Opmask postops_mask = Xbyak::Opmask(6);
 
-    jit_uni_eltwise_injector_f32<avx512_core> *eltwise_injector_;
-    bf16_emulation_t *bf16_emu_;
+    constexpr static int off_reg_src_ = 0;
+    constexpr static int off_reg_ker_ = 8;
+    constexpr static int stack_space_needed_ = 16;
+
+    std::unique_ptr<injector::jit_uni_postops_injector_t<avx512_core>>
+            postops_injector_;
+    std::unique_ptr<bf16_emulation_t> bf16_emu_;
 
     inline void prepare_dst(int ur_w);
+    void apply_postops(int ur_w);
     inline void store_dst(int ur_w);
     inline void compute_loop(int ur_w, int pad_l, int pad_r);
 
-    void generate();
+    void generate() override;
 
     inline dim_t get_dst_offset(dim_t sp_idx, int ocb) {
         const bool is_layout_nxc = is_dst_layout_nxc();
@@ -165,13 +145,13 @@ private:
 
     inline dim_t filter_w_to_src(int kw, int ow = 0, int pad_l = 0) {
         return kw * (jcp.dilate_w + 1) + ow * jcp.stride_w - pad_l;
-    };
+    }
     inline dim_t filter_h_to_src(int kh) {
         return kh * (jcp.dilate_h + 1) * jcp.iw;
-    };
+    }
     inline dim_t filter_d_to_src(int kd) {
         return kd * (jcp.dilate_d + 1) * jcp.iw * jcp.ih;
-    };
+    }
 
     inline dim_t get_src_offset(dim_t ic_idx, dim_t isp) {
         int icb = ic_idx / jcp.ic_block;
@@ -227,39 +207,30 @@ private:
 };
 
 struct jit_avx512_core_bf16_fwd_kernel {
-    jit_avx512_core_bf16_fwd_kernel(
-            const jit_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jit_ker(nullptr)
-        , zmm_kernel_(nullptr)
-        , ymm_kernel_(nullptr)
-        , xmm_kernel_(nullptr) {
+    jit_avx512_core_bf16_fwd_kernel(const jit_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md)
+        : kernel_(nullptr) {
         switch (ajcp.oc_block) {
             case 16:
-                zmm_kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Zmm>(
-                        ajcp, attr);
-                jit_ker = zmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Zmm>(
+                        ajcp, attr, dst_md);
                 return;
             case 8:
-                ymm_kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Ymm>(
-                        ajcp, attr);
-                jit_ker = ymm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Ymm>(
+                        ajcp, attr, dst_md);
                 return;
             case 4:
-                xmm_kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Xmm>(
-                        ajcp, attr);
-                jit_ker = xmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_fwd_kernel<Xbyak::Xmm>(
+                        ajcp, attr, dst_md);
                 return;
             default: assert(!"invalid channel blocking");
         }
     }
 
-    ~jit_avx512_core_bf16_fwd_kernel() {
-        delete zmm_kernel_;
-        delete ymm_kernel_;
-        delete xmm_kernel_;
-    }
+    status_t create_kernel() { return kernel_->create_kernel(); }
 
-    static bool post_ops_ok(jit_conv_conf_t &jcp, const primitive_attr_t &attr);
+    ~jit_avx512_core_bf16_fwd_kernel() { delete kernel_; }
+
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, memory_desc_t &src_pd,
             memory_desc_t &weights_pd, memory_desc_t &dst_pd,
@@ -267,34 +238,30 @@ struct jit_avx512_core_bf16_fwd_kernel {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
-    void (*jit_ker)(jit_conv_call_s *);
-    _jit_avx512_core_bf16_fwd_kernel<Xbyak::Zmm> *zmm_kernel_;
-    _jit_avx512_core_bf16_fwd_kernel<Xbyak::Ymm> *ymm_kernel_;
-    _jit_avx512_core_bf16_fwd_kernel<Xbyak::Xmm> *xmm_kernel_;
+    void operator()(const jit_conv_call_s *p) const { (*kernel_)(p); }
+    const Xbyak::uint8 *jit_ker() const { return kernel_->jit_ker(); }
 
 private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_core_bf16_fwd_kernel);
+    jit_generator *kernel_;
 };
 
 template <typename Vmm>
 struct _jit_avx512_core_bf16_bwd_data_kernel : public jit_generator {
 
     _jit_avx512_core_bf16_bwd_data_kernel(const jit_conv_conf_t &ajcp)
-        : jit_generator(nullptr, ker_code_size), jcp(ajcp), bf16_emu_(nullptr) {
+        : jit_generator(nullptr, ker_code_size, true, avx512_core_bf16)
+        , jcp(ajcp)
+        , bf16_emu_(nullptr) {
         if (!isa_has_bf16(jcp.isa))
-            bf16_emu_ = new bf16_emulation_t(this, bf16_emu_reserv_1,
-                    bf16_emu_reserv_2, bf16_emu_reserv_3, bf16_emu_scratch,
-                    bf16_emu_reserv_4, bf16_emu_reserv_5);
-        generate();
-        jit_ker_ = (decltype(jit_ker_))getCode();
+            bf16_emu_ = utils::make_unique<bf16_emulation_t>(this,
+                    bf16_emu_reserv_1, bf16_emu_reserv_2, bf16_emu_reserv_3,
+                    bf16_emu_scratch, bf16_emu_reserv_4, bf16_emu_reserv_5);
     }
-
-    ~_jit_avx512_core_bf16_bwd_data_kernel() { delete bf16_emu_; }
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(_jit_avx512_core_bf16_bwd_data_kernel_f32)
 
     const jit_conv_conf_t &jcp;
-    void (*jit_ker_)(jit_conv_call_s *);
 
 private:
     using Vmm_down_t =
@@ -371,12 +338,12 @@ private:
     Xbyak::Zmm bf16_emu_reserv_5 = Xbyak::Zmm(30);
 
     Vmm vmm_wei = Vmm(31);
-    bf16_emulation_t *bf16_emu_;
+    std::unique_ptr<bf16_emulation_t> bf16_emu_;
 
     inline void prepare_output(int ur_w);
     inline void store_output(int ur_w);
     inline void compute_loop(int ur_w, int l_overflow, int r_overflow);
-    void generate();
+    void generate() override;
 
     int get_iw_start(int ki, int l_overflow) {
         int res = (jcp.iw - 1 + jcp.r_pad) % jcp.stride_w
@@ -401,10 +368,10 @@ private:
 
     inline int filter_h_to_dst(int kh) {
         return kh * (jcp.dilate_h + 1) * jcp.ow;
-    };
+    }
     inline int filter_d_to_dst(int kd) {
         return kd * (jcp.dilate_d + 1) * jcp.ow * jcp.oh;
-    };
+    }
 
     inline size_t get_diff_src_offset(int iw_idx, int n_ic_block) {
         const bool is_nxc_layout = is_dsrc_layout_nxc();
@@ -453,67 +420,54 @@ private:
 struct jit_avx512_core_bf16_bwd_data_kernel {
 
     jit_avx512_core_bf16_bwd_data_kernel(const jit_conv_conf_t &ajcp)
-        : jit_ker(nullptr)
-        , zmm_kernel_(nullptr)
-        , ymm_kernel_(nullptr)
-        , xmm_kernel_(nullptr) {
+        : kernel_(nullptr) {
         switch (ajcp.ic_block) {
             case 16:
-                zmm_kernel_
-                        = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Zmm>(
-                                ajcp);
-                jit_ker = zmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Zmm>(
+                        ajcp);
                 return;
             case 8:
-                ymm_kernel_
-                        = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Ymm>(
-                                ajcp);
-                jit_ker = ymm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Ymm>(
+                        ajcp);
                 return;
             case 4:
-                xmm_kernel_
-                        = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Xmm>(
-                                ajcp);
-                jit_ker = xmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Xmm>(
+                        ajcp);
                 return;
             default: assert(!"invalid channel blocking");
         }
     }
 
-    ~jit_avx512_core_bf16_bwd_data_kernel() {
-        delete zmm_kernel_;
-        delete ymm_kernel_;
-        delete xmm_kernel_;
-    }
+    status_t create_kernel() { return kernel_->create_kernel(); }
+
+    ~jit_avx512_core_bf16_bwd_data_kernel() { delete kernel_; }
 
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, memory_desc_t &diff_src_md,
             memory_desc_t &weights_md, memory_desc_t &diff_dst_md,
             int nthreads);
-
-    void (*jit_ker)(jit_conv_call_s *);
-    _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Zmm> *zmm_kernel_;
-    _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Ymm> *ymm_kernel_;
-    _jit_avx512_core_bf16_bwd_data_kernel<Xbyak::Xmm> *xmm_kernel_;
+    void operator()(const jit_conv_call_s *p) const { (*kernel_)(p); }
+    const Xbyak::uint8 *jit_ker() const { return kernel_->jit_ker(); }
 
 private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_core_bf16_bwd_data_kernel);
+    jit_generator *kernel_;
 };
 
 struct jit_avx512_core_bf16_conv_bwd_weights_kernel_f32 : public jit_generator {
 
     jit_avx512_core_bf16_conv_bwd_weights_kernel_f32(
             const jit_conv_conf_t &ajcp)
-        : jit_generator(nullptr, ker_code_size), jcp(ajcp), bf16_emu_(nullptr) {
+        : jit_generator(nullptr, ker_code_size, true, avx512_core_bf16)
+        , jcp(ajcp)
+        , bf16_emu_(nullptr) {
         if (!isa_has_bf16(jcp.isa)) {
-            bf16_emu_ = new bf16_emulation_t(
+            bf16_emu_ = utils::make_unique<bf16_emulation_t>(
                     this, one, even, selector, scratch, tmp0, tmp1);
         }
-        generate();
-        jit_ker = (decltype(jit_ker))getCode();
     }
 
-    ~jit_avx512_core_bf16_conv_bwd_weights_kernel_f32() { delete bf16_emu_; }
+    ~jit_avx512_core_bf16_conv_bwd_weights_kernel_f32() = default;
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(
             jit_avx512_core_bf16_conv_bwd_weights_kernel_f32)
@@ -526,7 +480,6 @@ struct jit_avx512_core_bf16_conv_bwd_weights_kernel_f32 : public jit_generator {
             const jit_conv_conf_t &jcp);
 
     const jit_conv_conf_t &jcp;
-    void (*jit_ker)(jit_conv_call_s *);
 
 private:
     Xbyak::Label dst_prm_table;
@@ -637,7 +590,7 @@ private:
                         format_tag::nhwc, format_tag::nwc);
     }
 
-    void generate();
+    void generate() override;
 
     static void balance(const jit_conv_conf_t &j, int &nthr, int &nthr_mb,
             int &nthr_g, int &nthr_oc_b, int &nthr_ic_b);
@@ -654,13 +607,13 @@ private:
         };
         iw_0 = get_w_position(0);
         iw_1 = get_w_position(1);
-    };
+    }
     bool check_borders(int ur_w, int pad_l, int pad_r, int i_ur, int i_kw) {
         int iw_1, iw_2;
         get_w_positions(ur_w, pad_l, pad_r, i_ur, i_kw, iw_1, iw_2);
 
         return (iw_1 == -1 && iw_2 == -1) ? false : true;
-    };
+    }
     bool get_load_mask(int ur_w, int pad_l, int pad_r, int i_ur, int i_kw,
             Xbyak::Opmask &load_mask) {
         int iw_1, iw_2;
@@ -677,16 +630,16 @@ private:
             rt = false;
 
         return rt;
-    };
+    }
 
     inline dim_t filter_w_to_src(int kw, int ow = 0, int pad_l = 0) {
         int stride_w = jcp.transpose_src ? 1 : jcp.stride_w;
         return kw * (jcp.dilate_w + 1) + ow * stride_w - pad_l;
-    };
-    inline dim_t filter_h_to_src(int kh) { return kh * (jcp.dilate_h + 1); };
+    }
+    inline dim_t filter_h_to_src(int kh) { return kh * (jcp.dilate_h + 1); }
     inline dim_t filter_d_to_src(int kd) {
         return kd * (jcp.dilate_d + 1) * jcp.ih;
-    };
+    }
 
     inline dim_t get_src_offset(dim_t ic_idx, dim_t w_idx, dim_t hd_idx = 0) {
         // For is_src_layout_nxc() the ic_idx index inside the block
@@ -710,7 +663,7 @@ private:
         dim_t icb_str
                 = jcp.ic_block * (is_src_layout_nxc() ? 1 : full_spatial_size);
         return jcp.typesize_in * (isp_off + icb_str * icb + ic_str * ic);
-    };
+    }
 
     inline dim_t get_ddst_offset(dim_t w_idx, dim_t hd_idx = 0) {
         int ow_per_oc = jcp.transpose_dst ? 2 : 1;
@@ -739,7 +692,7 @@ private:
                 : ((!isa_has_bf16(jcp.isa)) ? 26 : 31);
         return Xbyak::Zmm(idx);
     }
-    bf16_emulation_t *bf16_emu_;
+    std::unique_ptr<bf16_emulation_t> bf16_emu_;
 
     inline int interleave_w_reorder_size(int ur_w);
     inline int interleave_w_reorder_bytes(int ur_w);
@@ -750,17 +703,17 @@ private:
 
     inline void setup_stack_space();
     static const int extern_ic_block_step_stack_size = 0;
-    int ic_block_step_stack_size;
-    int stack_space_needed;
-    int permw_buffer_start;
-    int kd_count_offset;
-    int src_d_offset;
-    int ddst_d_offset;
-    int d_index_offset;
-    int trans_tmp_offset;
-    int ih_dilate_shift;
-    int icb_loop_ker_ptr;
-    int icb_loop_src_ptr;
+    int ic_block_step_stack_size = 0;
+    int stack_space_needed = 0;
+    int permw_buffer_start = 0;
+    int kd_count_offset = 0;
+    int src_d_offset = 0;
+    int ddst_d_offset = 0;
+    int d_index_offset = 0;
+    int trans_tmp_offset = 0;
+    int ih_dilate_shift = 0;
+    int icb_loop_ker_ptr = 0;
+    int icb_loop_src_ptr = 0;
 };
 } // namespace x64
 } // namespace cpu

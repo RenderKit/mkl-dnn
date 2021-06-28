@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,8 +34,10 @@ void check_correctness(const settings_t &s) {
     for_(const auto &i_alg : s.alg)
     for_(const auto &i_alpha : s.alpha)
     for_(const auto &i_beta : s.beta)
-    for_(auto i_inplace : s.inplace)
-    for (const auto &i_mb : s.mb) {
+    for_(const auto &i_mb : s.mb)
+    for_(const auto &i_post_ops : s.post_ops)
+    for_(const auto &i_scratchpad_mode : s.scratchpad_mode)
+    for (auto i_inplace : s.inplace) {
         bool ok = i_alg > alg_t::ELTWISE_START && i_alg < alg_t::ELTWISE_END;
         if (!ok) SAFE_V(FAIL);
 
@@ -49,6 +51,8 @@ void check_correctness(const settings_t &s) {
             case alg_t::LOG:
             case alg_t::LOGISTIC:
             case alg_t::LOGISTIC_DST:
+            case alg_t::LOGSIGMOID:
+            case alg_t::MISH:
             case alg_t::SQRT:
             case alg_t::SQRT_DST:
             case alg_t::SQUARE:
@@ -78,23 +82,27 @@ void check_correctness(const settings_t &s) {
             default:;
         };
 
-        const prb_t p(s.dims, i_dir, i_dt, i_tag, i_alg, i_alpha, i_beta,
-                i_inplace, i_mb);
+        attr_t attr;
+        attr.insert(i_post_ops);
+        attr.insert(i_scratchpad_mode);
+
+        const prb_t prb(s.dims, i_dir, i_dt, i_tag, i_alg, i_alpha, i_beta,
+                i_inplace, attr, i_mb);
         std::stringstream ss;
-        ss << p;
+        ss << prb;
         const std::string cpp_pstr = ss.str();
         const char *pstr = cpp_pstr.c_str();
         BENCHDNN_PRINT(1, "run: %s\n", pstr);
 
         res_t res {};
-        const int status = doit(&p, &res);
+        const int status = doit(&prb, &res);
 
         bool want_perf_report = false;
         parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
-            pr.report(&p, &res, pstr);
+            pr.report(&prb, &res, pstr);
         }
 
         benchdnn_stat.tests++;
@@ -119,6 +127,9 @@ int bench(int argc, char **argv) {
                         s.alg, def.alg, attr_t::post_ops_t::str2kind, argv[0])
                 || parse_inplace(s.inplace, def.inplace, argv[0])
                 || parse_mb(s.mb, def.mb, argv[0])
+                || parse_attr_post_ops(s.post_ops, argv[0])
+                || parse_attr_scratchpad_mode(
+                        s.scratchpad_mode, def.scratchpad_mode, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

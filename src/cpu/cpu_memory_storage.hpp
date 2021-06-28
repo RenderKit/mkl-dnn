@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include "common/c_types_map.hpp"
 #include "common/memory.hpp"
 #include "common/memory_storage.hpp"
+#include "common/stream.hpp"
 #include "common/utils.hpp"
 
 #include "cpu/platform.hpp"
@@ -45,12 +46,42 @@ public:
         return status::success;
     }
 
+    status_t map_data(
+            void **mapped_ptr, stream_t *stream, size_t size) const override {
+        UNUSED(size);
+        // This function is called for non-SYCL CPU engines only, where the
+        // runtime_kind is constant for a specific build, and engine_kind is
+        // only cpu. However, at the same time, the stream engine and memory
+        // object engine may have different memory locations. Therefore, at
+        // most, we need to ensure that the indexes of these engines are
+        // identical.
+        if (stream != nullptr && stream->engine()->index() != engine()->index())
+            return status::invalid_arguments;
+        return get_data_handle(mapped_ptr);
+    }
+
+    status_t unmap_data(void *mapped_ptr, stream_t *stream) const override {
+        UNUSED(mapped_ptr);
+        if (stream != nullptr && stream->engine()->index() != engine()->index())
+            return status::invalid_arguments;
+        return status::success;
+    }
+
+    bool is_host_accessible() const override { return true; }
+
     std::unique_ptr<memory_storage_t> get_sub_storage(
             size_t offset, size_t size) const override {
         void *sub_ptr = reinterpret_cast<uint8_t *>(data_.get()) + offset;
         auto sub_storage = new cpu_memory_storage_t(this->engine());
         sub_storage->init(memory_flags_t::use_runtime_ptr, size, sub_ptr);
         return std::unique_ptr<memory_storage_t>(sub_storage);
+    }
+
+    std::unique_ptr<memory_storage_t> clone() const override {
+        auto storage = new cpu_memory_storage_t(engine());
+        if (storage)
+            storage->init(memory_flags_t::use_runtime_ptr, 0, data_.get());
+        return std::unique_ptr<memory_storage_t>(storage);
     }
 
 protected:

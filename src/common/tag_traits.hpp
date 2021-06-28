@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,8 +29,12 @@ enum class block_dim_t {
     _,
     _A,
     _B,
+    _D,
+    _E,
     _AB,
     _BC,
+    _CD,
+    _CE,
 };
 
 enum class inner_blk_t {
@@ -43,6 +47,8 @@ enum class inner_blk_t {
     _16b,
     _32a,
     _32b,
+    _32d,
+    _32e,
 
     _4a4b,
     _4b4a,
@@ -53,6 +59,8 @@ enum class inner_blk_t {
     _8b8c,
     _8c8b,
     _16a16b,
+    _16b64a,
+    _16b32a,
     _16b16a,
     _16b16c,
     _16c16b,
@@ -61,12 +69,19 @@ enum class inner_blk_t {
     _16a4b,
     _16b2c,
     _16b4c,
+    _32d4c,
+    _32e2c,
+    _32e4c,
 
     _2c8b4c,
     _8a16b2a,
     _4b16a4b,
+    _4b32a4b,
+    _4b64a4b,
     _2b8a4b,
     _8b16a2b,
+    _8b32a2b,
+    _8b64a2b,
     _8b16c2b,
     _4c16b4c,
     _8c16b2c,
@@ -75,10 +90,18 @@ enum class inner_blk_t {
     _4b8c2b,
     _4c8b2c,
 
-    _16c16b4c,
-    _16b16a4b,
-    _16c16b2c,
+    _16a16b2a,
     _16b16a2b,
+    _16b32a2b,
+    _16b48a2b,
+    _16b64a2b,
+    _16b16a4b,
+    _16b32a4b,
+    _16b48a4b,
+    _16b64a4b,
+    _16b16c2b,
+    _16c16b2c,
+    _16c16b4c,
     _2a8b8a2b,
     _2b8c8b2c,
     _4a8b8a4b,
@@ -92,13 +115,17 @@ constexpr int AB_or_BC_blk_off(int x0, int x1) {
     static_assert(
             utils::one_of(f, ib::_4a4b, ib::_4b4a, ib::_4b4c, ib::_4c4b,
                     ib::_8a8b, ib::_8b8a, ib::_8b8c, ib::_8c8b, ib::_16a16b,
-                    ib::_16b16a, ib::_16b16c, ib::_16c16b, ib::_32a32b,
-                    ib::_16a2b, ib::_16a4b, ib::_16b2c, ib::_16b4c, ib::_2c8b4c,
-                    ib::_8a16b2a, ib::_4b16a4b, ib::_2b8a4b, ib::_8b16a2b,
-                    ib::_8b16c2b, ib::_4c16b4c, ib::_8c16b2c, ib::_2a8b8a2b,
-                    ib::_2b8c8b2c, ib::_4a8b8a4b, ib::_4b8c8b4c, ib::_2b4c2b,
-                    ib::_2c4b2c, ib::_4b8c2b, ib::_4c8b2c, ib::_16c16b4c,
-                    ib::_16b16a4b, ib::_16c16b2c, ib::_16b16a2b),
+                    ib::_16b64a, ib::_16b32a, ib::_16b16a, ib::_16b16c,
+                    ib::_16c16b, ib::_32a32b, ib::_16a2b, ib::_16a4b,
+                    ib::_16b2c, ib::_16b4c, ib::_2c8b4c, ib::_8a16b2a,
+                    ib::_4b64a4b, ib::_4b32a4b, ib::_4b16a4b, ib::_2b8a4b,
+                    ib::_8b64a2b, ib::_8b32a2b, ib::_8b16a2b, ib::_8b16c2b,
+                    ib::_4c16b4c, ib::_8c16b2c, ib::_2b4c2b, ib::_2c4b2c,
+                    ib::_4b8c2b, ib::_4c8b2c, ib::_16a16b2a, ib::_16b16a2b,
+                    ib::_16b16a4b, ib::_16b16c2b, ib::_16c16b2c, ib::_16c16b4c,
+                    ib::_2a8b8a2b, ib::_2b8c8b2c, ib::_4a8b8a4b, ib::_4b8c8b4c,
+                    ib::_16b32a2b, ib::_16b48a2b, ib::_16b64a2b, ib::_16b32a4b,
+                    ib::_16b48a4b, ib::_16b64a4b),
             "unexpected inner_blk format");
 
     // clang-format off
@@ -108,20 +135,33 @@ constexpr int AB_or_BC_blk_off(int x0, int x1) {
         : (f == ib::_8a8b || f == ib::_8b8c) ? 8 * x0 + x1
         : (f == ib::_8b8a || f == ib::_8c8b) ? 8 * x1 + x0
         : (f == ib::_16a16b || f == ib::_16b16c) ? 16 * x0 + x1
+        : (f == ib::_16b64a) ? 64 * x1 + x0
+        : (f == ib::_16b32a) ? 32 * x1 + x0
         : (f == ib::_16b16a || f == ib::_16c16b) ? 16 * x1 + x0
         : (f == ib::_16a2b || f == ib::_16b2c) ? 2 * x0 + x1
         : (f == ib::_16a4b || f == ib::_16b4c) ? 4 * x0 + x1
         : (f == ib::_32a32b) ? 32 * x0 + x1
         : (f == ib::_8a16b2a || f == ib::_8b16c2b) ? (x0 / 2) * 32 + x1 * 2 + x0 % 2
         : (f == ib::_4b16a4b || f == ib::_4c16b4c) ? (x1 / 4) * 64 + x0 * 4 + x1 % 4
+        : (f == ib::_4b32a4b) ? (x1 / 4) * 128 + x0 * 4 + x1 % 4
+        : (f == ib::_4b64a4b) ? (x1 / 4) * 256 + x0 * 4 + x1 % 4
         : (f == ib::_2b8a4b || f == ib::_2c8b4c) ? (x1 / 4) * 32 + x0 * 4 + x1 % 4
-        : (f == ib::_16b16a4b || f == ib::_16c16b4c) ? (x1 / 4) * 64 + x0 * 4 + x1 % 4
+        : (f == ib::_16a16b2a || f == ib::_16b16c2b) ? (x0 / 2) * 32 + x1 * 2 + x0 % 2
         : (f == ib::_16b16a2b || f == ib::_16c16b2c) ? (x1 / 2) * 32 + x0 * 2 + x1 % 2
+        : (f == ib::_16b16a4b || f == ib::_16c16b4c) ? (x1 / 4) * 64 + x0 * 4 + x1 % 4
         : (f == ib::_8b16a2b || f == ib::_8c16b2c) ? (x1 / 2) * 32 + x0 * 2 + x1 % 2
+        : (f == ib::_8b32a2b) ? (x1 / 2) * 64 + x0 * 2 + x1 % 2
+        : (f == ib::_8b64a2b) ? (x1 / 2) * 128 + x0 * 2 + x1 % 2
         : (f == ib::_2b4c2b || f == ib::_2c4b2c) ? (x0 / 2) * 8 + x1 * 2 + x0 % 2
         : (f == ib::_4b8c2b || f == ib::_4c8b2c) ? (x0 / 2) * 16 + x1 * 2 + x0 % 2
         : (f == ib::_2a8b8a2b || f == ib::_2b8c8b2c) ? (x0 / 8) * 128 + (x1 / 2) * 16 + (x0 % 8) * 2 + x1 % 2
         : (f == ib::_4a8b8a4b || f == ib::_4b8c8b4c) ? (x0 / 8) * 256 + (x1 / 4) * 32 + (x0 % 8) * 4 + x1 % 4
+        : (f == ib::_16b32a2b) ? (x1 / 2) * 64 + x0 * 2 + x1 % 2
+        : (f == ib::_16b48a2b) ? (x1 / 2) * 96 + x0 * 2 + x1 % 2
+        : (f == ib::_16b64a2b) ? (x1 / 2) * 128 + x0 * 2 + x1 % 2
+        : (f == ib::_16b32a4b) ? (x1 / 4) * 128 + x0 * 4 + x1 % 4
+        : (f == ib::_16b48a4b) ? (x1 / 4) * 192 + x0 * 4 + x1 % 4
+        : (f == ib::_16b64a4b) ? (x1 / 4) * 256 + x0 * 4 + x1 % 4
         : INT_MIN;
     // clang-format on
 }
@@ -152,11 +192,27 @@ DECL_TRAITS(abc, _, _, 3);
 DECL_TRAITS(abcd, _, _, 4);
 DECL_TRAITS(abcde, _, _, 5);
 DECL_TRAITS(abcdef, _, _, 6);
+DECL_TRAITS(abcdefg, _, _, 7);
+DECL_TRAITS(abcdefgh, _, _, 8);
+DECL_TRAITS(abcdefghi, _, _, 9);
+DECL_TRAITS(abcdefghij, _, _, 10);
+DECL_TRAITS(abcdefghijk, _, _, 11);
+DECL_TRAITS(abcdefghijkl, _, _, 12);
+DECL_TRAITS(abcdefghijlk, _, _, 12);
+DECL_TRAITS(abcdefghikj, _, _, 11);
+DECL_TRAITS(abcdefghji, _, _, 10);
+DECL_TRAITS(abcdefgih, _, _, 9);
+DECL_TRAITS(abcdefhg, _, _, 8);
+DECL_TRAITS(abcdegf, _, _, 7);
+DECL_TRAITS(abcdfe, _, _, 6);
+DECL_TRAITS(abced, _, _, 5);
 DECL_TRAITS(abdc, _, _, 4);
 DECL_TRAITS(abdec, _, _, 5);
+DECL_TRAITS(abdfce, _, _, 6);
 DECL_TRAITS(acb, _, _, 3);
 DECL_TRAITS(acbde, _, _, 5);
 DECL_TRAITS(acbdef, _, _, 6);
+DECL_TRAITS(abdefc, _, _, 6);
 DECL_TRAITS(acdb, _, _, 4);
 DECL_TRAITS(acdeb, _, _, 5);
 DECL_TRAITS(ba, _, _, 2);
@@ -176,9 +232,18 @@ DECL_TRAITS(defcab, _, _, 6);
 DECL_TRAITS(Abc4a, _A, _4a, 3);
 DECL_TRAITS(aBc4b, _B, _4b, 3);
 DECL_TRAITS(ABc4b16a4b, _AB, _4b16a4b, 3);
+DECL_TRAITS(ABc4b32a4b, _AB, _4b32a4b, 3);
+DECL_TRAITS(ABc4b64a4b, _AB, _4b64a4b, 3);
 DECL_TRAITS(ABc2b8a4b, _AB, _2b8a4b, 3);
+DECL_TRAITS(ABc16a16b2a, _AB, _16a16b2a, 3);
 DECL_TRAITS(ABc16b16a4b, _AB, _16b16a4b, 3);
+DECL_TRAITS(ABc16b32a4b, _AB, _16b32a4b, 3);
+DECL_TRAITS(ABc16b48a4b, _AB, _16b48a4b, 3);
+DECL_TRAITS(ABc16b64a4b, _AB, _16b64a4b, 3);
 DECL_TRAITS(ABc16b16a2b, _AB, _16b16a2b, 3);
+DECL_TRAITS(ABc16b32a2b, _AB, _16b32a2b, 3);
+DECL_TRAITS(ABc16b48a2b, _AB, _16b48a2b, 3);
+DECL_TRAITS(ABc16b64a2b, _AB, _16b64a2b, 3);
 DECL_TRAITS(ABc4b4a, _AB, _4b4a, 3);
 DECL_TRAITS(Abcd4a, _A, _4a, 4);
 DECL_TRAITS(aBcd4b, _B, _4b, 4);
@@ -186,8 +251,11 @@ DECL_TRAITS(ABcd4b4a, _AB, _4b4a, 4);
 DECL_TRAITS(ABcd4a4b, _AB, _4a4b, 4);
 DECL_TRAITS(aBCd4c16b4c, _BC, _4c16b4c, 4);
 DECL_TRAITS(aBCd2c8b4c, _BC, _2c8b4c, 4);
+DECL_TRAITS(aBCd16b16c2b, _BC, _16b16c2b, 4);
 DECL_TRAITS(aBCd16c16b4c, _BC, _16c16b4c, 4);
 DECL_TRAITS(aBCd16c16b2c, _BC, _16c16b2c, 4);
+DECL_TRAITS(aBCdef16c16b4c, _BC, _16c16b4c, 6);
+DECL_TRAITS(aBCdef16c16b2c, _BC, _16c16b2c, 6);
 DECL_TRAITS(aBCd4c4b, _BC, _4c4b, 4);
 DECL_TRAITS(aBCd4b4c, _BC, _4b4c, 4);
 DECL_TRAITS(Abcde4a, _A, _4a, 5);
@@ -205,15 +273,36 @@ DECL_TRAITS(Acb4a, _A, _4a, 3);
 DECL_TRAITS(Acdb4a, _A, _4a, 4);
 DECL_TRAITS(Acdeb4a, _A, _4a, 5);
 
+DECL_TRAITS(AB16b16a, _AB, _16b16a, 2);
+DECL_TRAITS(AB16b32a, _AB, _16b32a, 2);
+DECL_TRAITS(AB16b64a, _AB, _16b64a, 2);
+DECL_TRAITS(AB8b16a2b, _AB, _8b16a2b, 2);
+DECL_TRAITS(AB8b32a2b, _AB, _8b32a2b, 2);
+DECL_TRAITS(AB8b64a2b, _AB, _8b64a2b, 2);
+DECL_TRAITS(AB4b16a4b, _AB, _4b16a4b, 2);
+DECL_TRAITS(AB4b32a4b, _AB, _4b32a4b, 2);
+DECL_TRAITS(AB4b64a4b, _AB, _4b64a4b, 2);
+DECL_TRAITS(AB16b16a4b, _AB, _16b16a4b, 2);
+DECL_TRAITS(AB16b32a4b, _AB, _16b32a4b, 2);
+DECL_TRAITS(AB16b48a4b, _AB, _16b48a4b, 2);
+DECL_TRAITS(AB16b64a4b, _AB, _16b64a4b, 2);
+DECL_TRAITS(AB16b16a2b, _AB, _16b16a2b, 2);
+DECL_TRAITS(AB16b32a2b, _AB, _16b32a2b, 2);
+DECL_TRAITS(AB16b48a2b, _AB, _16b48a2b, 2);
+DECL_TRAITS(AB16b64a2b, _AB, _16b64a2b, 2);
 DECL_TRAITS(Abc16a, _A, _16a, 3);
 DECL_TRAITS(ABc16a16b, _AB, _16a16b, 3);
 DECL_TRAITS(ABc4a4b, _AB, _4a4b, 3);
 DECL_TRAITS(aBc16b, _B, _16b, 3);
 DECL_TRAITS(ABc16b16a, _AB, _16b16a, 3);
+DECL_TRAITS(ABc16b32a, _AB, _16b32a, 3);
+DECL_TRAITS(ABc16b64a, _AB, _16b64a, 3);
 DECL_TRAITS(ABc8a16b2a, _AB, _8a16b2a, 3);
 DECL_TRAITS(ABc8a8b, _AB, _8a8b, 3);
 DECL_TRAITS(aBc8b, _B, _8b, 3);
 DECL_TRAITS(ABc8b16a2b, _AB, _8b16a2b, 3);
+DECL_TRAITS(ABc8b32a2b, _AB, _8b32a2b, 3);
+DECL_TRAITS(ABc8b64a2b, _AB, _8b64a2b, 3);
 DECL_TRAITS(BAc8a16b2a, _AB, _8a16b2a, 3);
 DECL_TRAITS(ABc8b8a, _AB, _8b8a, 3);
 DECL_TRAITS(Abcd16a, _A, _16a, 4);
@@ -221,16 +310,33 @@ DECL_TRAITS(Abcd8a, _A, _8a, 4);
 DECL_TRAITS(ABcd16a16b, _AB, _16a16b, 4);
 DECL_TRAITS(aBcd16b, _B, _16b, 4);
 DECL_TRAITS(ABcd16b16a, _AB, _16b16a, 4);
+DECL_TRAITS(ABcd16b32a, _AB, _16b32a, 4);
+DECL_TRAITS(ABcd16b64a, _AB, _16b64a, 4);
 DECL_TRAITS(aBCd16b16c, _BC, _16b16c, 4);
 DECL_TRAITS(aBCd16c16b, _BC, _16c16b, 4);
 DECL_TRAITS(ABcd4b16a4b, _AB, _4b16a4b, 4);
+DECL_TRAITS(ABcd4b32a4b, _AB, _4b32a4b, 4);
+DECL_TRAITS(ABcd4b64a4b, _AB, _4b64a4b, 4);
 DECL_TRAITS(ABcd2b8a4b, _AB, _2b8a4b, 4);
+DECL_TRAITS(ABcd16a16b2a, _AB, _16a16b2a, 4);
 DECL_TRAITS(ABcd16b16a4b, _AB, _16b16a4b, 4);
+DECL_TRAITS(ABcd16b32a4b, _AB, _16b32a4b, 4);
+DECL_TRAITS(ABcd16b48a4b, _AB, _16b48a4b, 4);
+DECL_TRAITS(ABcd16b64a4b, _AB, _16b64a4b, 4);
 DECL_TRAITS(ABcd16b16a2b, _AB, _16b16a2b, 4);
+DECL_TRAITS(ABcd16b32a2b, _AB, _16b32a2b, 4);
+DECL_TRAITS(ABcd16b48a2b, _AB, _16b48a2b, 4);
+DECL_TRAITS(ABcd16b64a2b, _AB, _16b64a2b, 4);
+DECL_TRAITS(ABcde16b16a2b, _AB, _16b16a2b, 5);
+DECL_TRAITS(ABcde16b32a2b, _AB, _16b32a2b, 5);
+DECL_TRAITS(ABcde16b48a2b, _AB, _16b48a2b, 5);
+DECL_TRAITS(ABcde16b64a2b, _AB, _16b64a2b, 5);
 DECL_TRAITS(ABcd8a16b2a, _AB, _8a16b2a, 4);
 DECL_TRAITS(ABcd8a8b, _AB, _8a8b, 4);
 DECL_TRAITS(aBcd8b, _B, _8b, 4);
 DECL_TRAITS(ABcd8b16a2b, _AB, _8b16a2b, 4);
+DECL_TRAITS(ABcd8b32a2b, _AB, _8b32a2b, 4);
+DECL_TRAITS(ABcd8b64a2b, _AB, _8b64a2b, 4);
 DECL_TRAITS(aBCd8b16c2b, _BC, _8b16c2b, 4);
 DECL_TRAITS(BAcd8a16b2a, _AB, _8a16b2a, 4);
 DECL_TRAITS(ABcd8b8a, _AB, _8b8a, 4);
@@ -242,18 +348,29 @@ DECL_TRAITS(Abcde16a, _A, _16a, 5);
 DECL_TRAITS(ABcde16a16b, _AB, _16a16b, 5);
 DECL_TRAITS(BAcde8a16b2a, _AB, _8a16b2a, 5);
 DECL_TRAITS(ABcde4b16a4b, _AB, _4b16a4b, 5);
+DECL_TRAITS(ABcde4b32a4b, _AB, _4b32a4b, 5);
+DECL_TRAITS(ABcde4b64a4b, _AB, _4b64a4b, 5);
+DECL_TRAITS(ABcde16b16a4b, _AB, _16b16a4b, 5);
+DECL_TRAITS(ABcde16b32a4b, _AB, _16b32a4b, 5);
+DECL_TRAITS(ABcde16b48a4b, _AB, _16b48a4b, 5);
+DECL_TRAITS(ABcde16b64a4b, _AB, _16b64a4b, 5);
 DECL_TRAITS(ABcde2b8a4b, _AB, _2b8a4b, 5);
 DECL_TRAITS(aBcde16b, _B, _16b, 5);
 DECL_TRAITS(ABcde16b16a, _AB, _16b16a, 5);
+DECL_TRAITS(ABcde16b32a, _AB, _16b32a, 5);
+DECL_TRAITS(ABcde16b64a, _AB, _16b64a, 5);
 DECL_TRAITS(aBCde16b16c, _BC, _16b16c, 5);
 DECL_TRAITS(aBCde16c16b, _BC, _16c16b, 5);
 DECL_TRAITS(aBCde4c16b4c, _BC, _4c16b4c, 5);
+DECL_TRAITS(aBCde16b16c2b, _BC, _16b16c2b, 5);
 DECL_TRAITS(aBCde16c16b4c, _BC, _16c16b4c, 5);
 DECL_TRAITS(aBCde16c16b2c, _BC, _16c16b2c, 5);
 DECL_TRAITS(Abcde8a, _A, _8a, 5);
 DECL_TRAITS(ABcde8a8b, _AB, _8a8b, 5);
 DECL_TRAITS(aBcde8b, _B, _8b, 5);
 DECL_TRAITS(ABcde8b16a2b, _AB, _8b16a2b, 5);
+DECL_TRAITS(ABcde8b32a2b, _AB, _8b32a2b, 5);
+DECL_TRAITS(ABcde8b64a2b, _AB, _8b64a2b, 5);
 DECL_TRAITS(aBCde8b16c2b, _BC, _8b16c2b, 5);
 DECL_TRAITS(aCBde8b16c2b, _BC, _8b16c2b, 5);
 DECL_TRAITS(ABcde8b8a, _AB, _8b8a, 5);
@@ -281,7 +398,9 @@ DECL_TRAITS(aBdeC16b4c, _BC, _16b4c, 5);
 DECL_TRAITS(aBdec8b, _B, _8b, 5);
 DECL_TRAITS(aBdefc16b, _B, _16b, 6);
 DECL_TRAITS(aBdefC16b2c, _BC, _16b2c, 6);
+DECL_TRAITS(aBdefC16b4c, _BC, _16b4c, 6);
 DECL_TRAITS(aBdefc8b, _B, _8b, 6);
+DECL_TRAITS(aBedc16b, _B, _16b, 5);
 DECL_TRAITS(Acb16a, _A, _16a, 3);
 DECL_TRAITS(AcB16a2b, _AB, _16a2b, 3);
 DECL_TRAITS(AcB16a4b, _AB, _16a4b, 3);
@@ -294,7 +413,9 @@ DECL_TRAITS(AcdB16a4b, _AB, _16a4b, 4);
 DECL_TRAITS(Acdb8a, _A, _8a, 4);
 DECL_TRAITS(Acdeb16a, _A, _16a, 5);
 DECL_TRAITS(AcdeB16a2b, _AB, _16a2b, 5);
+DECL_TRAITS(AcdeB16a4b, _AB, _16a4b, 5);
 DECL_TRAITS(Acdeb8a, _A, _8a, 5);
+DECL_TRAITS(Adcb16a, _A, _16a, 4);
 DECL_TRAITS(BAc16a16b, _AB, _16a16b, 3);
 DECL_TRAITS(BAcd16a16b, _AB, _16a16b, 4);
 DECL_TRAITS(BAcde16a16b, _AB, _16a16b, 5);
@@ -325,6 +446,11 @@ DECL_TRAITS(aBCdef4b8c2b, _BC, _4b8c2b, 6);
 DECL_TRAITS(aBCd4c8b2c, _BC, _4c8b2c, 4);
 DECL_TRAITS(aBCde4c8b2c, _BC, _4c8b2c, 5);
 DECL_TRAITS(aBCdef4c8b2c, _BC, _4c8b2c, 6);
+DECL_TRAITS(abDc32d, _D, _32d, 4);
+DECL_TRAITS(abDC32d4c, _CD, _32d4c, 4);
+DECL_TRAITS(abdEc32e, _E, _32e, 5);
+DECL_TRAITS(abdEC32e2c, _CE, _32e2c, 5);
+DECL_TRAITS(abdEC32e4c, _CE, _32e4c, 5);
 
 } // namespace impl
 } // namespace dnnl

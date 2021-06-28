@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2020 Intel Corporation
+ * Copyright 2020-2021 Intel Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,12 +22,15 @@ namespace dnnl {
 namespace impl {
 namespace gpu {
 namespace compute {
-status_t compute_stream_t::zero_pad(const memory_t *memory) {
+status_t compute_stream_t::zero_pad(
+        const memory_t *memory, const exec_ctx_t &ctx) {
     memory_desc_wrapper mdw(memory->md());
 
     if (mdw.format_kind() != format_kind::blocked) return status::unimplemented;
 
     if (mdw.nelems(false) == mdw.nelems(true)) return status::success;
+
+    if (!has_zero_pad_primitive()) return stream_t::zero_pad(memory, ctx);
 
     // Kernel only compiled to support data types of length 1, 2, or 4 currently
     if (!utils::one_of(mdw.data_type_size(), 1u, 2u, 4u))
@@ -42,24 +45,43 @@ status_t compute_stream_t::zero_pad(const memory_t *memory) {
     }
 
     assert(step_nelems <= max_step_nelems);
-    if (step_nelems > max_step_nelems) return stream_t::zero_pad(memory);
+    if (step_nelems > max_step_nelems) return stream_t::zero_pad(memory, ctx);
 
     engine_t *engine = this->engine();
 
     primitive_t *zero_pad_primitive;
+    const resource_mapper_t *mapper;
     CHECK(utils::downcast<compute_engine_t *>(engine)->get_zero_pad_primitive(
-            zero_pad_primitive));
+            zero_pad_primitive, mapper));
 
-    resource_mapper_t mapper;
-    CHECK(zero_pad_primitive->create_resource(engine, mapper));
     exec_args_t zero_pad_args;
     memory_arg_t arg = {const_cast<memory_t *>(memory), true};
     zero_pad_args[DNNL_ARG_SRC] = arg;
     exec_ctx_t zero_pad_ctx(this, std::move(zero_pad_args));
-    zero_pad_ctx.set_resource_mapper(&mapper);
-    CHECK(zero_pad_primitive->execute(zero_pad_ctx));
+    zero_pad_ctx.set_resource_mapper(mapper);
+    if (get_verbose()) {
+        const int str_size = 64;
+        char md_fmt[str_size];
+        char md_dim[str_size];
+        dnnl_md2fmt_str(md_fmt, str_size, memory->md());
+        dnnl_md2dim_str(md_dim, str_size, memory->md());
 
-    return this->wait();
+        this->wait();
+        double start_ms = get_msec();
+        CHECK(zero_pad_primitive->execute(zero_pad_ctx));
+        status_t status = this->wait();
+        double duration_ms = get_msec() - start_ms;
+        std::string stamp;
+        if (get_verbose_timestamp()) stamp = "," + std::to_string(start_ms);
+
+        printf("dnnl_verbose%s,exec,%s,%s,undef,%s,,,%s,%g\n", stamp.c_str(),
+                "gpu,zero_pad", zero_pad_primitive->pd()->name(), md_fmt,
+                md_dim, duration_ms);
+
+        return status;
+    } else {
+        return zero_pad_primitive->execute(zero_pad_ctx);
+    }
 };
 } // namespace compute
 } // namespace gpu

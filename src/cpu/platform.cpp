@@ -1,5 +1,6 @@
 /*******************************************************************************
 * Copyright 2020 Intel Corporation
+* Copyright 2020 FUJITSU LIMITED
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,10 +15,22 @@
 * limitations under the License.
 *******************************************************************************/
 
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+#include <algorithm>
+
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__GLIBC__)
+#include <sched.h>
+#endif
+#endif
+
 #include "cpu/platform.hpp"
 
 #if DNNL_X64
 #include "cpu/x64/cpu_isa_traits.hpp"
+#elif DNNL_AARCH64
+#include "cpu/aarch64/cpu_isa_traits.hpp"
 #endif
 
 namespace dnnl {
@@ -28,6 +41,8 @@ namespace platform {
 const char *get_isa_info() {
 #if DNNL_X64
     return x64::get_isa_info();
+#elif DNNL_AARCH64
+    return aarch64::get_isa_info();
 #else
     return "Generic";
 #endif
@@ -36,6 +51,8 @@ const char *get_isa_info() {
 dnnl_cpu_isa_t get_effective_cpu_isa() {
 #if DNNL_X64
     return x64::get_effective_cpu_isa();
+#elif DNNL_AARCH64
+    return aarch64::get_effective_cpu_isa();
 #else
     return dnnl_cpu_isa_all;
 #endif
@@ -46,6 +63,31 @@ status_t set_max_cpu_isa(dnnl_cpu_isa_t isa) {
     return x64::set_max_cpu_isa(isa);
 #else
     return status::unimplemented;
+#endif
+}
+
+status_t set_cpu_isa_hints(dnnl_cpu_isa_hints_t isa_hints) {
+#if DNNL_X64
+    return x64::set_cpu_isa_hints(isa_hints);
+#else
+    return status::unimplemented;
+#endif
+}
+
+dnnl_cpu_isa_hints_t get_cpu_isa_hints() {
+#if DNNL_X64
+    return x64::get_cpu_isa_hints();
+#else
+    return dnnl_cpu_isa_no_hints;
+#endif
+}
+
+bool prefer_ymm_requested() {
+#if DNNL_X64
+    const bool prefer_ymm = x64::get_cpu_isa_hints() == dnnl_cpu_isa_prefer_ymm;
+    return prefer_ymm;
+#else
+    return false;
 #endif
 }
 
@@ -81,12 +123,12 @@ unsigned get_per_core_cache_size(int level) {
     };
 
 #if DNNL_X64
-    using x64::cpu;
-    if (cpu.getDataCacheLevels() == 0) return guess(level);
+    using namespace x64;
+    if (cpu().getDataCacheLevels() == 0) return guess(level);
 
-    if (level > 0 && (unsigned)level <= cpu.getDataCacheLevels()) {
+    if (level > 0 && (unsigned)level <= cpu().getDataCacheLevels()) {
         unsigned l = level - 1;
-        return cpu.getDataCacheSize(l) / cpu.getCoresSharingDataCache(l);
+        return cpu().getDataCacheSize(l) / cpu().getCoresSharingDataCache(l);
     } else
         return 0;
 #else
@@ -96,11 +138,43 @@ unsigned get_per_core_cache_size(int level) {
 
 unsigned get_num_cores() {
 #if DNNL_X64
-    return x64::cpu.getNumCores(Xbyak::util::CoreLevel);
+    return x64::cpu().getNumCores(Xbyak::util::CoreLevel);
 #else
     return 1;
 #endif
 }
+
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+// The purpose of this function is to return the potential maximum number of
+// threads in user's threadpool. It is assumed that the number of threads in an
+// actual threadpool will not exceed the number cores in a socket reported by
+// the OS, which may or may not be equal to the number of total physical cores
+// in a socket depending on the OS configuration (read -- VM environment). In
+// order to simulate the number of cores available in such environment, this
+// function supports process affinity.
+unsigned get_max_threads_to_use() {
+    int num_cores_per_socket = (int)dnnl::impl::cpu::platform::get_num_cores();
+#if defined(_WIN32)
+    DWORD_PTR proc_affinity_mask;
+    DWORD_PTR sys_affinity_mask;
+    if (GetProcessAffinityMask(
+                GetCurrentProcess(), &proc_affinity_mask, &sys_affinity_mask)) {
+        int masked_nthr = 0;
+        for (int i = 0; i < CHAR_BIT * sizeof(proc_affinity_mask);
+                i++, proc_affinity_mask >>= 1)
+            masked_nthr += proc_affinity_mask & 1;
+        return std::min(masked_nthr, num_cores_per_socket);
+    }
+#elif defined(__GLIBC__)
+    cpu_set_t cpu_set;
+    // Check if the affinity of the process has been set using, e.g.,
+    // numactl.
+    if (::sched_getaffinity(0, sizeof(cpu_set_t), &cpu_set) == 0)
+        return std::min(CPU_COUNT(&cpu_set), num_cores_per_socket);
+#endif
+    return num_cores_per_socket;
+}
+#endif
 
 int get_vector_register_size() {
 #if DNNL_X64
@@ -108,6 +182,10 @@ int get_vector_register_size() {
     if (mayiuse(avx512_common)) return cpu_isa_traits<avx512_common>::vlen;
     if (mayiuse(avx)) return cpu_isa_traits<avx>::vlen;
     if (mayiuse(sse41)) return cpu_isa_traits<sse41>::vlen;
+#elif DNNL_AARCH64
+    using namespace aarch64;
+    if (mayiuse(asimd)) return cpu_isa_traits<asimd>::vlen;
+    if (mayiuse(sve_512)) return cpu_isa_traits<sve_512>::vlen;
 #endif
     return 0;
 }

@@ -73,6 +73,18 @@ bool rnn_utils::is_ldoi(const memory_desc_wrapper &mdw) {
     return check_dims_contiguous_except_one(mdw, 2, {0, 1, 3, 2});
 }
 
+bool rnn_utils::is_ldigo_blocked(const memory_desc_wrapper &mdw) {
+    format_tag_t md_format_tag = mdw.matches_one_of_tag(format_tag::ldgOi32o,
+            format_tag::ldgOI32o2i, format_tag::ldgOI32o4i);
+    return md_format_tag != format_tag::undef;
+}
+
+bool rnn_utils::is_ldio_blocked(const memory_desc_wrapper &mdw) {
+    format_tag_t md_format_tag = mdw.matches_one_of_tag(
+            format_tag::ldOi32o, format_tag::ldOI32o4i);
+    return md_format_tag != format_tag::undef;
+}
+
 int rnn_utils::get_good_ld(int dim, int sizeof_dt) {
     // we want matrices leading dimentions to be 64-byte aligned,
     // and not divisible by 256 to avoid 4K aliasing effects
@@ -97,9 +109,11 @@ void rnn_utils::set_offsets(const rnn_conf_t &rnn, size_t &ws_gates_offset,
     current_offset = 0; // assumes the workspace base pointer is page aligned
 
 #define register_space(a) \
-    current_offset = utils::rnd_up(current_offset, page_size); \
-    CONCAT2(a, _offset) = current_offset; \
-    current_offset += rnn.CONCAT2(a, _size)
+    do { \
+        current_offset = utils::rnd_up(current_offset, page_size); \
+        CONCAT2(a, _offset) = current_offset; \
+        current_offset += rnn.CONCAT2(a, _size); \
+    } while (false)
 
     register_space(ws_gates);
     register_space(ws_ht);
@@ -201,9 +215,9 @@ status_t rnn_utils::set_expected_desc(rnn_conf_t &rnn,
     if (use_packed_gemm) {
         weights_md.format_kind = format_kind::rnn_packed;
         rnn_packed_desc_t &rnn_pdata = weights_md.format_desc.rnn_packed_desc;
-        rnn_pdata.format = rnn.is_fwd ? dnnl_ldigo_p : dnnl_ldgoi_p;
         switch (weights_type) {
             case weights_type_t::iter:
+                rnn_pdata.format = rnn.is_fwd ? dnnl_ldigo_p : dnnl_ldgoi_p;
                 rnn_pdata.ldb = rnn.ws_states_iter_ld;
                 rnn_pdata.n = rnn.mb;
                 rnn_pdata.n_parts = rnn.n_parts_weights_iter;
@@ -215,6 +229,7 @@ status_t rnn_utils::set_expected_desc(rnn_conf_t &rnn,
                 rnn_pdata.size = rnn.weights_iter_pack_size;
                 break;
             case weights_type_t::layer:
+                rnn_pdata.format = rnn.is_fwd ? dnnl_ldigo_p : dnnl_ldgoi_p;
                 rnn_pdata.ldb = rnn.ws_states_layer_ld;
                 rnn_pdata.n
                         = rnn.merge_gemm_layer ? rnn.n_iter * rnn.mb : rnn.mb;
@@ -226,19 +241,56 @@ status_t rnn_utils::set_expected_desc(rnn_conf_t &rnn,
                 rnn_pdata.offset_compensation = rnn.weights_layer_comp_offset;
                 rnn_pdata.size = rnn.weights_layer_pack_size;
                 break;
-            case weights_type_t::projection: assert(!"unimplemented"); break;
+            case weights_type_t::projection:
+                // TODO: add ldoi_p for bwd?
+                rnn_pdata.format = dnnl_ldio_p;
+                rnn_pdata.ldb = rnn.proj_ht_ld;
+                rnn_pdata.n = rnn.mb;
+                rnn_pdata.n_parts = rnn.n_parts_weights_projection;
+                array_copy(rnn_pdata.parts, rnn.parts_weights_projection,
+                        DNNL_RNN_MAX_N_PARTS);
+                array_copy(rnn_pdata.part_pack_size,
+                        rnn.part_weights_projection_pack_size,
+                        DNNL_RNN_MAX_N_PARTS);
+                rnn_pdata.offset_compensation
+                        = rnn.weights_projection_comp_offset;
+                rnn_pdata.size = rnn.weights_projection_pack_size;
+                break;
             default: assert(!"unsupported weights type");
         }
     } else {
         using namespace format_tag;
-        format_tag_t tag = weights_type == weights_type_t::projection
-                ? rnn.is_fwd ? ldio : ldoi
-                : rnn.is_fwd ? ldigo : ldgoi;
-        CHECK(memory_desc_init_by_tag(weights_md, tag));
-        // Adjust strides for good leading dimension in GEMM
-        CHECK(set_good_strides(weights_md, tag));
+        if (rnn.is_brgemm) {
+            format_tag_t tag = format_tag::undef;
+            tag = (weights_type == weights_type_t::projection)
+                    ? (rnn.is_int8()) ? format_tag::ldOI32o4i
+                                      : format_tag::ldOi32o
+                    : (rnn.is_int8()) ? format_tag::ldgOI32o4i
+                                      : (rnn.is_bf16()) ? format_tag::ldgOI32o2i
+                                                        : format_tag::ldgOi32o;
+            if (tag != format_tag::undef) {
+                CHECK(memory_desc_init_by_tag(weights_md, tag));
+                if (rnn.is_int8()) {
+                    weights_md.extra.flags
+                            = 0 | memory_extra_flags::rnn_u8s8_compensation;
+                    weights_md.extra.compensation_mask
+                            = (weights_type == weights_type_t::projection)
+                            ? 13 // 1101
+                            : 27; // 11011
+                }
+                return status::success;
+            } else {
+                return status::unimplemented;
+            }
+        } else {
+            format_tag_t tag = weights_type == weights_type_t::projection
+                    ? rnn.is_fwd ? ldio : ldoi
+                    : rnn.is_fwd ? ldigo : ldgoi;
+            CHECK(memory_desc_init_by_tag(weights_md, tag));
+            // Adjust strides for good leading dimension in GEMM
+            CHECK(set_good_strides(weights_md, tag));
+        }
     }
-
     return status::success;
 }
 

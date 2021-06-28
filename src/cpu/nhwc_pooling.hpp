@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 
 #include "cpu/cpu_pooling_pd.hpp"
 #include "cpu/platform.hpp"
+#include "cpu/primitive_attr_postops.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -52,7 +53,7 @@ struct nhwc_pooling_fwd_t : public primitive_t {
 
             using namespace prop_kind;
             using namespace alg_kind;
-            bool ok = is_fwd()
+            const bool ok = is_fwd()
                     && utils::one_of(desc()->alg_kind, pooling_max,
                             pooling_avg_include_padding,
                             pooling_avg_exclude_padding)
@@ -60,12 +61,14 @@ struct nhwc_pooling_fwd_t : public primitive_t {
                             d_type, src_md()->data_type, dst_md()->data_type)
                     && platform::has_data_type_support(d_type)
                     && set_default_params() == status::success
-                    && attr()->has_default_values()
+                    && attr()->has_default_values(
+                            primitive_attr_t::skip_mask_t::post_ops, d_type)
                     && memory_desc_matches_tag(*src_md(), desired_fmt_tag)
-                    && memory_desc_matches_tag(*dst_md(), desired_fmt_tag);
+                    && memory_desc_matches_tag(*dst_md(), desired_fmt_tag)
+                    && !is_dilated();
             if (!ok) return status::unimplemented;
 
-            bool is_training = desc_.prop_kind == forward_training;
+            const bool is_training = desc_.prop_kind == forward_training;
             if (desc()->alg_kind == pooling_max && is_training) {
                 init_default_ws();
             }
@@ -79,7 +82,7 @@ struct nhwc_pooling_fwd_t : public primitive_t {
         void init_scratchpad() {
             using namespace memory_tracking::names;
             if (src_md()->data_type == data_type::bf16) {
-                size_t bf16cvt_sz_ = C() * dnnl_get_max_threads();
+                const size_t bf16cvt_sz_ = C() * dnnl_get_max_threads();
                 auto scratchpad = scratchpad_registry().registrar();
                 scratchpad.template book<float>(
                         key_pool_src_bf16cvt, bf16cvt_sz_);
@@ -89,18 +92,17 @@ struct nhwc_pooling_fwd_t : public primitive_t {
         }
     };
 
-    nhwc_pooling_fwd_t(const pd_t *apd) : primitive_t(apd) {}
+    nhwc_pooling_fwd_t(const pd_t *apd);
 
-    typedef typename prec_traits<d_type>::type data_t;
-    typedef typename prec_traits<data_type::f32>::type ker_data_t;
+    using data_t = typename prec_traits<d_type>::type;
+    using ker_data_t = typename prec_traits<data_type::f32>::type;
 
     status_t execute(const exec_ctx_t &ctx) const override {
-        execute_forward(ctx);
-        return status::success;
+        return execute_forward(ctx);
     }
 
 private:
-    void execute_forward(const exec_ctx_t &ctx) const;
+    status_t execute_forward(const exec_ctx_t &ctx) const;
     void array_div_by_const(const int n, const ker_data_t *src,
             const size_t num, ker_data_t *dst) const;
     void array_add(const int n, const ker_data_t *src, ker_data_t *dst) const;
@@ -111,6 +113,7 @@ private:
             const size_t ws_offset, const data_type_t ws_dt) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
+    const ref_post_ops_t ref_post_ops_;
 };
 
 template <impl::data_type_t d_type>
@@ -136,7 +139,8 @@ struct nhwc_pooling_bwd_t : public primitive_t {
                     && set_default_params() == status::success && !is_fwd()
                     && attr()->has_default_values()
                     && memory_desc_matches_tag(*diff_dst_md(), desired_fmt_tag)
-                    && memory_desc_matches_tag(*diff_src_md(), desired_fmt_tag);
+                    && memory_desc_matches_tag(*diff_src_md(), desired_fmt_tag)
+                    && !is_dilated();
             if (!ok) return status::unimplemented;
 
             if (desc()->alg_kind == pooling_max) {
@@ -167,12 +171,11 @@ struct nhwc_pooling_bwd_t : public primitive_t {
     typedef typename prec_traits<d_type>::type data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
-        execute_backward(ctx);
-        return status::success;
+        return execute_backward(ctx);
     }
 
 private:
-    void execute_backward(const exec_ctx_t &ctx) const;
+    status_t execute_backward(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 

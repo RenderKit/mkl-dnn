@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,7 +16,13 @@
 
 #include "cpu/cpu_engine.hpp"
 
+#include "common/bfloat16.hpp"
 #include "cpu/ref_shuffle.hpp"
+
+#if DNNL_X64
+#include "cpu/x64/shuffle/jit_uni_shuffle.hpp"
+using namespace dnnl::impl::cpu::x64;
+#endif
 
 namespace dnnl {
 namespace impl {
@@ -28,10 +34,11 @@ namespace {
 using namespace dnnl::impl::data_type;
 
 // clang-format off
-static const pd_create_f impl_list[] = {
-        CPU_INSTANCE(ref_shuffle_t<4>) /* f32 or s32 */
-        CPU_INSTANCE(ref_shuffle_t<2>) /* bf16 */
-        CPU_INSTANCE(ref_shuffle_t<1>) /* s8 or u8 */
+const pd_create_f impl_list[] = {
+        CPU_INSTANCE_X64(jit_uni_shuffle_t<avx512_common>)
+        CPU_INSTANCE_X64(jit_uni_shuffle_t<avx>)
+        CPU_INSTANCE_X64(jit_uni_shuffle_t<sse41>)
+        CPU_INSTANCE(ref_shuffle_t)
         /* eol */
         nullptr,
 };

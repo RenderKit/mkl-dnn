@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 #include "common/c_types_map.hpp"
 #include "common/type_helpers.hpp"
 
-#include "cpu/cpu_reorder_pd.hpp"
+#include "cpu/reorder/cpu_reorder_pd.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -51,10 +51,18 @@ struct prb_t {
     ptrdiff_t ooff;
     scale_type_t scale_type;
     float beta;
+    int full_ndims;
+    int ip_tail;
+    int op_tail;
+    int iblock;
+    int oblock;
+    int blk_chunk_idx;
 };
 
 status_t prb_init(prb_t &prb, const memory_desc_t &imd,
         const memory_desc_t &omd, const primitive_attr_t *attr);
+
+status_t prb_check_blk(prb_t &prb, const memory_desc_t &imd);
 
 /** sorts the problem nodes so that output strides come in ascending order */
 void prb_normalize(prb_t &p);
@@ -81,6 +89,7 @@ struct call_param_t {
     const void *in;
     void *out;
     const float *scale;
+    size_t blk_chunks;
 };
 
 struct kernel_t {
@@ -89,11 +98,9 @@ struct kernel_t {
         prb_t prb;
     };
 
-    kernel_t(const desc_t &desc) : desc_(desc), ker_(nullptr) {}
-    void operator()(const call_param_t *c) const {
-        assert(ker_);
-        ker_(c);
-    }
+    kernel_t(const desc_t &desc) : desc_(desc) {}
+    virtual void operator()(const call_param_t *c) const = 0;
+    virtual status_t create_kernel() = 0;
     virtual ~kernel_t() {}
 
     /** inits kernel descriptor:
@@ -110,7 +117,6 @@ struct kernel_t {
 protected:
     const desc_t desc_;
     const prb_t &prb_ = desc_.prb;
-    void (*ker_)(const call_param_t *);
 };
 
 /* TODO: add trans_t class */

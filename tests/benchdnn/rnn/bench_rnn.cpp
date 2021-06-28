@@ -20,7 +20,7 @@
 
 #include <sstream>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "dnnl_common.hpp"
 #include "dnnl_memory.hpp"
@@ -37,11 +37,15 @@ void check_correctness(const settings_t &s) {
     for_(auto i_with_peephole : s.with_peephole)
     for_(auto i_with_projection : s.with_projection)
     for_(const auto &i_scale_policy : s.scale_policy)
+    for_(const auto &i_scale_proj_policy : s.scale_proj_policy)
     for_(const auto &i_direction : s.direction)
     for_(const auto &i_activation : s.activation)
     for_(auto i_skip_nonlinear : s.skip_nonlinear)
     for_(auto i_trivial_strides : s.trivial_strides)
-    for (const auto &i_mb : s.mb) {
+    for_(const auto &i_n_layer : s.n_layer)
+    for_(const auto &i_n_iter : s.n_iter)
+    for_(const auto &i_mb : s.mb)
+    for (const auto &i_scratchpad_mode : s.scratchpad_mode) {
         if (i_with_peephole && i_alg != VANILLA_LSTM) continue;
 
         if (!(i_scale_policy == policy_t::COMMON
@@ -58,25 +62,29 @@ void check_correctness(const settings_t &s) {
             SAFE_V(FAIL);
         }
 
-        const prb_t p(s.desc, dt_conf_t::create(i_cfg), i_prop, i_alg,
+        attr_t attr;
+        attr.insert(i_scratchpad_mode);
+
+        const prb_t prb(s.desc, dt_conf_t::create(i_cfg), i_prop, i_alg,
                 i_with_peephole, i_with_projection, i_direction, i_scale_policy,
-                s.flags, i_activation, s.alpha, s.beta, i_skip_nonlinear,
-                i_trivial_strides, i_mb);
+                i_scale_proj_policy, s.flags, i_activation, attr, s.alpha,
+                s.beta, i_skip_nonlinear, i_trivial_strides, i_n_layer,
+                i_n_iter, i_mb);
         std::stringstream ss;
-        ss << p;
+        ss << prb;
         const std::string cpp_pstr = ss.str();
         const char *pstr = cpp_pstr.c_str();
         BENCHDNN_PRINT(1, "run: %s\n", pstr);
 
         res_t res {};
-        const int status = doit(p, &res);
+        const int status = doit(prb, &res);
 
         bool want_perf_report = false;
         parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
-            pr.report(&p, &res, pstr);
+            pr.report(&prb, &res, pstr);
         }
 
         benchdnn_stat.tests++;
@@ -100,7 +108,12 @@ int bench(int argc, char **argv) {
                 || parse_vector_option(s.activation, def.activation,
                         str2activation, argv[0], "activation")
                 || parse_scale_policy(s.scale_policy, def.scale_policy, argv[0])
+                || parse_scale_policy(s.scale_proj_policy,
+                        def.scale_proj_policy, argv[0], "scaling-proj")
                 || parse_mb(s.mb, def.mb, argv[0])
+                || parse_vector_option(
+                        s.n_layer, def.n_layer, atoi, argv[0], "l")
+                || parse_vector_option(s.n_iter, def.n_iter, atoi, argv[0], "t")
                 || parse_skip_nonlinear(
                         s.skip_nonlinear, def.skip_nonlinear, argv[0])
                 || parse_trivial_strides(
@@ -109,6 +122,8 @@ int bench(int argc, char **argv) {
                         str2bool, argv[0], "with-peephole")
                 || parse_vector_option(s.with_projection, def.with_projection,
                         str2bool, argv[0], "with-projection")
+                || parse_attr_scratchpad_mode(
+                        s.scratchpad_mode, def.scratchpad_mode, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

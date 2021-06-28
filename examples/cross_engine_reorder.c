@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "example_utils.h"
 
@@ -41,6 +41,7 @@ size_t product(int n_dims, const dnnl_dim_t dims[]) {
 void fill(dnnl_memory_t mem, int n_dims, const dnnl_dim_t dims[]) {
     const size_t n_elems = product(n_dims, dims);
     float *array = (float *)malloc(n_elems * sizeof(float));
+    if (!array) COMPLAIN_EXAMPLE_ERROR_AND_EXIT("%s", "malloc returned NULL");
 
     for (size_t e = 0; e < n_elems; ++e) {
         array[e] = e % 7 ? 1.0f : -1.0f;
@@ -53,6 +54,7 @@ void fill(dnnl_memory_t mem, int n_dims, const dnnl_dim_t dims[]) {
 int find_negative(dnnl_memory_t mem, int n_dims, const dnnl_dim_t dims[]) {
     const size_t n_elems = product(n_dims, dims);
     float *array = (float *)malloc(n_elems * sizeof(float));
+    if (!array) COMPLAIN_EXAMPLE_ERROR_AND_EXIT("%s", "malloc returned NULL");
     read_from_dnnl_memory(array, mem);
 
     int negs = 0;
@@ -66,8 +68,8 @@ int find_negative(dnnl_memory_t mem, int n_dims, const dnnl_dim_t dims[]) {
 
 void cross_engine_reorder() {
     dnnl_engine_t engine_cpu, engine_gpu;
-    CHECK(dnnl_engine_create(&engine_cpu, dnnl_cpu, 0));
-    CHECK(dnnl_engine_create(&engine_gpu, dnnl_gpu, 0));
+    CHECK(dnnl_engine_create(&engine_cpu, validate_engine_kind(dnnl_cpu), 0));
+    CHECK(dnnl_engine_create(&engine_gpu, validate_engine_kind(dnnl_gpu), 0));
 
     dnnl_dim_t tz[4] = {2, 16, 1, 1};
 

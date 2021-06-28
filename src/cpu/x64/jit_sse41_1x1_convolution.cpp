@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
-#include "dnnl_types.h"
+#include "oneapi/dnnl/dnnl_types.h"
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
@@ -43,21 +43,30 @@ void jit_sse41_1x1_convolution_fwd_t::execute_forward(
             const data_t *, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS);
     auto bias_dw = CTX_IN_MEM(
             const data_t *, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector::prepare_binary_args(pd()->jcp_.post_ops, ctx);
+    const auto post_ops_binary_rhs_arg_vec_dw = pd()->dw_conv_pd_ != nullptr
+            ? binary_injector::prepare_binary_args(
+                    pd()->dw_conv_pd_->jcp_.post_ops, ctx,
+                    pd()->jcp_.post_ops.entry_.size() + 1)
+            : std::vector<const void *> {};
 
     auto scratchpad = ctx.get_scratchpad_grantor();
     parallel(kernel_->jcp.nthr, [&](const int ithr, const int nthr) {
         execute_forward_thr(ithr, nthr, src, weights, bias, weights_dw, bias_dw,
-                dst, scratchpad);
+                dst, scratchpad, post_ops_binary_rhs_arg_vec.data(),
+                post_ops_binary_rhs_arg_vec_dw.data());
     });
 
-    if (pd()->wants_zero_pad_dst())
-        ctx.memory(DNNL_ARG_DST)->zero_pad(ctx.stream());
+    if (pd()->wants_zero_pad_dst()) ctx.zero_pad_output(DNNL_ARG_DST);
 }
 
 void jit_sse41_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
         const int nthr, const data_t *src, const data_t *weights,
         const data_t *bias, const data_t *weights_dw, const data_t *bias_dw,
-        data_t *dst, const memory_tracking::grantor_t &scratchpad) const {
+        data_t *dst, const memory_tracking::grantor_t &scratchpad,
+        const void *post_ops_binary_rhs_arg_vec,
+        const void *post_ops_binary_rhs_arg_vec_dw) const {
 
     const memory_desc_wrapper src_d(pd()->src_md());
     const memory_desc_wrapper dst_d(pd()->dst_md());
@@ -160,7 +169,11 @@ void jit_sse41_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
                 = &weights[pd()->with_groups() ? weights_d.blk_off(g, ocb, icb)
                                                : weights_d.blk_off(ocb, icb)];
 
-        kernel_->jit_ker(&par_conv);
+        par_conv.oc_l_off = _ocb * jcp.oc_block;
+        par_conv.post_ops_binary_rhs_arg_vec = post_ops_binary_rhs_arg_vec;
+        par_conv.dst_orig = dst;
+
+        (*kernel_)(&par_conv);
     };
 
     auto conv_1x1 = [&](int bcast_start, int bcast_end, int ocb_start,
@@ -227,9 +240,15 @@ void jit_sse41_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
 
             par_conv_dw.kh_padding = (size_t)nstl::max(0, kh_padding);
 
-            par_conv_dw.ch_blocks = nstl::min(ch + ch_num, jcp_dw.nb_ch) - ch;
+            par_conv_dw.load_work = (nstl::min(ch + ch_num, jcp_dw.nb_ch) - ch)
+                    * jcp_dw.ch_block;
 
-            kernel_dw_->jit_ker(&par_conv_dw);
+            par_conv_dw.oc_l_off = ch;
+            par_conv_dw.post_ops_binary_rhs_arg_vec
+                    = post_ops_binary_rhs_arg_vec_dw;
+            par_conv_dw.dst_orig = dst;
+
+            (*kernel_dw_)(&par_conv_dw);
 
             for (int i = 0; i < jcp_dw.kh; ++i)
                 addrs[i] += wch_stride;

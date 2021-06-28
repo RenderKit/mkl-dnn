@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@
 #include <unordered_map>
 
 #include "c_types_map.hpp"
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 #include "primitive_hashing.hpp"
 #include "rw_mutex.hpp"
 #include "type_helpers.hpp"
@@ -45,10 +45,9 @@ struct primitive_cache_t : public c_compatible {
     virtual status_t set_capacity(int capacity) = 0;
     virtual int get_capacity() const = 0;
 
-    virtual value_t get_or_add(
-            const key_t &key, const value_t &value, bool need_lock)
-            = 0;
-    virtual void remove_if_invalidated(const key_t &key, bool need_lock) = 0;
+    virtual value_t get_or_add(const key_t &key, const value_t &value) = 0;
+    virtual void remove_if_invalidated(const key_t &key) = 0;
+    virtual void update_entry(const key_t &key, const primitive_desc_t *pd) = 0;
 
     virtual int get_size() const = 0;
 
@@ -58,21 +57,10 @@ protected:
         return mutex;
     }
 
-    void lock_read(bool need_lock) {
-        if (need_lock) rw_mutex().lock_read();
-    }
-
-    void lock_write(bool need_lock) {
-        if (need_lock) rw_mutex().lock_write();
-    }
-
-    void unlock_read(bool need_lock) {
-        if (need_lock) rw_mutex().unlock_read();
-    }
-
-    void unlock_write(bool need_lock) {
-        if (need_lock) rw_mutex().unlock_write();
-    }
+    void lock_read() { rw_mutex().lock_read(); }
+    void lock_write() { rw_mutex().lock_write(); }
+    void unlock_read() { rw_mutex().unlock_read(); }
+    void unlock_write() { rw_mutex().unlock_write(); }
 };
 
 // The cache uses LRU replacement policy
@@ -84,9 +72,9 @@ struct lru_primitive_cache_t : public primitive_cache_t {
     status_t set_capacity(int capacity) override;
     int get_capacity() const override;
 
-    value_t get_or_add(
-            const key_t &key, const value_t &value, bool need_lock) override;
-    void remove_if_invalidated(const key_t &key, bool need_lock) override;
+    value_t get_or_add(const key_t &key, const value_t &value) override;
+    void remove_if_invalidated(const key_t &key) override;
+    void update_entry(const key_t &key, const primitive_desc_t *pd) override;
 
     int get_size() const override;
 

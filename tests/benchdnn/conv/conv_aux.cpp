@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "conv/conv.hpp"
 #include "dnn_types.hpp"
@@ -78,18 +78,18 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
     const char *s = str;
     assert(s);
 
-#define CASE_NN(p, c) \
+#define CASE_NN(prb, c) \
     do { \
-        if (!strncmp(p, s, strlen(p))) { \
+        if (!strncmp(prb, s, strlen(prb))) { \
             ok = 1; \
-            s += strlen(p); \
+            s += strlen(prb); \
             char *end_s; \
             d.c = strtol(s, &end_s, 10); \
             s += (end_s - s); \
-            /* check any # groups, including one, works correcly */ \
-            if (!strncmp(p, "g", 1)) d.has_groups = true; \
+            /* check any # groups, including one, works correctly */ \
+            if (!strncmp(prb, "g", 1)) d.has_groups = true; \
             if (d.c < 0) return FAIL; \
-            /* printf("@@@debug: %s: %d\n", p, d. c); */ \
+            /* printf("@@@debug: %s: %d\n", prb, d. c); */ \
         } \
     } while (0)
 #define CASE_N(c) CASE_NN(#c, c)
@@ -134,7 +134,7 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
     auto compute_out = [](bool is_deconv, int64_t i, int64_t k, int64_t s,
                                int64_t p, int64_t d) {
         if (is_deconv)
-            return (i - 1) * s + (k - 1) * (d + 1) + 2 * p + 1;
+            return (i - 1) * s + (k - 1) * (d + 1) - 2 * p + 1;
         else
             return (i - ((k - 1) * (d + 1) + 1) + 2 * p) / s + 1;
     };
@@ -155,6 +155,7 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
         if (!d.od) {
             if (d.pd < 0) d.pd = 0;
             d.od = compute_out(is_deconv, d.id, d.kd, d.sd, d.pd, d.dd);
+            if (d.od <= 0) return FAIL;
         } else if (d.pd < 0)
             d.pd = compute_pad(is_deconv, d.od, d.id, d.kd, d.sd, d.dd);
     }
@@ -164,6 +165,7 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
         if (!d.oh) {
             if (d.ph < 0) d.ph = 0;
             d.oh = compute_out(is_deconv, d.ih, d.kh, d.sh, d.ph, d.dh);
+            if (d.oh <= 0) return FAIL;
         } else if (d.ph < 0)
             d.ph = compute_pad(is_deconv, d.oh, d.ih, d.kh, d.sh, d.dh);
     }
@@ -173,6 +175,7 @@ int str2desc(desc_t *desc, const char *str, bool is_deconv) {
         if (!d.ow) {
             if (d.pw < 0) d.pw = 0;
             d.ow = compute_out(is_deconv, d.iw, d.kw, d.sw, d.pw, d.dw);
+            if (d.ow <= 0) return FAIL;
         } else if (d.pw < 0)
             d.pw = compute_pad(is_deconv, d.ow, d.iw, d.kw, d.sw, d.dw);
     }
@@ -259,11 +262,11 @@ void prb_t::count_ops() {
 }
 
 float *generate_oscales(const attr_t::scale_t &oscale, int N) {
-    if (oscale.is_def()) return NULL;
+    if (oscale.is_def()) return nullptr;
 
     if (oscale.policy == policy_t::COMMON) {
         float *scales = (float *)zmalloc(sizeof(float), 4);
-        SAFE_V(scales != NULL ? OK : FAIL);
+        SAFE_V(scales != nullptr ? OK : FAIL);
         scales[0] = oscale.scale;
         return scales;
     }
@@ -271,7 +274,7 @@ float *generate_oscales(const attr_t::scale_t &oscale, int N) {
     assert(oscale.policy == policy_t::PER_OC);
 
     float *scales = (float *)zmalloc(sizeof(float) * N, 64);
-    SAFE_V(scales != NULL ? OK : FAIL);
+    SAFE_V(scales != nullptr ? OK : FAIL);
 
     const float K = 32;
     /* scale in [1/K .. K], with starting point at oscale.scale */
@@ -290,20 +293,42 @@ float *generate_oscales(const attr_t::scale_t &oscale, int N) {
     return scales;
 }
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+int32_t *generate_zero_points(
+        int arg, const attr_t::zero_points_t &zero_points, int N) {
+    if (zero_points.is_def(arg)) return nullptr;
+
+    const auto &e = zero_points.get(arg);
+    if (e.policy == policy_t::COMMON) {
+        int32_t *zp = (int32_t *)zmalloc(sizeof(int32_t), 4);
+        SAFE_V(zp != nullptr ? OK : FAIL);
+        zp[0] = e.value;
+        return zp;
+    }
+
+    assert(e.policy == policy_t::PER_DIM_1);
+
+    int32_t *zp = (int32_t *)zmalloc(sizeof(int32_t) * N, 64);
+    SAFE_V(zp != nullptr ? OK : FAIL);
+
+    for (int i = 0; i < N; ++i)
+        zp[i] = e.value + i % 3;
+    return zp;
+}
+
+std::ostream &operator<<(std::ostream &s, const prb_t &prb) {
     dump_global_params(s);
     settings_t def;
 
-    if (canonical || p.dir != def.dir[0]) s << "--dir=" << p.dir << " ";
-    if (canonical || p.cfg != def.cfg[0]) s << "--cfg=" << p.cfg << " ";
-    if (canonical || p.stag != def.stag[0]) s << "--stag=" << p.stag << " ";
-    if (canonical || p.wtag != def.wtag[0]) s << "--wtag=" << p.wtag << " ";
-    if (canonical || p.dtag != def.dtag[0]) s << "--dtag=" << p.dtag << " ";
-    if (canonical || p.alg != def.alg[0])
-        s << "--alg=" << alg2str(p.alg) << " ";
+    if (canonical || prb.dir != def.dir[0]) s << "--dir=" << prb.dir << " ";
+    if (canonical || prb.cfg != def.cfg[0]) s << "--cfg=" << prb.cfg << " ";
+    if (canonical || prb.stag != def.stag[0]) s << "--stag=" << prb.stag << " ";
+    if (canonical || prb.wtag != def.wtag[0]) s << "--wtag=" << prb.wtag << " ";
+    if (canonical || prb.dtag != def.dtag[0]) s << "--dtag=" << prb.dtag << " ";
+    if (canonical || prb.alg != def.alg[0])
+        s << "--alg=" << alg2str(prb.alg) << " ";
 
-    s << p.attr;
-    s << static_cast<const desc_t &>(p);
+    s << prb.attr;
+    s << static_cast<const desc_t &>(prb);
 
     return s;
 }

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include "gen_gemm_kernel_generator.hpp"
 #include "gpu/compute/compute.hpp"
 #include "gpu/compute/device_info.hpp"
+#include "gpu/jit/jit_generator_base.hpp"
 #include "gpu/jit/ngen_type_bridge.hpp"
 #include "gpu/primitive_conf.hpp"
 
@@ -30,7 +31,7 @@ namespace impl {
 namespace gpu {
 namespace jit {
 
-struct gen_gemm_kernel_t {
+struct gen_gemm_kernel_t : public jit_generator_base {
 
     status_t init_gemm(compute::gpu_arch_t arch) {
         hw_ = convert_dnnl_arch_to_hw(arch);
@@ -42,8 +43,10 @@ struct gen_gemm_kernel_t {
         return init_interface();
     }
 
-    const char *name() const { return "gemm_kernel"; }
-    std::vector<unsigned char> generate(cl_context ctx, cl_device_id dev);
+    const char *kernel_name() const override { return "gemm_kernel"; }
+    std::vector<unsigned char> get_binary(
+            cl_context ctx, cl_device_id dev) override;
+    cl_kernel get_kernel(cl_context context, cl_device_id device) override;
 
     CommonDriverInfo driver_info() const;
 
@@ -62,7 +65,7 @@ protected:
     static ngen::HW convert_dnnl_arch_to_hw(compute::gpu_arch_t arch) {
         switch (arch) {
             case compute::gpu_arch_t::gen9: return ngen::HW::Gen9;
-            case compute::gpu_arch_t::gen12lp: return ngen::HW::Gen12LP;
+            case compute::gpu_arch_t::xe_lp: return ngen::HW::Xe_LP;
             default: return ngen::HW::Unknown;
         }
     }
@@ -80,12 +83,13 @@ private:
 
 struct gen_gemm_nocopy_kernel_t : public gen_gemm_kernel_t {
     status_t init(compute::gpu_arch_t arch, bool batch, bool trans_a,
-            bool trans_b, data_type_t a_type, data_type_t b_type,
+            bool trans_b, bool c_offset, data_type_t a_type, data_type_t b_type,
             data_type_t c_type, int unroll_m, int unroll_n) {
 
         problem_.Ta = convert_dnnl_to_kernel_type(a_type);
         problem_.Tb = convert_dnnl_to_kernel_type(b_type);
         problem_.Tc = convert_dnnl_to_kernel_type(c_type);
+        problem_.Ts = problem_.Tc;
         problem_.A.layout = trans_a ? MatrixLayout::T : MatrixLayout::N;
         problem_.B.layout = trans_b ? MatrixLayout::T : MatrixLayout::N;
         problem_.C.layout = MatrixLayout::N;
@@ -99,6 +103,17 @@ struct gen_gemm_nocopy_kernel_t : public gen_gemm_kernel_t {
         problem_.B.base = ngen::AddressBase::createA64(true);
         problem_.C.base = ngen::AddressBase::createA64(true);
         problem_.batchedS = batch;
+        if (c_type == data_type::s32) {
+            problem_.abOffset = ABOffset::Calc;
+            problem_.Ts = Type::f32;
+        }
+        if (c_offset) {
+            problem_.CO.base = ngen::AddressBase::createBTS(0);
+            problem_.cOffset = COffset::Post;
+            problem_.CO.crosspack = 1;
+            problem_.CO.padded = false;
+            problem_.CO.alignment = problem_.C.alignment;
+        }
 
         strategy_.unroll[LoopM] = unroll_m;
         strategy_.unroll[LoopN] = unroll_n;

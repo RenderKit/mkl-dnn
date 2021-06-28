@@ -222,12 +222,13 @@ protected:
             return unimplemented; \
         } \
         _pd->init_scratchpad_md(); \
-        return safe_ptr_assign<concat_pd_t>(*concat_pd, _pd); \
+        return safe_ptr_assign(*concat_pd, _pd); \
     } \
-    status_t create_primitive(std::shared_ptr<primitive_t> &primitive, \
-            engine_t *engine, bool is_primitive_nested) const override { \
+    status_t create_primitive( \
+            std::pair<std::shared_ptr<primitive_t>, bool> &primitive, \
+            engine_t *engine) const override { \
         return primitive_t::create_primitive_common<__VA_ARGS__, pd_t>( \
-                primitive, this, engine, false, is_primitive_nested); \
+                primitive, this, engine, false); \
     } \
     pd_t *clone() const override { \
         auto new_pd = utils::make_unique<pd_t>(*this); \

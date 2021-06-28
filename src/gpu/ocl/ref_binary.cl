@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,17 +22,17 @@
 #define SRC1_OFF(x0, x1, x2, x3, x4, x5) OFF_MD(SRC1, x0, x1, x2, x3, x4, x5)
 #define DST_OFF(x0, x1, x2, x3, x4, x5) OFF_MD(DST, x0, x1, x2, x3, x4, x5)
 
-#if IS_TENSOR_OP && IS_DENSE && IS_SAME_MD
+#if IS_TENSOR_OP && IS_DENSE && IS_SAME_MD && !WITH_BINARY_POST_OP
+
 KERNEL_ATTR
 __kernel void ref_binary(__global DATA_T *src0, __global DATA_T *src1,
-        __global DATA_T *dst, float eltwise_alpha, float eltwise_beta,
-        float eltwise_scale, float sum_scale, float src0_scale,
+        __global DST_DATA_T *dst POST_OP_ARGS, float src0_scale,
         float src1_scale) {
     int off = GWS_GET_IDX();
 
-    POST_OP_DATA_T tmp_src0 = DATA_TO_REF(src0[off]);
-    POST_OP_DATA_T tmp_src1 = DATA_TO_REF(src1[off]);
-    POST_OP_DATA_T d = 0;
+    float tmp_src0 = CONVERT_FLOAT_T(src0[off]);
+    float tmp_src1 = CONVERT_FLOAT_T(src1[off]);
+    float d = 0;
 
 #if WITH_SRC0_SCALE
     tmp_src0 = tmp_src0 * src0_scale;
@@ -49,22 +49,37 @@ __kernel void ref_binary(__global DATA_T *src0, __global DATA_T *src1,
     d = max(tmp_src0, tmp_src1);
 #elif IS_MIN
     d = min(tmp_src0, tmp_src1);
+#elif IS_DIV
+    d = tmp_src0 / tmp_src1;
+#elif IS_SUB
+    d = tmp_src0 - tmp_src1;
+#elif IS_GE
+    d = tmp_src0 >= tmp_src1;
+#elif IS_GT
+    d = tmp_src0 > tmp_src1;
+#elif IS_LE
+    d = tmp_src0 <= tmp_src1;
+#elif IS_LT
+    d = tmp_src0 < tmp_src1;
+#elif IS_EQ
+    d = tmp_src0 == tmp_src1;
+#elif IS_NE
+    d = tmp_src0 != tmp_src1;
 #endif
 
+    float dst_data;
 #if WITH_SUM
-    d += (SUM_SCALE1 ? 1 : sum_scale) * DATA_TO_REF(dst[off]);
+    dst_data = CONVERT_FLOAT_T(dst[off]);
 #endif
 
-#if WITH_ELTWISE
-    d = fwd_eltwise(d, eltwise_alpha, eltwise_beta, eltwise_scale);
-#endif
+    APPLY_POST_OPS_SERIAL(
+            d, float, dst_data, float, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     dst[off] = TO_DST(d);
 }
 #else
 KERNEL_ATTR
 __kernel void ref_binary(__global SRC0_DATA_T *src0, __global SRC1_DATA_T *src1,
-        __global DATA_T *dst, float eltwise_alpha, float eltwise_beta,
-        float eltwise_scale, float sum_scale, float src0_scale,
+        __global DST_DATA_T *dst POST_OP_ARGS, float src0_scale,
         float src1_scale) {
 
     // since gws = no. of total elems in A, id will be the logical offset
@@ -76,6 +91,9 @@ __kernel void ref_binary(__global SRC0_DATA_T *src0, __global SRC1_DATA_T *src1,
     dims0[4] = GWS_GET_D4();
     dims0[5] = GWS_GET_D5();
     int d1_block = GWS_GET_D1_BLOCK();
+    int d1_init = GWS_GET_D1();
+    int dims0_po[6]
+            = {dims0[0], dims0[1], dims0[2], dims0[3], dims0[4], dims0[5]};
 
     int src1_off = 0;
     int src0_off = SRC0_OFF(
@@ -104,10 +122,10 @@ __kernel void ref_binary(__global SRC0_DATA_T *src0, __global SRC1_DATA_T *src1,
 
     for (int ic = 0; ic < block_size; ++ic) {
         // using tmp vars to handle float calculations for bf16 datatypes
-        // DATA_TO_REF is a macro defined in ocl_types.h according to datatype
-        POST_OP_DATA_T tmp_src0 = DATA_TO_REF(src0[src0_off]);
-        POST_OP_DATA_T tmp_src1 = DATA_TO_REF(src1[src1_off]);
-        POST_OP_DATA_T d = 0;
+        // CONVERT_FLOAT_T is a macro defined in ocl_types.h
+        float tmp_src0 = CONVERT_FLOAT_T(src0[src0_off]);
+        float tmp_src1 = CONVERT_FLOAT_T(src1[src1_off]);
+        float d = 0;
 
 #if WITH_SRC0_SCALE
         tmp_src0 = tmp_src0 * src0_scale;
@@ -124,20 +142,40 @@ __kernel void ref_binary(__global SRC0_DATA_T *src0, __global SRC1_DATA_T *src1,
         d = max(tmp_src0, tmp_src1);
 #elif IS_MIN
         d = min(tmp_src0, tmp_src1);
+#elif IS_DIV
+        d = tmp_src0 / tmp_src1;
+#elif IS_SUB
+        d = tmp_src0 - tmp_src1;
+#elif IS_GE
+        d = tmp_src0 >= tmp_src1;
+#elif IS_GT
+        d = tmp_src0 > tmp_src1;
+#elif IS_LE
+        d = tmp_src0 <= tmp_src1;
+#elif IS_LT
+        d = tmp_src0 < tmp_src1;
+#elif IS_EQ
+        d = tmp_src0 == tmp_src1;
+#elif IS_NE
+        d = tmp_src0 != tmp_src1;
 #endif
 
+        float dst_data;
+        if (DST_D1 == DST_PD1 || d1_init + ic < DST_D1) {
 #if WITH_SUM
-        d += (SUM_SCALE1 ? 1 : sum_scale) * DATA_TO_REF(dst[dst_off]);
+            dst_data = CONVERT_FLOAT_T(dst[dst_off]);
 #endif
-#if WITH_ELTWISE
-        d = fwd_eltwise(d, eltwise_alpha, eltwise_beta, eltwise_scale);
-#endif
+            APPLY_POST_OPS_SERIAL(d, float, dst_data, float, dims0_po[0], 1,
+                    dims0_po[1], 1, dims0_po[2], 1, dims0_po[3], 1, dims0_po[4],
+                    1, dims0_po[5], 1);
 
-        dst[dst_off] = TO_DST(d);
+            dst[dst_off] = TO_DST(d);
+        }
 
 #if USE_UNROLL_16B || SRC0_UNROLL_16B
         src0_off++;
         dst_off++;
+        ++dims0_po[1];
         if (USE_UNROLL_16B && (SRC1_D1 > 1)) {
             src1_off++;
         } else if (SRC0_UNROLL_16B && (SRC1_D1 > 1)) {

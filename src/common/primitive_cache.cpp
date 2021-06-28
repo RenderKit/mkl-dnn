@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #include "primitive_cache.hpp"
 #include "c_types_map.hpp"
+#include "primitive_desc.hpp"
 #include "rw_mutex.hpp"
 
 #include <list>
@@ -69,20 +70,20 @@ int lru_primitive_cache_t::get_size() const {
 }
 
 lru_primitive_cache_t::value_t lru_primitive_cache_t::get_or_add(
-        const key_t &key, const value_t &value, bool need_lock) {
+        const key_t &key, const value_t &value) {
     // Cache is disabled
-    lock_read(need_lock);
+    lock_read();
     if (capacity_ == 0) {
-        unlock_read(need_lock);
+        unlock_read();
         return value_t();
     }
 
-    unlock_read(need_lock);
-    lock_write(need_lock);
+    unlock_read();
+    lock_write();
 
     // Double check the capacity due to possible race condition
-    if (need_lock && capacity_ == 0) {
-        unlock_write(need_lock);
+    if (capacity_ == 0) {
+        unlock_write();
         return value_t();
     }
 
@@ -92,12 +93,14 @@ lru_primitive_cache_t::value_t lru_primitive_cache_t::get_or_add(
         // If the entry is missing in the cache then add it
         add(key, value);
     }
-    unlock_write(need_lock);
+    unlock_write();
     return e;
 }
 
 void lru_primitive_cache_t::add(const key_t &key, const value_t &value) {
-    if (cache_list_.size() >= capacity_) {
+    // std::list::size() method has linear complexity. Check the primitive cache
+    // size using std::unordered_map::size();
+    if (cache_mapper_.size() == capacity_) {
         // Evict the least recently used entry
         evict(1);
     }
@@ -116,20 +119,19 @@ lru_primitive_cache_t::value_t lru_primitive_cache_t::get(const key_t &key) {
     return cache_list_.front().second;
 }
 
-void lru_primitive_cache_t::remove_if_invalidated(
-        const key_t &key, bool need_lock) {
-    lock_write(need_lock);
+void lru_primitive_cache_t::remove_if_invalidated(const key_t &key) {
+    lock_write();
     auto it = cache_mapper_.find(key);
     if (it == cache_mapper_.end()) {
         // The entry has been already evicted at this point
-        unlock_write(need_lock);
+        unlock_write();
         return;
     }
 
     const auto &value = it->second->second;
     if (value.get().primitive) {
         // If the entry is not invalidated
-        unlock_write(need_lock);
+        unlock_write();
         return;
     }
 
@@ -137,7 +139,32 @@ void lru_primitive_cache_t::remove_if_invalidated(
     cache_list_.erase(it->second);
     cache_mapper_.erase(it);
     assert(cache_list_.size() == cache_mapper_.size());
-    unlock_write(need_lock);
+    unlock_write();
+}
+
+void lru_primitive_cache_t::update_entry(
+        const key_t &key, const primitive_desc_t *pd) {
+    utils::lock_write_t lock_w(rw_mutex());
+    auto it = cache_mapper_.find(key);
+
+    // There is nothing to do in two cases:
+    // 1. The requested entry is not in the cache because it has been evicted
+    //    by another thread
+    // 2. After the requested entry had been evicted it was inserted again
+    //    by another thread
+    if (it == cache_mapper_.end() || it->first.thread_id() != key.thread_id())
+        return;
+
+    const auto *op_desc = pd->op_desc();
+    const auto *attr = pd->attr();
+
+    // Update key in cache_mapper_
+    it->first.op_desc_ = op_desc;
+    it->first.attr_ = attr;
+
+    // Update key in cache_list_
+    it->second->first.op_desc_ = op_desc;
+    it->second->first.attr_ = attr;
 }
 
 // Evicts n the least recently used entries

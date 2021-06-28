@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 
+#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
 #include "cpu/x64/jit_uni_eltwise.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
-#define GET_OFF(field) offsetof(jit_args, field)
+#define GET_OFF(field) offsetof(jit_args_t, field)
 
 namespace dnnl {
 namespace impl {
@@ -35,27 +35,22 @@ namespace x64 {
 
 using namespace Xbyak;
 
-struct jit_args {
+struct jit_args_t {
     const void *src; // fwd: src;  bwd: src/dst based on alg;
     const void *dst; // fwd: dst;  bwd: diff_src;
     const void *diff_dst; // fwd: nullptr;  bwd: diff_dst;
     size_t work_amount;
 };
 
-struct jit_uni_eltwise_kernel : public c_compatible {
+struct jit_uni_eltwise_kernel : public jit_generator {
     jit_uni_eltwise_kernel(const eltwise_pd_t *pd) : pd_(pd) {}
-    virtual ~jit_uni_eltwise_kernel() {}
 
-    void operator()(const jit_args *args) {
-        assert(ker_);
-        ker_(args);
-    }
+    void operator()(jit_args_t *p) { jit_generator::operator()(p); }
 
 protected:
     const eltwise_pd_t *pd_;
-    void (*ker_)(const jit_args *) = nullptr;
 
-    data_type_t data_type() const { return pd_->src_md()->data_type; }
+    data_type_t data_type() const { return pd_->desc()->data_desc.data_type; }
     bool is_bf16() const { return data_type() == data_type::bf16; }
     int dtype_size() const { return types::data_type_size(data_type()); }
 };
@@ -63,8 +58,8 @@ protected:
 // jit kernels
 namespace {
 
-struct jit_bf16_injector {
-    jit_bf16_injector(
+struct jit_bf16_injector_t {
+    jit_bf16_injector_t(
             jit_generator *host, Opmask k_tail_mask, bf16_emulation_t *emu)
         : h(host), k_tail_mask_(k_tail_mask), emu_(emu) {}
 
@@ -125,18 +120,17 @@ private:
 };
 
 template <cpu_isa_t isa>
-struct jit_uni_kernel : public jit_uni_eltwise_kernel, public jit_generator {
+struct jit_uni_kernel_t : public jit_uni_eltwise_kernel {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_kernel)
 
-    jit_uni_kernel(const eltwise_pd_t *pd)
-        : jit_uni_eltwise_kernel(pd), jit_generator() {
+    jit_uni_kernel_t(const eltwise_pd_t *pd) : jit_uni_eltwise_kernel(pd) {
         if (is_bf16()) {
             if (!mayiuse(avx512_core_bf16))
                 bf16_emu_.reset(new bf16_emulation_t(this, bf16_emu_reserv_1,
                         bf16_emu_reserv_2, bf16_emu_reserv_3, bf16_emu_scratch,
                         bf16_emu_reserv_5));
-            bf16_injector_.reset(
-                    new jit_bf16_injector(this, k_tail_mask, bf16_emu_.get()));
+            bf16_injector_.reset(new jit_bf16_injector_t(
+                    this, k_tail_mask, bf16_emu_.get()));
         }
 
         const auto &desc = *pd_->desc();
@@ -146,7 +140,10 @@ struct jit_uni_kernel : public jit_uni_eltwise_kernel, public jit_generator {
         eltwise_injector_.reset(new jit_uni_eltwise_injector_f32<isa>(this,
                 desc.alg_kind, desc.alpha, desc.beta, 1.f, save_state,
                 reg_injector_table, injector_mask, is_fwd, pd_->use_dst()));
+    }
 
+    void generate() override {
+        const bool is_fwd = pd_->is_fwd();
         preamble();
 
         if (is_bf16()) {
@@ -245,8 +242,6 @@ struct jit_uni_kernel : public jit_uni_eltwise_kernel, public jit_generator {
         postamble();
 
         eltwise_injector_->prepare_table();
-
-        ker_ = (decltype(ker_))this->getCode();
     }
 
 private:
@@ -282,7 +277,7 @@ private:
 
     Opmask k_tail_mask = k6;
 
-    std::unique_ptr<jit_bf16_injector> bf16_injector_;
+    std::unique_ptr<jit_bf16_injector_t> bf16_injector_;
     std::unique_ptr<bf16_emulation_t> bf16_emu_;
 };
 
@@ -292,13 +287,13 @@ template <cpu_isa_t isa, data_type_t d_type>
 status_t jit_uni_eltwise_fwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
     using namespace alg_kind;
 
-    const memory_desc_wrapper data_d(src_md());
+    const memory_desc_wrapper data_d(data_md());
 
-    bool ok = mayiuse(isa) && is_fwd() && src_md()->data_type == d_type
-            && IMPLICATION(src_md()->data_type == data_type::bf16,
+    bool ok = mayiuse(isa) && is_fwd() && data_md()->data_type == d_type
+            && IMPLICATION(data_md()->data_type == data_type::bf16,
                     mayiuse(avx512_core))
-            && !has_zero_dim_memory()
-            && data_d.is_dense(true)
+            && !has_zero_dim_memory() && data_d.is_dense(true)
+            && eltwise_injector::is_supported(isa, desc_.alg_kind)
             // refer to a comment in jit_uni_kernel why this is needed
             && IMPLICATION(!data_d.is_dense(), is_zero_preserved())
             && attr()->has_default_values();
@@ -307,20 +302,26 @@ status_t jit_uni_eltwise_fwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
 
 template <cpu_isa_t isa, data_type_t d_type>
 jit_uni_eltwise_fwd_t<isa, d_type>::jit_uni_eltwise_fwd_t(const pd_t *apd)
-    : primitive_t(apd) {
-    kernel_.reset(new jit_uni_kernel<isa>(pd()));
-}
+    : primitive_t(apd) {}
 
 template <cpu_isa_t isa, data_type_t d_type>
 jit_uni_eltwise_fwd_t<isa, d_type>::~jit_uni_eltwise_fwd_t() = default;
 
 template <cpu_isa_t isa, data_type_t d_type>
+status_t jit_uni_eltwise_fwd_t<isa, d_type>::init(engine_t *engine) {
+    CHECK(safe_ptr_assign(kernel_, new jit_uni_kernel_t<isa>(pd())));
+    return kernel_->create_kernel();
+}
+
+template <cpu_isa_t isa, data_type_t d_type>
 status_t jit_uni_eltwise_fwd_t<isa, d_type>::execute(
         const exec_ctx_t &ctx) const {
+    status_t status = status::success;
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
+    auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
 
-    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper data_d(pd()->data_md());
     const auto nelems = data_d.nelems(true);
     const int simd_w = 64 / data_d.data_type_size();
 
@@ -335,7 +336,7 @@ status_t jit_uni_eltwise_fwd_t<isa, d_type>::execute(
         end = nstl::min(nelems, end * simd_w);
         if (start == end) return;
 
-        jit_args args;
+        jit_args_t args;
         args.src = src + start;
         args.dst = dst + start;
         args.diff_dst = nullptr;
@@ -350,15 +351,16 @@ template <cpu_isa_t isa, data_type_t d_type>
 status_t jit_uni_eltwise_bwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
     using namespace alg_kind;
 
-    const memory_desc_wrapper data_d(src_md());
+    const memory_desc_wrapper data_d(data_md());
 
     bool ok = mayiuse(isa) && !is_fwd()
             && utils::everyone_is(
-                    d_type, src_md()->data_type, diff_src_md()->data_type)
-            && IMPLICATION(src_md()->data_type == data_type::bf16,
+                    d_type, data_md()->data_type, diff_src_md()->data_type)
+            && IMPLICATION(data_md()->data_type == data_type::bf16,
                     mayiuse(avx512_core))
             && !has_zero_dim_memory() && set_default_formats_common()
-            && data_d.is_dense(true)
+            && data_d.is_dense(true) && eltwise_injector::is_isa_supported(isa)
+            && eltwise_injector::is_alg_supported(desc_.alg_kind)
             // refer to a comment in jit_uni_kernel why this is needed
             && IMPLICATION(!data_d.is_dense(), is_zero_preserved())
             && data_d == memory_desc_wrapper(diff_dst_md())
@@ -368,22 +370,28 @@ status_t jit_uni_eltwise_bwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
 
 template <cpu_isa_t isa, data_type_t d_type>
 jit_uni_eltwise_bwd_t<isa, d_type>::jit_uni_eltwise_bwd_t(const pd_t *apd)
-    : primitive_t(apd) {
-    kernel_.reset(new jit_uni_kernel<isa>(pd()));
-}
+    : primitive_t(apd) {}
 
 template <cpu_isa_t isa, data_type_t d_type>
 jit_uni_eltwise_bwd_t<isa, d_type>::~jit_uni_eltwise_bwd_t() = default;
 
 template <cpu_isa_t isa, data_type_t d_type>
+status_t jit_uni_eltwise_bwd_t<isa, d_type>::init(engine_t *engine) {
+    CHECK(safe_ptr_assign(kernel_, new jit_uni_kernel_t<isa>(pd())));
+    return kernel_->create_kernel();
+}
+
+template <cpu_isa_t isa, data_type_t d_type>
 status_t jit_uni_eltwise_bwd_t<isa, d_type>::execute(
         const exec_ctx_t &ctx) const {
+    status_t status;
     auto src = pd()->use_dst() ? CTX_IN_MEM(const data_t *, DNNL_ARG_DST)
                                : CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
-    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
+    auto diff_src = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DIFF_SRC, status);
+    CHECK(status);
 
-    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper data_d(pd()->data_md());
     const memory_desc_wrapper diff_data_d(pd()->diff_src_md());
     const auto nelems = data_d.nelems(true);
     const int simd_w = 64 / data_d.data_type_size();
@@ -400,7 +408,7 @@ status_t jit_uni_eltwise_bwd_t<isa, d_type>::execute(
         end = nstl::min(nelems, end * simd_w);
         if (start == end) return;
 
-        jit_args args;
+        jit_args_t args;
         args.src = src + start;
         args.dst = diff_src + start;
         args.diff_dst = diff_dst + start;
@@ -412,11 +420,13 @@ status_t jit_uni_eltwise_bwd_t<isa, d_type>::execute(
 }
 
 template struct jit_uni_eltwise_fwd_t<sse41, data_type::f32>;
+template struct jit_uni_eltwise_fwd_t<avx, data_type::f32>;
 template struct jit_uni_eltwise_fwd_t<avx2, data_type::f32>;
 template struct jit_uni_eltwise_fwd_t<avx512_common, data_type::f32>;
 template struct jit_uni_eltwise_fwd_t<avx512_core, data_type::bf16>;
 
 template struct jit_uni_eltwise_bwd_t<sse41, data_type::f32>;
+template struct jit_uni_eltwise_bwd_t<avx, data_type::f32>;
 template struct jit_uni_eltwise_bwd_t<avx2, data_type::f32>;
 template struct jit_uni_eltwise_bwd_t<avx512_common, data_type::f32>;
 template struct jit_uni_eltwise_bwd_t<avx512_core, data_type::bf16>;

@@ -40,7 +40,7 @@ typedef enum {
 
 typedef enum { action_copy = 0, action_sum, action_concat } rnn_action_t;
 
-dnnl_status_t init_rnn_fwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
+dnnl_status_t init_rnn_fwd_desc(dnnl_rnn_desc_t *rd, const prb_t &prb,
         dnnl_prop_kind_t prop_kind, const dnnl_memory_desc_t *src_layer_d,
         const dnnl_memory_desc_t *src_iter_d,
         const dnnl_memory_desc_t *src_iter_c_d,
@@ -52,7 +52,7 @@ dnnl_status_t init_rnn_fwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
         const dnnl_memory_desc_t *dst_iter_d,
         const dnnl_memory_desc_t *dst_iter_c_d);
 
-dnnl_status_t init_rnn_bwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
+dnnl_status_t init_rnn_bwd_desc(dnnl_rnn_desc_t *rd, const prb_t &prb,
         dnnl_prop_kind_t prop_kind, const dnnl_memory_desc_t *src_layer_d,
         const dnnl_memory_desc_t *src_iter_d,
         const dnnl_memory_desc_t *src_iter_c_d,
@@ -77,6 +77,14 @@ dnnl_status_t init_rnn_bwd_desc(dnnl_rnn_desc_t *rd, const prb_t &p,
 
 void init_buffer(float *buf, int64_t size, float value);
 
+float maybe_q(const prb_t &prb, float h);
+float maybe_deq(const prb_t &prb, const float in);
+float maybe_deq(const prb_t &prb, const float in, int64_t oc);
+float maybe_deq(
+        const prb_t &prb, const float in, float scale, float compensation);
+float maybe_deq_proj(
+        const prb_t &prb, const float in, float compensation, int64_t oc);
+
 float logistic(float x);
 float dlogistic(float x);
 float relu(float x, float alpha);
@@ -92,10 +100,11 @@ void data_q10n(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_,
         float data_scale, float data_shift);
 void data_deq10n(int64_t dimc, int64_t dimr, int64_t ld_src, float *src_,
         float data_scale, float data_shift);
-void gates_reduction(const prb_t &p, const float *b_gates_, float *diff_bias_);
+void gates_reduction(
+        const prb_t &prb, const float *b_gates_, float *diff_bias_);
 
-int compare_dat(const prb_t &p, data_kind_t kind, dnn_mem_t &mem_dt,
-        dnn_mem_t &mem_fp, res_t *r, bool final_compare);
+int compare_dat(const prb_t &prb, data_kind_t kind, dnn_mem_t &mem_dt,
+        dnn_mem_t &mem_fp, res_t *res, bool final_compare);
 
 }; // namespace rnn
 

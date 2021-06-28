@@ -22,7 +22,8 @@ KERNEL_ATTR
 __kernel void ref_convolution_fwd(const __global SRC_DATA_T *src,
         const __global WEI_DATA_T *wei, const __global BIA_DATA_T *bias,
         __global DST_DATA_T *dst POST_OP_ARGS, float scales,
-        const __global float *scales_per_oc) {
+        const __global float *scales_per_oc, const __global int *src_zpoints,
+        const __global int *dst_zpoints) {
 
     const int n = GWS_GET_MB();
     const int oc = GWS_GET_OC();
@@ -47,6 +48,13 @@ __kernel void ref_convolution_fwd(const __global SRC_DATA_T *src,
                     const uint src_off = SRC_OFF(n, g * IC + ic, id, ih, iw);
                     const uint wei_off = WEI_OFF(g, oc, ic, kd, kh, kw);
                     d += SRC_TO_REF(src[src_off]) * WEI_TO_REF(wei[wei_off]);
+#if WITH_SRC_ZPOINTS
+                    const int src_zp = SRC_ZPOINT_COMMON != 0
+                            ? SRC_ZPOINT_COMMON
+                            : src_zpoints[WITH_SRC_ZPOINTS_PER_IC ? g * IC + ic
+                                                                  : 0];
+                    d -= src_zp * WEI_TO_REF(wei[wei_off]);
+#endif // WITH_SRC_ZPOINTS
                 }
     POST_OP_DATA_T tmp = d;
 
@@ -68,7 +76,32 @@ __kernel void ref_convolution_fwd(const __global SRC_DATA_T *src,
             AS_SUM_DATA_T(dst[DST_OFF(n, g * OC + oc, od, oh, ow)]));
 #endif
 
-    APPLY_POST_OPS(tmp, POST_OP_DATA_T, sum_src, POST_OP_DATA_T);
+#if NDIMS == 3
+    const unsigned po_d2 = ow;
+    const unsigned po_d3 = 0;
+    const unsigned po_d4 = 0;
+#elif NDIMS == 4
+    const unsigned po_d2 = oh;
+    const unsigned po_d3 = ow;
+    const unsigned po_d4 = 0;
+#elif NDIMS == 5
+    const unsigned po_d2 = od;
+    const unsigned po_d3 = oh;
+    const unsigned po_d4 = ow;
+#else
+    const unsigned po_d2 = 0;
+    const unsigned po_d3 = 0;
+    const unsigned po_d4 = 0;
+#endif
+    APPLY_POST_OPS_SERIAL(tmp, POST_OP_DATA_T, sum_src, POST_OP_DATA_T, n, 1,
+            g * OC + oc, 1, po_d2, 1, po_d3, 1, po_d4, 1, 0, 1);
+
+#if WITH_DST_ZPOINTS
+    const int dst_zp = DST_ZPOINT_COMMON != 0
+            ? DST_ZPOINT_COMMON
+            : dst_zpoints[WITH_DST_ZPOINTS_PER_OC ? g * OC + oc : 0];
+    tmp += dst_zp;
+#endif // WITH_DST_ZPOINTS
 
     dst[DST_OFF(n, g * OC + oc, od, oh, ow)] = TO_DST(tmp);
 }
@@ -78,7 +111,7 @@ __kernel void ref_convolution_fwd(const __global SRC_DATA_T *src,
 KERNEL_ATTR
 __kernel void ref_convolution_bwd_data(__global SRC_DATA_T *diff_src,
         const __global WEI_DATA_T *wei, const __global DST_DATA_T *diff_dst,
-        const __global BIA_DATA_T *bias) {
+        const __global BIA_DATA_T *bias POST_OP_ARGS) {
     const int n = GWS_GET_MB();
     const int ic = GWS_GET_IC();
     const int g = GWS_GET_G();
@@ -109,7 +142,35 @@ __kernel void ref_convolution_bwd_data(__global SRC_DATA_T *diff_src,
             d += DST_TO_REF(diff_dst[dst_off]) * WEI_TO_REF(wei[wei_off]);
         }
     }
-    diff_src[SRC_OFF(n, g * IC + ic, id, ih, iw)] = TO_SRC(d);
+
+    float sum_src;
+#if WITH_SUM
+    sum_src = convert_float(
+            SRC_TO_REF(diff_src[SRC_OFF(n, g * IC + ic, id, ih, iw)]));
+#endif
+
+    float accumulator = convert_float(d);
+#if NDIMS == 3
+    const unsigned po_d2 = iw;
+    const unsigned po_d3 = 0;
+    const unsigned po_d4 = 0;
+#elif NDIMS == 4
+    const unsigned po_d2 = ih;
+    const unsigned po_d3 = iw;
+    const unsigned po_d4 = 0;
+#elif NDIMS == 5
+    const unsigned po_d2 = id;
+    const unsigned po_d3 = ih;
+    const unsigned po_d4 = iw;
+#else
+    const unsigned po_d2 = 0;
+    const unsigned po_d3 = 0;
+    const unsigned po_d4 = 0;
+#endif
+    APPLY_POST_OPS_SERIAL(accumulator, float, sum_src, float, n, 1, g *IC + ic,
+            1, po_d2, 1, po_d3, 1, po_d4, 1, 0, 1);
+
+    diff_src[SRC_OFF(n, g * IC + ic, id, ih, iw)] = TO_SRC(accumulator);
 }
 #endif
 

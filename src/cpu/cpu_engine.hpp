@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
+* Copyright 2020 Arm Ltd. and affiliates
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +20,7 @@
 
 #include <assert.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common/c_types_map.hpp"
 #include "common/engine.hpp"
@@ -28,6 +29,9 @@
 
 #define CPU_INSTANCE(...) &primitive_desc_t::create<__VA_ARGS__::pd_t>,
 #define CPU_INSTANCE_X64(...) DNNL_X64_ONLY(CPU_INSTANCE(__VA_ARGS__))
+#define CPU_INSTANCE_AARCH64(...) DNNL_AARCH64_ONLY(CPU_INSTANCE(__VA_ARGS__))
+#define CPU_INSTANCE_AARCH64_ACL(...) \
+    DNNL_AARCH64_ACL_ONLY(CPU_INSTANCE(__VA_ARGS__))
 
 namespace dnnl {
 namespace impl {
@@ -47,7 +51,9 @@ DECLARE_IMPL_LIST(convolution);
 //DECLARE_IMPL_LIST(lrn);
 //DECLARE_IMPL_LIST(logsoftmax);
 //DECLARE_IMPL_LIST(matmul);
-DECLARE_IMPL_LIST(pooling);
+DECLARE_IMPL_LIST(pooling_v2);
+//DECLARE_IMPL_LIST(prelu);
+//DECLARE_IMPL_LIST(reduction);
 //DECLARE_IMPL_LIST(resampling);
 //DECLARE_IMPL_LIST(rnn);
 //DECLARE_IMPL_LIST(shuffle);
@@ -55,29 +61,20 @@ DECLARE_IMPL_LIST(pooling);
 
 #undef DECLARE_IMPL_LIST
 
-class cpu_engine_t : public engine_t {
+class cpu_engine_impl_list_t {
 public:
-    cpu_engine_t()
-        : engine_t(engine_kind::cpu, get_default_runtime(engine_kind::cpu)) {}
+    static const engine_t::concat_primitive_desc_create_f *
+    get_concat_implementation_list();
+    static const engine_t::reorder_primitive_desc_create_f *
+    get_reorder_implementation_list(
+            const memory_desc_t *src_md, const memory_desc_t *dst_md);
+    static const engine_t::sum_primitive_desc_create_f *
+    get_sum_implementation_list();
+    static const engine_t::primitive_desc_create_f *get_implementation_list(
+            const op_desc_t *desc) {
+        static const engine_t::primitive_desc_create_f empty_list[] = {nullptr};
 
-    /* implementation part */
-    status_t create_memory_storage(memory_storage_t **storage, unsigned flags,
-            size_t size, void *handle) override;
-
-    status_t create_stream(stream_t **stream, unsigned flags,
-            const stream_attr_t *attr) override;
-
-    const concat_primitive_desc_create_f *
-    get_concat_implementation_list() const override;
-    const reorder_primitive_desc_create_f *get_reorder_implementation_list(
-            const memory_desc_t *src_md,
-            const memory_desc_t *dst_md) const override;
-    const sum_primitive_desc_create_f *
-    get_sum_implementation_list() const override;
-    const primitive_desc_create_f *get_implementation_list(
-            const op_desc_t *desc) const override {
-        static const primitive_desc_create_f empty_list[] = {nullptr};
-
+// clang-format off
 #define CASE(kind) \
     case primitive_kind::kind: \
         return get_##kind##_impl_list((const kind##_desc_t *)desc);
@@ -92,7 +89,10 @@ public:
             //CASE(lrn);
             //CASE(logsoftmax);
             //CASE(matmul);
-            CASE(pooling);
+            case primitive_kind::pooling:
+            CASE(pooling_v2);
+            //CASE(prelu);
+            //CASE(reduction);
             //CASE(resampling);
             //CASE(rnn);
             //CASE(shuffle);
@@ -101,6 +101,46 @@ public:
         }
 #undef CASE
     }
+    // clang-format on
+};
+
+class cpu_engine_t : public engine_t {
+public:
+    cpu_engine_t() : engine_t(engine_kind::cpu, get_cpu_native_runtime(), 0) {}
+
+    /* implementation part */
+
+    status_t create_memory_storage(memory_storage_t **storage, unsigned flags,
+            size_t size, void *handle) override;
+
+    status_t create_stream(stream_t **stream, unsigned flags) override;
+
+#if DNNL_CPU_RUNTIME == DNNL_RUNTIME_THREADPOOL
+    status_t create_stream(stream_t **stream,
+            dnnl::threadpool_interop::threadpool_iface *threadpool) override;
+#endif
+
+    const concat_primitive_desc_create_f *
+    get_concat_implementation_list() const override {
+        return cpu_engine_impl_list_t::get_concat_implementation_list();
+    }
+
+    const reorder_primitive_desc_create_f *get_reorder_implementation_list(
+            const memory_desc_t *src_md,
+            const memory_desc_t *dst_md) const override {
+        return cpu_engine_impl_list_t::get_reorder_implementation_list(
+                src_md, dst_md);
+    }
+    const sum_primitive_desc_create_f *
+    get_sum_implementation_list() const override {
+        return cpu_engine_impl_list_t::get_sum_implementation_list();
+    }
+    const primitive_desc_create_f *get_implementation_list(
+            const op_desc_t *desc) const override {
+        return cpu_engine_impl_list_t::get_implementation_list(desc);
+    }
+
+    device_id_t device_id() const override { return std::make_tuple(0, 0, 0); }
 };
 
 class cpu_engine_factory_t : public engine_factory_t {

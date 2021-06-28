@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <math.h>
 
 #include "common/c_types_map.hpp"
+#include "common/compiler_workarounds.hpp"
 #include "common/dnnl_thread.hpp"
 #include "common/math_utils.hpp"
 #include "common/nstl.hpp"
@@ -33,10 +34,13 @@ namespace cpu {
 
 // Intel's LLVM-based compiler on Windows generates incorrect code with
 // PRAGMA_OMP_SIMD in some particular cases.
+// TODO: The issue above seems to be an additional one to the issue mentioned
+//       in `CLANG_WA_01_SAFE_TO_USE_OMP_SIMD`. Once the later is resolved,
+//       check specifically the former one, maybe it will go away as well.
 #if ((defined _WIN32) && (defined __INTEL_CLANG_COMPILER))
-#define SAFE_TO_USE_OMP_SIMD 0
+#define SAFE_TO_USE_OMP_SIMD (0 && CLANG_WA_01_SAFE_TO_USE_OMP_SIMD)
 #else
-#define SAFE_TO_USE_OMP_SIMD 1
+#define SAFE_TO_USE_OMP_SIMD (1 && CLANG_WA_01_SAFE_TO_USE_OMP_SIMD)
 #endif
 
 #define MEM_D(name) name##_d
@@ -59,11 +63,14 @@ size_t strided_offset(const int _n, const size_t _sn, const int _d,
 } // namespace nhwc_pooling
 
 template <data_type_t d_type>
+nhwc_pooling_fwd_t<d_type>::nhwc_pooling_fwd_t(const pd_t *apd)
+    : primitive_t(apd), ref_post_ops_(pd()->attr()->post_ops_) {}
+
+template <data_type_t d_type>
 void nhwc_pooling_fwd_t<d_type>::array_div_by_const(const int n,
         const ker_data_t *src, const size_t num, ker_data_t *dst) const {
     for (int i = 0; i < n; ++i) {
-        float ftmp = (float)src[i];
-        ftmp = ftmp / num;
+        const float ftmp = ((float)src[i]) / num;
         dst[i] = out_round<ker_data_t>(ftmp);
     }
 }
@@ -85,7 +92,7 @@ void nhwc_pooling_fwd_t<d_type>::array_nhwc_max(const int n, ker_data_t *dst,
     PRAGMA_OMP_SIMD()
 #endif
     for (int oc = 0; oc < n; ++oc) {
-        auto s = src[oc];
+        const auto s = src[oc];
         ker_data_t mv = dst[oc];
 
         // update index of maximum
@@ -107,14 +114,14 @@ void nhwc_pooling_fwd_t<d_type>::array_nhwc_max(const int n, ker_data_t *dst,
 
         if (ws_dt == data_type::u8) {
             assert(0 <= index && index <= 255);
-            unsigned char predicate = (s > mv) ? 0xff : 0;
+            const unsigned char predicate = (s > mv) ? 0xff : 0;
             unsigned char current_value = ws[ws_offset + oc];
             current_value = (predicate & (unsigned char)index)
                     | ((~predicate) & current_value);
             ws[ws_offset + oc] = current_value;
         } else {
             auto wint = reinterpret_cast<int *>(ws);
-            unsigned int predicate = (s > mv) ? 0xffffffff : 0;
+            const unsigned int predicate = (s > mv) ? 0xffffffff : 0;
             unsigned int current_value = wint[ws_offset + oc];
             current_value = (predicate & (unsigned int)index)
                     | ((~predicate) & current_value);
@@ -147,13 +154,17 @@ using namespace nstl;
 using namespace nhwc_pooling;
 
 template <data_type_t d_type>
-void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
+status_t nhwc_pooling_fwd_t<d_type>::execute_forward(
+        const exec_ctx_t &ctx) const {
 
-    auto alg = pd()->desc()->alg_kind;
+    const auto alg = pd()->desc()->alg_kind;
 
-    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
-    auto ws = CTX_OUT_MEM(unsigned char *, DNNL_ARG_WORKSPACE);
+    status_t status = status::success;
+    const auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
+    auto ws = CTX_OUT_CLEAN_MEM(unsigned char *, DNNL_ARG_WORKSPACE, status);
+    CHECK(status);
 
     const memory_desc_wrapper MEM_D(src)(pd()->src_md());
     const memory_desc_wrapper MEM_D(dst)(pd()->dst_md());
@@ -185,12 +196,21 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
     DECLARE_READ_STRIDES(src);
     DECLARE_READ_STRIDES(dst);
 
-    auto apply_offset = [=](int index, int offset) {
+    const auto apply_offset = [](int index, int offset) {
         return (index > offset) ? index - offset : 0;
     };
 
+    const dim_t SP = OW * OH;
+    const dim_t OSP = SP * OD;
+
+    const auto get_logical_offset
+            = [&](int mb, int oc, int od, int oh, int ow) -> dim_t {
+        return OSP * OC * mb + OSP * oc + SP * od + OW * oh + ow;
+    };
+    const bool are_postops_set = !(pd()->attr()->post_ops_.entry_.empty());
+
     parallel_nd(MB, OD, OH, OW, [&](int mb, int od, int oh, int ow) {
-        size_t dst_offset_init = strided_offset(mb, dst_n_stride, od,
+        const size_t dst_offset_init = strided_offset(mb, dst_n_stride, od,
                 dst_d_stride, oh, dst_h_stride, ow, dst_w_stride);
         if (alg == alg_kind::pooling_max) {
             size_t ws_offset_init = 0;
@@ -204,7 +224,7 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
             // into separate helper routines:
             //    array_nhwc_initialize, array_nhwc_max
             if (!ws) {
-                auto *d = dst + dst_offset_init;
+                auto *const d = dst + dst_offset_init;
                 PRAGMA_OMP_SIMD()
                 for (int oc = 0; oc < OC; ++oc) {
                     d[oc] = nstl::numeric_limits<data_t>::lowest();
@@ -225,12 +245,12 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
                 if (ih < 0 || ih >= IH) continue;
                 if (iw < 0 || iw >= IW) continue;
 
-                size_t src_offset_init = strided_offset(mb, src_n_stride, id,
-                        src_d_stride, ih, src_h_stride, iw, src_w_stride);
+                const size_t src_offset_init = strided_offset(mb, src_n_stride,
+                        id, src_d_stride, ih, src_h_stride, iw, src_w_stride);
 
                 if (!ws) {
-                    auto *s = src + src_offset_init;
-                    auto *d = dst + dst_offset_init;
+                    auto *const s = src + src_offset_init;
+                    auto *const d = dst + dst_offset_init;
                     PRAGMA_OMP_SIMD()
                     for (int oc = 0; oc < OC; ++oc) {
                         d[oc] = nstl::max(s[oc], d[oc]);
@@ -243,16 +263,16 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
             }
         } else {
             // pooling_avg
-            auto d = dst + dst_offset_init;
+            const auto d = dst + dst_offset_init;
 
             utils::array_set(d, 0, OC);
 
-            auto id_start = apply_offset(od * SD, padF);
-            auto ih_start = apply_offset(oh * SH, padT);
-            auto iw_start = apply_offset(ow * SW, padL);
-            auto id_end = min(od * SD - padF + KD, ID);
-            auto ih_end = min(oh * SH - padT + KH, IH);
-            auto iw_end = min(ow * SW - padL + KW, IW);
+            const auto id_start = apply_offset(od * SD, padF);
+            const auto ih_start = apply_offset(oh * SH, padT);
+            const auto iw_start = apply_offset(ow * SW, padL);
+            const auto id_end = min(od * SD - padF + KD, ID);
+            const auto ih_end = min(oh * SH - padT + KH, IH);
+            const auto iw_end = min(ow * SW - padL + KW, IW);
 
             // it is cheaper to actually count this in a loop
             // as the typical kernel is small
@@ -261,9 +281,9 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
             for_(int id = id_start; id < id_end; ++id)
             for_(int ih = ih_start; ih < ih_end; ++ih)
             for (int iw = iw_start; iw < iw_end; ++iw) {
-                size_t src_offset_init = strided_offset(mb, src_n_stride, id,
-                        src_d_stride, ih, src_h_stride, iw, src_w_stride);
-                auto s = src + src_offset_init;
+                const size_t src_offset_init = strided_offset(mb, src_n_stride,
+                        id, src_d_stride, ih, src_h_stride, iw, src_w_stride);
+                const auto s = src + src_offset_init;
 
                 // need to move the loop to separate function
                 // for GCC 4.8.5 to vectorize
@@ -280,23 +300,40 @@ void nhwc_pooling_fwd_t<d_type>::execute_forward(const exec_ctx_t &ctx) const {
             // for GCC 4.8.5 to vectorize
             array_div_by_const(OC, d, num_summands, d);
         }
+
+        if (are_postops_set) {
+            auto *const d = dst + dst_offset_init;
+            ref_post_ops_t::args_t args;
+            args.ctx = &ctx;
+            args.l_offset = get_logical_offset(mb, 0, od, oh, ow);
+            args.dst_md = pd()->dst_md();
+
+            for (int oc = 0; oc < OC; ++oc) {
+                ref_post_ops_.execute(d[oc], args);
+                args.l_offset += OSP;
+            }
+        }
     });
+    return status::success;
 }
 
 template <>
-void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
+status_t nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
         const exec_ctx_t &ctx) const {
 
-    auto alg = pd()->desc()->alg_kind;
+    const auto alg = pd()->desc()->alg_kind;
 
-    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
-    auto ws = CTX_OUT_MEM(unsigned char *, DNNL_ARG_WORKSPACE);
+    status_t status = status::success;
+    const auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
+    auto ws = CTX_OUT_CLEAN_MEM(unsigned char *, DNNL_ARG_WORKSPACE, status);
+    CHECK(status);
 
     auto scratchpad = ctx.get_scratchpad_grantor();
-    float *bf16cvt_src_wsp = scratchpad.template get<float>(
+    float *const bf16cvt_src_wsp = scratchpad.template get<float>(
             memory_tracking::names::key_pool_src_bf16cvt);
-    float *bf16cvt_dst_wsp = scratchpad.template get<float>(
+    float *const bf16cvt_dst_wsp = scratchpad.template get<float>(
             memory_tracking::names::key_pool_dst_bf16cvt);
 
     const memory_desc_wrapper MEM_D(src)(pd()->src_md());
@@ -329,24 +366,33 @@ void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
     DECLARE_READ_STRIDES(src);
     DECLARE_READ_STRIDES(dst);
 
-    auto apply_offset = [=](int index, int offset) {
+    const auto apply_offset = [&](int index, int offset) {
         return (index > offset) ? index - offset : 0;
     };
 
+    const dim_t SP = OW * OH;
+    const dim_t OSP = SP * OD;
+
+    const auto get_logical_offset
+            = [&](int mb, int oc, int od, int oh, int ow) -> dim_t {
+        return OSP * OC * mb + OSP * oc + SP * od + OW * oh + ow;
+    };
+    const bool are_postops_set = !(pd()->attr()->post_ops_.entry_.empty());
+
     parallel_nd_ext(0, MB, OD, OH, OW,
             [&](int ithr, int, int mb, int od, int oh, int ow) {
-                size_t dst_offset_init = strided_offset(mb, dst_n_stride, od,
-                        dst_d_stride, oh, dst_h_stride, ow, dst_w_stride);
+                const size_t dst_offset_init = strided_offset(mb, dst_n_stride,
+                        od, dst_d_stride, oh, dst_h_stride, ow, dst_w_stride);
+                float *const dst_f32 = &bf16cvt_dst_wsp[ithr * OC];
+                float *const src_f32 = &bf16cvt_src_wsp[ithr * OC];
+
                 if (alg == alg_kind::pooling_max) {
                     size_t ws_offset_init = 0;
                     if (ws) {
                         DECLARE_READ_STRIDES(ws);
                         ws_offset_init = strided_offset(mb, ws_n_stride, od,
                                 ws_d_stride, oh, ws_h_stride, ow, ws_w_stride);
-                    }
-                    float *dst_f32 = &bf16cvt_dst_wsp[ithr * OC];
-                    float *src_f32 = &bf16cvt_src_wsp[ithr * OC];
-
+                    };
                     // Note: GCC 4.8.5 won't vectorize below
                     // simple loops unless they are singled out
                     // into separate helper routines:
@@ -373,7 +419,7 @@ void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
                         if (ih < 0 || ih >= IH) continue;
                         if (iw < 0 || iw >= IW) continue;
 
-                        size_t src_offset_init = strided_offset(mb,
+                        const size_t src_offset_init = strided_offset(mb,
                                 src_n_stride, id, src_d_stride, ih,
                                 src_h_stride, iw, src_w_stride);
 
@@ -392,20 +438,16 @@ void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
                                     kd * KH * KW + kh * KW + kw);
                         }
                     }
-                    cvt_float_to_bfloat16(dst + dst_offset_init, dst_f32, OC);
                 } else {
                     // pooling_avg
-                    float *dst_f32 = &bf16cvt_dst_wsp[ithr * OC];
-                    float *src_f32 = &bf16cvt_src_wsp[ithr * OC];
-
                     utils::array_set(dst_f32, 0, OC);
 
-                    auto id_start = apply_offset(od * SD, padF);
-                    auto ih_start = apply_offset(oh * SH, padT);
-                    auto iw_start = apply_offset(ow * SW, padL);
-                    auto id_end = min(od * SD - padF + KD, ID);
-                    auto ih_end = min(oh * SH - padT + KH, IH);
-                    auto iw_end = min(ow * SW - padL + KW, IW);
+                    const auto id_start = apply_offset(od * SD, padF);
+                    const auto ih_start = apply_offset(oh * SH, padT);
+                    const auto iw_start = apply_offset(ow * SW, padL);
+                    const auto id_end = min(od * SD - padF + KD, ID);
+                    const auto ih_end = min(oh * SH - padT + KH, IH);
+                    const auto iw_end = min(ow * SW - padL + KW, IW);
 
                     // it is cheaper to actually count this in a loop
                     // as the typical kernel is small
@@ -434,16 +476,32 @@ void nhwc_pooling_fwd_t<data_type::bf16>::execute_forward(
                     // need to move the loop to separate function
                     // for GCC 4.8.5 to vectorize
                     array_div_by_const(OC, dst_f32, num_summands, dst_f32);
-                    cvt_float_to_bfloat16(dst + dst_offset_init, dst_f32, OC);
                 }
+
+                if (are_postops_set) {
+                    ref_post_ops_t::args_t args;
+                    args.ctx = &ctx;
+                    args.l_offset = get_logical_offset(mb, 0, od, oh, ow);
+                    args.dst_md = pd()->dst_md();
+
+                    for (int oc = 0; oc < OC; ++oc) {
+                        ref_post_ops_.execute(dst_f32[oc], args);
+                        args.l_offset += OSP;
+                    }
+                }
+                cvt_float_to_bfloat16(dst + dst_offset_init, dst_f32, OC);
             });
+    return status::success;
 }
 
 template <data_type_t d_type>
-void nhwc_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
+status_t nhwc_pooling_bwd_t<d_type>::execute_backward(
+        const exec_ctx_t &ctx) const {
+    status_t status = status::success;
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
     auto ws = CTX_IN_MEM(const unsigned char *, DNNL_ARG_WORKSPACE);
-    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
+    auto diff_src = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DIFF_SRC, status);
+    CHECK(status);
 
     const memory_desc_wrapper MEM_D(diff_src)(pd()->diff_src_md());
     const memory_desc_wrapper MEM_D(diff_dst)(pd()->diff_dst_md());
@@ -572,15 +630,18 @@ void nhwc_pooling_bwd_t<d_type>::execute_backward(const exec_ctx_t &ctx) const {
             }
         }
     });
+    return status::success;
 }
 
 template <>
-void nhwc_pooling_bwd_t<data_type::bf16>::execute_backward(
+status_t nhwc_pooling_bwd_t<data_type::bf16>::execute_backward(
         const exec_ctx_t &ctx) const {
 
+    status_t status = status::success;
     auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
     auto ws = CTX_IN_MEM(const unsigned char *, DNNL_ARG_WORKSPACE);
-    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
+    auto diff_src = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DIFF_SRC, status);
+    CHECK(status);
 
     auto scratchpad = ctx.get_scratchpad_grantor();
     float *bf16cvt_dsrc = scratchpad.template get<float>(
@@ -730,6 +791,7 @@ void nhwc_pooling_bwd_t<data_type::bf16>::execute_backward(
                             &diff_src[src_offset_init], diff_src_fp32, OC);
                 }
             });
+    return status::success;
 }
 
 template struct nhwc_pooling_fwd_t<data_type::f32>;

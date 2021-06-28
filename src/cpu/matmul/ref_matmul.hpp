@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,8 +26,7 @@
 #include "common/utils.hpp"
 
 #include "cpu/platform.hpp"
-
-#include "cpu/ref_eltwise.hpp"
+#include "cpu/primitive_attr_postops.hpp"
 
 #include "cpu/matmul/cpu_matmul_pd.hpp"
 
@@ -47,21 +46,16 @@ struct ref_matmul_t : public primitive_t {
 
         status_t init(engine_t *engine) {
             using namespace data_type;
+            using smask_t = primitive_attr_t::skip_mask_t;
 
             bool ok = src_md()->data_type == src_type
                     && weights_md()->data_type == weights_type
                     && desc()->accum_data_type == acc_type
                     && dst_md()->data_type == dst_type
                     && platform::has_data_type_support(src_type)
-                    && IMPLICATION(
-                            acc_type == s32, attr()->zero_points_.common())
-                    && IMPLICATION(acc_type != s32,
-                            attr()->zero_points_.has_default_values())
-                    && attr()->has_default_values(
-                            primitive_attr_t::skip_mask_t::oscale_runtime
-                            | primitive_attr_t::skip_mask_t::zero_points_runtime
-                            | primitive_attr_t::skip_mask_t::post_ops)
-                    && attr_oscale_ok() && attr_post_ops_ok()
+                    && attr()->has_default_values(smask_t::oscale_runtime
+                            | smask_t::zero_points_runtime | smask_t::post_ops)
+                    && attr_oscale_ok() && attr_zero_points_ok()
                     && set_default_formats();
 
             if (with_bias()) {
@@ -80,23 +74,27 @@ struct ref_matmul_t : public primitive_t {
             return oscale.mask_ == 0 || oscale.mask_ == (1 << (batched() + 1));
         }
 
-        bool attr_post_ops_ok() const {
-            using namespace primitive_kind;
-            const auto &p = attr()->post_ops_;
-            switch (p.len_) {
-                case 0: return true;
-                case 1: return p.contain(sum, 0) || p.contain(eltwise, 0);
-                case 2: return p.contain(sum, 0) && p.contain(eltwise, 1);
-                default: return false;
-            }
+        bool attr_zero_points_ok() const {
+            int mask_src = 0, mask_wei = 0, mask_dst = 0;
+            attr()->zero_points_.get(DNNL_ARG_SRC, nullptr, &mask_src, nullptr);
+            attr()->zero_points_.get(
+                    DNNL_ARG_WEIGHTS, nullptr, &mask_wei, nullptr);
+            attr()->zero_points_.get(DNNL_ARG_DST, nullptr, &mask_dst, nullptr);
+
+            return IMPLICATION(acc_type != data_type::s32,
+                           attr()->zero_points_.has_default_values())
+                    && (mask_src == 0 || mask_src == 1 << 1) && (mask_wei == 0)
+                    && (mask_dst == 0 || mask_dst == 1 << 1);
         }
     };
 
-    ref_matmul_t(const pd_t *apd) : primitive_t(apd) {
-        int e_idx = pd()->attr()->post_ops_.find(primitive_kind::eltwise);
-        if (e_idx != -1)
-            eltwise_ker_.reset(new ref_eltwise_scalar_fwd_t(
-                    pd()->attr()->post_ops_.entry_[e_idx].eltwise));
+    ref_matmul_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
+        ref_post_ops
+                = utils::make_unique<ref_post_ops_t>(pd()->attr()->post_ops_);
+        if (!ref_post_ops) return status::out_of_memory;
+        return status::success;
     }
 
     typedef typename prec_traits<src_type>::type src_data_t;
@@ -111,8 +109,7 @@ struct ref_matmul_t : public primitive_t {
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     status_t execute_ref(const exec_ctx_t &ctx) const;
-
-    std::unique_ptr<ref_eltwise_scalar_fwd_t> eltwise_ker_;
+    std::unique_ptr<ref_post_ops_t> ref_post_ops;
 };
 
 } // namespace matmul

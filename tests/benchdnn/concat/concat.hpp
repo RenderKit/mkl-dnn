@@ -19,7 +19,7 @@
 
 #include <iostream>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common.hpp"
 #include "dnn_types.hpp"
@@ -43,11 +43,14 @@ struct settings_t {
     std::vector<std::vector<std::string>> stag {{tag::abx}};
     std::vector<std::string> dtag {tag::undef};
     std::vector<int> axis {1};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
 
     const char *perf_template_csv
-            = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%axis%,%DESC%,%-time%,%"
-              "0time%";
-    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+            = "perf,%engine%,%impl%,%sdt%,%ddt%,%stag%,%dtag%,%axis%,%DESC%,%-"
+              "time%,%0time%";
+    const char *perf_template_def
+            = "perf,%engine%,%impl%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -56,13 +59,14 @@ struct settings_t {
 struct prb_t {
     prb_t(const std::vector<dims_t> &sdims, dnnl_data_type_t sdt,
             dnnl_data_type_t ddt, const std::vector<std::string> &stag,
-            const std::string &dtag, int axis)
+            const std::string &dtag, int axis, const attr_t &attr)
         : sdims(sdims)
         , sdt(sdt)
         , ddt(ddt)
         , stag(stag)
         , dtag(dtag)
         , axis(axis)
+        , attr(attr)
         , ndims((int)sdims[0].size()) {
         generate_ddims();
     }
@@ -74,6 +78,7 @@ struct prb_t {
     std::vector<std::string> stag;
     std::string dtag;
     int axis;
+    attr_t attr;
     int ndims;
 
     int n_inputs() const { return (int)sdims.size(); }
@@ -94,15 +99,18 @@ struct prb_t {
         ddims[axis] = axis_size();
     }
 };
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
         sdt_ = {p_->sdt};
-        base_report(r, prb_str);
+        for (size_t d = 0; d < p_->stag.size(); d++)
+            stag_.push_back(normalize_tag(p_->stag[d], p_->ndims));
+        dtag_ = normalize_tag(p_->dtag, p_->ndims);
+        base_report(res, prb_str);
     }
 
     void dump_desc(std::ostream &s) const override { s << p_->sdims; }
@@ -112,18 +120,20 @@ struct perf_report_t : public base_perf_report_t {
     const int *axis() const override { return &p_->axis; }
     const std::vector<dnnl_data_type_t> *sdt() const override { return &sdt_; }
     const dnnl_data_type_t *ddt() const override { return &p_->ddt; }
-    const std::vector<std::string> *stag() const override { return &p_->stag; }
-    const std::string *dtag() const override { return &p_->dtag; }
+    const std::vector<std::string> *stag() const override { return &stag_; }
+    const std::string *dtag() const override { return &dtag_; }
 
 private:
     const prb_t *p_ = NULL;
     std::vector<dnnl_data_type_t> sdt_;
+    std::vector<std::string> stag_;
+    std::string dtag_;
 };
 
 void compute_ref(
-        const prb_t *p, const std::vector<dnn_mem_t> &src, dnn_mem_t &dst);
+        const prb_t *prb, const std::vector<dnn_mem_t> &src, dnn_mem_t &dst);
 
-int doit(const prb_t *p, res_t *res);
+int doit(const prb_t *prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace concat

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,13 +20,17 @@
 #include "common/nstl.hpp"
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
+#include <type_traits>
 
 #include "common/c_types_map.hpp"
 #include "common/memory_tracking.hpp"
 
+#include "cpu/x64/injectors/injector_utils.hpp"
+#include "cpu/x64/injectors/jit_uni_binary_injector.hpp"
+#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_generator.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 #include "cpu/x64/jit_avx512_core_bf16_dw_conv_kernel.hpp"
 #include "cpu/x64/jit_uni_dw_conv_kernel_f32.hpp"
@@ -39,14 +43,13 @@ namespace x64 {
 template <cpu_isa_t isa, data_type_t kernel_dt>
 struct jit_uni_dw_conv_fwd_kernel {
 
-    jit_uni_dw_conv_fwd_kernel(jit_conv_conf_t ajcp)
-        : jit_ker(nullptr), ker_(nullptr) {
-        ker_ = new jit_kernel_t(ajcp);
-        jit_ker = ker_->jit_ker;
+    jit_uni_dw_conv_fwd_kernel(
+            const jit_conv_conf_t &ajcp, const memory_desc_t &dst_md) {
+        ker_ = new jit_kernel_t(ajcp, dst_md);
     }
-    ~jit_uni_dw_conv_fwd_kernel() { delete ker_; }
 
-    static bool post_ops_ok(jit_conv_conf_t &jcp, const primitive_attr_t &attr);
+    status_t create_kernel() { return ker_->create_kernel(); }
+    ~jit_uni_dw_conv_fwd_kernel() { delete ker_; }
 
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, memory_desc_t &src_md,
@@ -56,33 +59,17 @@ struct jit_uni_dw_conv_fwd_kernel {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
-    void (*jit_ker)(jit_conv_call_s *);
+    jit_generator *ker() const { return ker_; }
+    void operator()(const jit_conv_call_s *p) const { (*ker_)(p); }
 
 private:
-    using jit_kernel_t = typename utils::conditional<isa == avx512_core
-                    && kernel_dt == data_type::bf16,
+    constexpr static bool ker_condition_
+            = isa == avx512_core && kernel_dt == data_type::bf16;
+    using jit_kernel_t = typename utils::conditional<ker_condition_,
             jit_avx512_dw_conv_fwd_kernel_bf16,
             jit_uni_dw_conv_fwd_kernel_f32<isa>>::type;
     jit_kernel_t *ker_;
 };
-
-template <cpu_isa_t isa, data_type_t kernel_dt>
-bool jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::post_ops_ok(
-        jit_conv_conf_t &jcp, const primitive_attr_t &attr) {
-    const auto &p = attr.post_ops_;
-
-    auto is_eltwise = [&](int idx) { return p.entry_[idx].is_eltwise(); };
-    auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(); };
-
-    switch (p.len_) {
-        case 0: return true; // no post_ops
-        case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
-        case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
-        default: return false;
-    }
-
-    return false;
-}
 
 template <cpu_isa_t isa, data_type_t kernel_dt>
 status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
@@ -103,16 +90,24 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
     // Currently this kernel only supports 2D convolutions.
     if (ndims != 4) return status::unimplemented;
 
+    jcp.prop_kind = cd.prop_kind;
+
     const auto blocked_tag
             = one_of(isa, avx512_common, avx512_core) ? nChw16c : nChw8c;
     const auto wei_tag
             = one_of(isa, avx512_common, avx512_core) ? Goihw16g : Goihw8g;
     const auto nxc_tag = nhwc;
+    const auto def_tag
+            = (mayiuse(avx512_core)
+                      && jcp.prop_kind == prop_kind::forward_inference)
+            ? nxc_tag
+            : blocked_tag;
+
     jcp.with_bias = cd.bias_desc.format_kind != format_kind::undef;
 
     if (src_d.format_kind() == format_kind::any) {
-        CHECK(memory_desc_init_by_tag(src_md, blocked_tag));
-        jcp.src_tag = blocked_tag;
+        CHECK(memory_desc_init_by_tag(src_md, def_tag));
+        jcp.src_tag = def_tag;
     } else {
         jcp.src_tag = src_d.matches_one_of_tag(blocked_tag, nxc_tag);
     }
@@ -125,8 +120,8 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
     }
 
     if (dst_d.format_kind() == format_kind::any) {
-        CHECK(memory_desc_init_by_tag(dst_md, blocked_tag));
-        jcp.dst_tag = blocked_tag;
+        CHECK(memory_desc_init_by_tag(dst_md, def_tag));
+        jcp.dst_tag = def_tag;
     } else {
         jcp.dst_tag = dst_d.matches_one_of_tag(blocked_tag, nxc_tag);
     }
@@ -150,8 +145,6 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
 
     const int simd_w = one_of(isa, avx512_common, avx512_core) ? 16 : 8;
 
-    jcp.prop_kind = cd.prop_kind;
-
     const bool with_groups = weights_d.ndims() == src_d.ndims() + 1;
     if (!with_groups) return status::unimplemented;
 
@@ -172,8 +165,6 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
 
     jcp.t_pad = cd.padding[0][0];
     jcp.l_pad = cd.padding[0][1];
-    jcp.b_pad = cd.padding[1][0];
-    jcp.r_pad = cd.padding[1][1];
 
     jcp.stride_h = cd.strides[0];
     jcp.stride_w = cd.strides[1];
@@ -190,8 +181,23 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
                        : isa == avx512_common ? 6 : isa == avx2 ? 4 : 3;
     jcp.ur_w = nstl::min(jcp.ur_w, jcp.ow);
 
+    jcp.ch_block = simd_w;
+    jcp.nb_ch = div_up(jcp.oc, jcp.ch_block);
+    jcp.nb_ch_blocking
+            = one_of(isa, avx512_common, avx512_core) ? 4 : isa == avx2 ? 3 : 2;
+    if (jcp.nb_ch < jcp.nb_ch_blocking) jcp.nb_ch_blocking = jcp.nb_ch;
+
     if (is_data_layout_nxc) {
         jcp.loop_order = loop_nhwcg;
+        const int resrc_depthwise_ur_w = (31 - jcp.kw + jcp.stride_w)
+                / (jcp.nb_ch_blocking + jcp.stride_w);
+        jcp.is_resrc_depthwise = (!is_bf16)
+                && one_of(isa, avx512_common, avx512_core)
+                && jcp.stride_w < jcp.kw && jcp.kw <= 5 && jcp.dilate_w == 0
+                && resrc_depthwise_ur_w >= 2;
+        if (jcp.is_resrc_depthwise) {
+            jcp.ur_w = nstl::min(jcp.ow, resrc_depthwise_ur_w);
+        }
         bool cache_aliasing
                 = (jcp.ngroups * jcp.iw * jcp.typesize_in) % 1024 == 0;
         if (cache_aliasing) {
@@ -219,16 +225,27 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
     if (jcp.l_pad > jcp.ur_w || r_pad_no_tail > jcp.ur_w)
         return status::unimplemented;
 
-    if (!post_ops_ok(jcp, attr)) return status::unimplemented;
+    const auto &post_ops = attr.post_ops_;
 
-    const auto &p = attr.post_ops_;
-    jcp.with_sum = p.find(primitive_kind::sum) != -1;
-    const int eltwise_ind = p.find(primitive_kind::eltwise);
+    jcp.with_sum = post_ops.find(primitive_kind::sum) != -1;
+    const int eltwise_ind = post_ops.find(primitive_kind::eltwise);
     jcp.with_eltwise = eltwise_ind != -1;
-    if (jcp.with_eltwise) jcp.eltwise = p.entry_[eltwise_ind].eltwise;
+    if (jcp.with_eltwise) jcp.eltwise = post_ops.entry_[eltwise_ind].eltwise;
+    const int binary_ind = post_ops.find(primitive_kind::binary);
+    jcp.with_binary = binary_ind != -1;
 
-    bool ok_to_pad_channels = true && jcp.oc == jcp.ngroups
-            && jcp.ic == jcp.ngroups
+    jcp.post_ops = post_ops;
+
+    using namespace injector;
+    static constexpr bool sum_at_pos_0_only = true;
+    static constexpr bool sum_requires_scale_one = true;
+    const bool post_ops_ok_ = post_ops_ok({isa, {eltwise, binary, sum},
+            jcp.post_ops, &dst_d, sum_at_pos_0_only, sum_requires_scale_one});
+    if (!post_ops_ok_) return status::unimplemented;
+
+    const bool is_f32 = src_d.data_type() == data_type::f32;
+    const bool ok_to_pad_channels = true && !is_data_layout_nxc
+            && jcp.oc == jcp.ngroups && jcp.ic == jcp.ngroups
             && one_of(isa, avx512_common, avx512_core, avx2);
     if (ok_to_pad_channels) {
         jcp.oc = rnd_up(jcp.oc, simd_w);
@@ -236,18 +253,14 @@ status_t jit_uni_dw_conv_fwd_kernel<isa, kernel_dt>::init_conf(
         jcp.ngroups = rnd_up(jcp.ngroups, simd_w);
     }
 
-    bool args_ok = true && jcp.oc == jcp.ngroups && jcp.ic == jcp.ngroups
-            && jcp.ngroups % simd_w == 0 && jcp.wei_tag == wei_tag
-            && data_tag != format_tag::undef && jcp.ic <= src_d.padded_dims()[1]
+    const bool args_ok = true && jcp.oc == jcp.ngroups && jcp.ic == jcp.ngroups
+            && IMPLICATION(
+                    !(is_data_layout_nxc && is_f32), jcp.ngroups % simd_w == 0)
+            && jcp.wei_tag == wei_tag && data_tag != format_tag::undef
+            && jcp.ic <= src_d.padded_dims()[1]
             && jcp.oc <= dst_d.padded_dims()[1]
             && jcp.ngroups <= weights_d.padded_dims()[0];
     if (!args_ok) return status::unimplemented;
-
-    jcp.ch_block = simd_w;
-    jcp.nb_ch = jcp.oc / jcp.ch_block;
-    jcp.nb_ch_blocking
-            = one_of(isa, avx512_common, avx512_core) ? 4 : isa == avx2 ? 3 : 2;
-    if (jcp.nb_ch < jcp.nb_ch_blocking) jcp.nb_ch_blocking = jcp.nb_ch;
 
     jcp.bia_dt = jcp.with_bias ? cd.bias_desc.data_type : data_type::undef;
 
@@ -272,11 +285,12 @@ template struct jit_uni_dw_conv_fwd_kernel<sse41, data_type::f32>;
 template <cpu_isa_t isa, data_type_t kernel_dt>
 struct jit_uni_dw_conv_bwd_data_kernel {
 
-    jit_uni_dw_conv_bwd_data_kernel(jit_conv_conf_t ajcp)
-        : jit_ker(nullptr), ker_(nullptr) {
+    jit_uni_dw_conv_bwd_data_kernel(const jit_conv_conf_t &ajcp)
+        : ker_(nullptr) {
         ker_ = new jit_kernel_t(ajcp);
-        jit_ker = ker_->jit_ker;
     }
+
+    status_t create_kernel() { return ker_->create_kernel(); }
     ~jit_uni_dw_conv_bwd_data_kernel() { delete ker_; }
 
     static status_t init_conf(jit_conv_conf_t &jcp,
@@ -287,7 +301,7 @@ struct jit_uni_dw_conv_bwd_data_kernel {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
-    void (*jit_ker)(jit_conv_call_s *);
+    void operator()(const jit_conv_call_s *p) const { (*ker_)(p); }
 
 private:
     using jit_kernel_t = typename utils::conditional<isa == avx512_core
@@ -337,14 +351,19 @@ status_t jit_uni_dw_conv_bwd_data_kernel<isa, kernel_dt>::init_conf(
 
     jcp.t_pad = cd.padding[0][0];
     jcp.l_pad = cd.padding[0][1];
-    jcp.b_pad = cd.padding[1][0];
-    jcp.r_pad = cd.padding[1][1];
 
     jcp.stride_h = cd.strides[0];
     jcp.stride_w = cd.strides[1];
 
     jcp.dilate_h = cd.dilates[0];
     jcp.dilate_w = cd.dilates[1];
+
+    const int ext_kw = calculate_extended_filter_size(jcp.kw, jcp.dilate_w);
+    const int ext_kh = calculate_extended_filter_size(jcp.kh, jcp.dilate_h);
+    jcp.r_pad = calculate_end_padding(
+            jcp.l_pad, jcp.ow, jcp.iw, jcp.stride_w, ext_kw);
+    jcp.b_pad = calculate_end_padding(
+            jcp.t_pad, jcp.oh, jcp.ih, jcp.stride_h, ext_kh);
 
     jcp.ihp = jcp.ih + jcp.t_pad + jcp.b_pad;
     jcp.iwp = jcp.iw + jcp.l_pad + jcp.r_pad;
@@ -406,11 +425,12 @@ template struct jit_uni_dw_conv_bwd_data_kernel<sse41, data_type::f32>;
 template <cpu_isa_t isa, data_type_t kernel_dt>
 struct jit_uni_dw_conv_bwd_weights_kernel {
 
-    jit_uni_dw_conv_bwd_weights_kernel(jit_conv_conf_t ajcp)
-        : jit_ker(nullptr), ker_(nullptr) {
+    jit_uni_dw_conv_bwd_weights_kernel(const jit_conv_conf_t &ajcp)
+        : ker_(nullptr) {
         ker_ = new jit_kernel_t(ajcp);
-        jit_ker = ker_->jit_ker;
     }
+
+    status_t create_kernel() { return ker_->create_kernel(); }
 
     ~jit_uni_dw_conv_bwd_weights_kernel() { delete ker_; }
 
@@ -424,7 +444,7 @@ struct jit_uni_dw_conv_bwd_weights_kernel {
 
     static void balance(jit_conv_conf_t &jcp, int nthreads);
 
-    void (*jit_ker)(jit_dw_conv_call_s *);
+    void operator()(const jit_dw_conv_call_s *p) const { (*ker_)(p); }
 
 private:
     using jit_kernel_t = typename utils::conditional<isa == avx512_core
@@ -476,10 +496,7 @@ status_t jit_uni_dw_conv_bwd_weights_kernel<isa, kernel_dt>::init_conf(
     jcp.stride_w = cd.strides[1];
 
     jcp.t_pad = cd.padding[0][0];
-    jcp.b_pad = cd.padding[1][0];
-
     jcp.l_pad = cd.padding[0][1];
-    jcp.r_pad = cd.padding[1][1];
 
     jcp.dilate_h = cd.dilates[0];
     jcp.dilate_w = cd.dilates[1];
@@ -488,6 +505,15 @@ status_t jit_uni_dw_conv_bwd_weights_kernel<isa, kernel_dt>::init_conf(
     jcp.iwp = jcp.iw + jcp.l_pad + jcp.r_pad;
 
     jcp.with_bias = cd.diff_bias_desc.format_kind != format_kind::undef;
+
+    const int ext_kw = calculate_extended_filter_size(jcp.kw, jcp.dilate_w);
+    const int ext_kh = calculate_extended_filter_size(jcp.kh, jcp.dilate_h);
+    jcp.r_pad = nstl::max(0,
+            calculate_end_padding(
+                    jcp.l_pad, jcp.ow, jcp.iw, jcp.stride_w, ext_kw));
+    jcp.b_pad = nstl::max(0,
+            calculate_end_padding(
+                    jcp.t_pad, jcp.oh, jcp.ih, jcp.stride_h, ext_kh));
 
     auto dat_tag = one_of(isa, avx512_common, avx512_core) ? nChw16c : nChw8c;
     auto wei_tag = one_of(isa, avx512_common, avx512_core) ? Goihw16g : Goihw8g;

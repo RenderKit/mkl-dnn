@@ -151,19 +151,19 @@ status_t gen9_gemm_x8x8s32_t::execute(const gemm_exec_ctx_t &ctx) const {
 status_t gen9_gemm_x8x8s32_t::execute_standard(
         const gemm_exec_ctx_t &ctx) const {
     using namespace memory_tracking::names;
-    auto a_type = pd()->desc()->a_type;
-    auto b_type = pd()->desc()->b_type;
-    auto c_type = pd()->desc()->c_type;
+    auto a_type = pd()->desc()->a_type();
+    auto b_type = pd()->desc()->b_type();
+    auto c_type = pd()->desc()->c_type();
 
     auto *compute_stream
             = utils::downcast<compute::compute_stream_t *>(ctx.stream());
 
-    auto m = pd()->desc()->m;
-    auto n = pd()->desc()->n;
-    auto k = pd()->desc()->k;
+    auto m = pd()->desc()->m();
+    auto n = pd()->desc()->n();
+    auto k = pd()->desc()->k();
 
-    bool transa = (pd()->desc()->transa == dnnl_trans);
-    bool transb = (pd()->desc()->transb == dnnl_trans);
+    bool transa = (pd()->desc()->transa() == dnnl_trans);
+    bool transb = (pd()->desc()->transb() == dnnl_trans);
 
     int cmask = 0;
     pd()->attr()->zero_points_.get(DNNL_ARG_DST, nullptr, &cmask, nullptr);
@@ -177,9 +177,9 @@ status_t gen9_gemm_x8x8s32_t::execute_standard(
     else
         offsetc_char = 'F';
 
-    auto lda = pd()->desc()->lda;
-    auto ldb = pd()->desc()->ldb;
-    auto ldc = pd()->desc()->ldc;
+    auto lda = pd()->desc()->lda();
+    auto ldb = pd()->desc()->ldb();
+    auto ldc = pd()->desc()->ldc();
 
     const int *ao_i32 = nullptr;
     const int *bo_i32 = nullptr;
@@ -195,8 +195,8 @@ status_t gen9_gemm_x8x8s32_t::execute_standard(
     auto eltwise_beta = pd()->attr_info.eltwise_beta;
     auto eltwise_scale = pd()->attr_info.eltwise_scale;
 
-    auto &a = GEMM_CTX_ARG_STORAGE(a);
-    auto &b = GEMM_CTX_ARG_STORAGE(b);
+    auto &a = GEMM_CTX_ARG_STORAGE(b);
+    auto &b = GEMM_CTX_ARG_STORAGE(a);
     auto &c = GEMM_CTX_ARG_STORAGE(c);
     auto &co = GEMM_CTX_ARG_STORAGE(c_zero_point);
 
@@ -271,7 +271,7 @@ status_t gen9_gemm_x8x8s32_t::execute_standard(
                         status = launch_x8x8s32(ctx, compute_stream, a, b, *acc,
                                 off_a_src, off_b_src, off_c, lda, ldb, m,
                                 size_m, size_n, size_k, eff_beta, ao, bo, co,
-                                offset_co_src, apply_co, 0, eltwise_alpha,
+                                offset_co_src, apply_co, false, eltwise_alpha,
                                 eltwise_beta, eltwise_scale);
                         if (status) return status;
                     }
@@ -283,7 +283,7 @@ status_t gen9_gemm_x8x8s32_t::execute_standard(
     if (do_scale) {
         status = launch_scale_x8x8s32(ctx, compute_stream, *acc, c,
                 offsetc_char, off_c0, m, n, ldc, alpha, beta, co, offset_co,
-                (int)alpha_is_zero, 1, eltwise_alpha, eltwise_beta,
+                (int)alpha_is_zero, true, eltwise_alpha, eltwise_beta,
                 eltwise_scale);
         if (status) return status;
     }

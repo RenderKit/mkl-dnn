@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2020 Intel Corporation
+# Copyright 2016-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #===============================================================================
+
+# XXX: Intel(R) oneAPI DPC++ Compiler doesn't support SEH with -fsycl option
+if(WIN32 AND DNNL_WITH_SYCL)
+    add_definitions(-DGTEST_HAS_SEH=0)
+endif()
 
 add_subdirectory (gtest)
 
@@ -44,12 +49,13 @@ endif()
 
 # TODO: enable me!
 file(GLOB PRIM_TEST_CASES_SRC
+                              test_comparison_operators.cpp
+                              test_primitive_cache_mt.cpp
                               test_iface_primitive_cache.cpp
                               test_iface_pd.cpp
                               test_iface_pd_iter.cpp
                               test_iface_attr.cpp
                               test_iface_handle.cpp
-                              test_iface_stream_attr.cpp
                               test_iface_runtime_dims.cpp
                               test_iface_runtime_attr.cpp
                               test_iface_wino_convolution.cpp
@@ -65,6 +71,8 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_lrn_backward.cpp
                               test_pooling_forward.cpp
                               test_pooling_backward.cpp
+                              test_pooling_v2_forward.cpp
+                              test_pooling_v2_backward.cpp
                               test_batch_normalization_f32.cpp
                               test_batch_normalization_s8.cpp
                               test_inner_product_forward.cpp
@@ -96,6 +104,7 @@ file(GLOB PRIM_TEST_CASES_SRC
                               test_matmul.cpp
                               test_resampling.cpp
                               test_global_scratchpad.cpp
+                              test_reduction.cpp
                               )
 
 if(NOT DNNL_USE_CLANG_SANITIZER)
@@ -115,6 +124,7 @@ endif()
 if(DNNL_TARGET_ARCH STREQUAL "X64")
     file(GLOB X64_PRIM_TEST_CASES_SRC
         test_isa_mask.cpp
+        test_isa_hints.cpp
         test_isa_iface.cpp
         )
     foreach(TEST_FILE ${X64_PRIM_TEST_CASES_SRC})
@@ -132,18 +142,25 @@ if(WIN32 AND ${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel")
             PROPERTIES COMPILE_FLAGS "/O1")
 endif()
 
+# Higher optimization levels cause access violation in _CxxThrowException.
+if(WIN32 AND DNNL_WITH_SYCL)
+    set_source_files_properties(
+            test_iface_runtime_dims.cpp
+            PROPERTIES COMPILE_FLAGS "-O1")
+endif()
+
 # Tests that don't support '--engine' parameter
-set_source_files_properties(test_cross_engine_reorder.cpp
-        PROPERTIES NO_ENGINE_PARAM true)
+set_source_files_properties(
+            test_cross_engine_reorder.cpp
+            test_comparison_operators.cpp
+            PROPERTIES NO_ENGINE_PARAM true)
 
-foreach(TEST_FILE ${PRIM_TEST_CASES_SRC})
-    get_filename_component(exe ${TEST_FILE} NAME_WE)
-
-    add_executable(${exe} ${MAIN_SRC_GTEST} ${TEST_FILE})
-    maybe_configure_windows_test(${exe} TARGET)
+function(register_gtest exe src)
+    add_executable(${exe} ${MAIN_SRC_GTEST} ${src})
+    add_definitions(-DNOMINMAX) # to allow std::max on Windows with parentheses
     target_link_libraries(${exe} ${LIB_NAME} dnnl_gtest ${EXTRA_SHARED_LIBS})
 
-    get_source_file_property(no_engine_param ${TEST_FILE} NO_ENGINE_PARAM)
+    get_source_file_property(no_engine_param ${src} NO_ENGINE_PARAM)
 
     if (NOT no_engine_param)
         target_compile_definitions(${exe} PUBLIC
@@ -151,21 +168,48 @@ foreach(TEST_FILE ${PRIM_TEST_CASES_SRC})
     endif()
 
     if(NOT DNNL_GPU_RUNTIME STREQUAL "NONE" AND NOT no_engine_param)
-        add_test(${exe}_cpu ${exe} COMMAND ${exe} --engine=cpu)
+        add_dnnl_test(${exe}_cpu ${exe} COMMAND ${exe} --engine=cpu)
         maybe_configure_windows_test(${exe}_cpu TEST)
 
-        add_test(${exe}_gpu ${exe} COMMAND ${exe} --engine=gpu)
+        add_dnnl_test(${exe}_gpu ${exe} COMMAND ${exe} --engine=gpu)
         maybe_configure_windows_test(${exe}_gpu TEST)
     else()
-        add_test(${exe} ${exe})
+        add_dnnl_test(${exe} ${exe})
         maybe_configure_windows_test(${exe} TEST)
+    endif()
+endfunction()
+
+set(skip_usm_pattern "^$") # no skip by default
+if(DNNL_WITH_SYCL)
+    # - cross_engine_reorder creates usm pointers on CPU and GPU that belong to
+    #   the different context, which causes synchronization issues.
+    #   FIXME: the library should handle this case gracefully.
+    set(skip_usm_pattern "(test_cross_engine_reorder)")
+endif()
+
+foreach(TEST_FILE ${PRIM_TEST_CASES_SRC})
+    get_filename_component(exe ${TEST_FILE} NAME_WE)
+    if(NOT ${exe} MATCHES "${skip_usm_pattern}" AND NOT DNNL_SYCL_CUDA)
+        register_gtest(${exe} ${TEST_FILE})
+    endif()
+
+    # Create additional buffer targets for SYCL.
+    if(DNNL_WITH_SYCL)
+        register_gtest(${exe}_buffer ${TEST_FILE})
+        target_compile_definitions(${exe}_buffer PUBLIC -DTEST_DNNL_DPCPP_BUFFER)
     endif()
 endforeach()
 
 add_subdirectory(api)
+add_subdirectory(internals)
+add_subdirectory(regression)
 
 if(DNNL_GPU_RUNTIME STREQUAL "OCL")
     add_subdirectory(ocl)
+endif()
+
+if(DNNL_WITH_SYCL)
+    add_subdirectory(sycl)
 endif()
 
 # vim: et ts=4 sw=4

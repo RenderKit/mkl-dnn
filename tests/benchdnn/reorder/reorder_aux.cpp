@@ -14,6 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <sstream>
+
 #include "dnnl_debug.hpp"
 
 #include "reorder/reorder.hpp"
@@ -35,42 +37,104 @@ const char *alg2str(alg_t alg) {
     }
 }
 
-flag_t str2flag(const char *str) {
-    if (!strcasecmp("conv_s8s8", str))
-        return FLAG_CONV_S8S8;
-    else if (!strcasecmp("gconv_s8s8", str))
-        return FLAG_GCONV_S8S8;
-    assert(!"unknown flag");
-    return FLAG_NONE;
+uint64_t str2flag(const char *str) {
+    uint64_t flag = FLAG_NONE;
+    if (!strcasecmp("conv_s8s8", str)) flag |= FLAG_CONV_S8S8;
+    if (!strcasecmp("gconv_s8s8", str)) flag |= FLAG_GCONV_S8S8;
+    if (!strcasecmp("conv_zp_comp", str)) flag |= FLAG_CONV_ZP_COMP;
+    if (!strcasecmp("gconv_zp_comp", str)) flag |= FLAG_GCONV_ZP_COMP;
+    if (strcasecmp("none", str) && flag == FLAG_NONE) assert(!"unknown flag");
+    return flag;
 }
 
-const char *flag2str(flag_t flag) {
-    switch (flag) {
-        case FLAG_NONE: return "";
-        case FLAG_CONV_S8S8: return "conv_s8s8";
-        case FLAG_GCONV_S8S8: return "gconv_s8s8";
-        default: assert(!"Invalid flag"); return "";
+std::string flag2str(uint64_t flag) {
+    std::stringstream s;
+    bool mult_entry = false;
+
+    if (!flag) return "none";
+
+#define CASE(_f, _l) \
+    do { \
+        if (flag & (_f)) { \
+            s << (mult_entry ? ":" : "") << #_l; \
+            mult_entry = true; \
+        } \
+    } while (0)
+    CASE(FLAG_CONV_S8S8, conv_s8s8);
+    CASE(FLAG_GCONV_S8S8, gconv_s8s8);
+    CASE(FLAG_CONV_ZP_COMP, conv_zp_comp);
+    CASE(FLAG_GCONV_ZP_COMP, gconv_zp_comp);
+#undef CASE
+
+    return s.str();
+}
+
+cross_engine_t str2cross_engine(const char *str) {
+    if (!strcasecmp("none", str)) return NONE;
+    if (!strcasecmp("cpu2gpu", str)) return CPU2GPU;
+    if (!strcasecmp("gpu2cpu", str)) return GPU2CPU;
+    assert(!"unknown cross engine");
+    return NONE;
+}
+
+const char *cross_engine2str(cross_engine_t cross_engine) {
+    switch (cross_engine) {
+        case NONE: return "none";
+        case CPU2GPU: return "cpu2gpu";
+        case GPU2CPU: return "gpu2cpu";
+        default: assert(!"unknown cross engine"); return "unknown cross engine";
     }
 }
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+float *prb_t::generate_oscales() {
+    const attr_t::scale_t &oscale = this->attr.oscale;
+    const int mask = attr_t::get_default_mask(oscale.policy);
+
+    int64_t uniq_scales = 1;
+    for (int d = 0; d < this->ndims; ++d)
+        if (mask & (1 << d)) uniq_scales *= this->reorder.dims[d];
+
+    float *scales = (float *)zmalloc(sizeof(float) * uniq_scales, 64);
+    SAFE_V(scales != nullptr ? OK : FAIL);
+    for (int d = 0; d < uniq_scales; ++d)
+        scales[d] = oscale.scale;
+    if (uniq_scales > 1) scales[uniq_scales - 1] /= 2.f;
+    return scales;
+}
+
+int32_t *prb_t::generate_zero_points(int arg) {
+    const attr_t::zero_points_t &zero_points = this->attr.zero_points;
+    if (zero_points.is_def(arg)) return nullptr;
+
+    const auto &e = zero_points.get(arg);
+    assert(e.policy == policy_t::COMMON);
+
+    int32_t *zp = (int32_t *)zmalloc(sizeof(int32_t), 4);
+    SAFE_V(zp != nullptr ? OK : FAIL);
+    zp[0] = e.value;
+    return zp;
+}
+
+std::ostream &operator<<(std::ostream &s, const prb_t &prb) {
     dump_global_params(s);
     settings_t def;
 
-    s << "--sdt=" << cfg2dt(p.conf_in) << " ";
-    s << "--ddt=" << cfg2dt(p.conf_out) << " ";
-    s << "--stag=" << p.reorder.tag_in << " ";
-    s << "--dtag=" << p.reorder.tag_out << " ";
+    s << "--sdt=" << cfg2dt(prb.conf_in) << " ";
+    s << "--ddt=" << cfg2dt(prb.conf_out) << " ";
+    s << "--stag=" << prb.reorder.tag_in << " ";
+    s << "--dtag=" << prb.reorder.tag_out << " ";
 
-    if (canonical || p.alg != def.alg[0])
-        s << "--alg=" << alg2str(p.alg) << " ";
-    if (canonical || p.oflag != def.oflag[0])
-        s << "--oflag=" << flag2str(p.oflag) << " ";
-    if (canonical || p.runtime_dim_mask != def.runtime_dim_mask[0])
-        s << "--runtime-dim-mask=" << p.runtime_dim_mask << " ";
+    if (canonical || prb.alg != def.alg[0])
+        s << "--alg=" << alg2str(prb.alg) << " ";
+    if (canonical || prb.oflag != def.oflag[0][0])
+        s << "--oflag=" << flag2str(prb.oflag) << " ";
+    if (canonical || prb.cross_engine != def.cross_engine[0])
+        s << "--cross-engine=" << cross_engine2str(prb.cross_engine) << " ";
+    if (canonical || prb.runtime_dim_mask != def.runtime_dim_mask[0])
+        s << "--runtime-dim-mask=" << prb.runtime_dim_mask << " ";
 
-    s << p.attr;
-    s << p.reorder.dims;
+    s << prb.attr;
+    s << prb.reorder.dims;
 
     return s;
 }

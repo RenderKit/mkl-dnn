@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -83,14 +83,24 @@ inline const T abs(const T &a) {
     return a >= 0 ? a : -a;
 }
 
-// Computes the modulus and returns the result as the least positive residue when
-// the divisor > 0.
+// Computes the modulus and returns the result as the least positive residue
+// when the divisor > 0.
 template <typename T>
 inline const T modulo(const T &dividend, const T &divisor) {
     static_assert(std::is_integral<T>::value, "T must be an integer type.");
     assert(divisor > 0);
     T result = dividend % divisor;
     return result < 0 ? result + divisor : result;
+}
+
+// Computes the additive inverse modulus and returns the result as the least
+// positive residue when the divisor > 0.
+template <typename T>
+inline const T additive_inverse_modulo(const T &dividend, const T &divisor) {
+    static_assert(std::is_integral<T>::value, "T must be an integer type.");
+    assert(divisor > 0);
+    T result = modulo(dividend, divisor);
+    return result > 0 ? divisor - result : 0;
 }
 
 template <typename T>
@@ -264,6 +274,22 @@ public:
     }
 };
 
+// Compile-time sequence of indices (part of C++14)
+template <size_t... Ints>
+struct index_sequence {};
+
+template <size_t N, size_t... Next>
+struct make_index_sequence_helper
+    : public make_index_sequence_helper<N - 1, N - 1, Next...> {};
+
+template <size_t... Next>
+struct make_index_sequence_helper<0, Next...> {
+    using type = index_sequence<Next...>;
+};
+
+// Generator of compile-time sequence of indices
+template <size_t N>
+using make_index_sequence = typename make_index_sequence_helper<N>::type;
 } // namespace nstl
 } // namespace impl
 } // namespace dnnl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,6 +27,9 @@
 
 namespace dnnl {
 namespace impl {
+
+struct exec_ctx_t;
+
 namespace memory_tracking {
 
 /* Memory tracking capabilities
@@ -156,6 +159,11 @@ enum {
     key_bnorm_tmp_diff_ss,
     key_bnorm_tmp_stats,
     key_bnorm_reduction,
+    key_brgemm_primitive_batch,
+    key_brgemm_primitive_buffer,
+    key_brgemm_primitive_buffer_a,
+    key_brgemm_primitive_buffer_b,
+    key_brgemm_primitive_buffer_comp,
     key_concat_iptrs,
     key_concat_istrides,
     key_concat_nelems,
@@ -165,12 +173,27 @@ enum {
     key_conv_amx_inp_buffer,
     key_conv_amx_tilecfg,
     key_conv_amx_tile_buffer,
+    key_conv_amx_wei_buffer,
     key_conv_amx_wsp_buffer,
     key_conv_bia_reduction,
     key_conv_bias_bf16_convert_wsp,
+    key_conv_cudnn,
+    key_conv_cudnn_algo,
+    key_conv_cudnn_filter,
+    key_conv_cudnn_temp,
+    key_conv_dst_bf16_convert_wsp,
+    key_conv_brgemm_addr_a,
+    key_conv_brgemm_addr_b,
+    key_conv_brgemm_batch,
+    key_conv_brgemm_buffer,
+    key_conv_brgemm_inp_buffer,
+    key_conv_brgemm_inp_buffer_mask,
+    key_conv_bwd_w_1st_bia_reorder,
+    key_conv_bwd_w_1st_wei_reorder,
     key_conv_gemm_acc,
     key_conv_gemm_col,
     key_conv_gemm_imtr,
+    key_conv_gemm_zp_src_comp,
     key_conv_int_dat_in_acc_dt,
     key_conv_padded_bias,
     key_conv_rtus_space,
@@ -183,6 +206,11 @@ enum {
     key_conv_wei_reduction,
     key_conv_wei_bia_reduction,
     key_conv_wei_bia_reduction_bctx,
+    key_conv_zero_point_flag,
+    key_conv_zero_point_pad,
+    key_deconv_bias,
+    key_deconv_sum,
+    key_deconv_zp,
     key_eltwise_diff_dst,
     key_eltwise_src,
     key_fusion_forward_scratchpad,
@@ -194,6 +222,7 @@ enum {
     key_iprod_dst_bf16_convert_wsp,
     key_iprod_dst_reorder,
     key_iprod_int_dat_in_acc_dt,
+    key_lnorm_inv_sqrtvar,
     key_lnorm_tmp_mean,
     key_lnorm_tmp_var,
     key_lnorm_tmp_diff_ss,
@@ -204,8 +233,10 @@ enum {
     key_pool_ind_plain2blocked_cvt,
     key_pool_src_bf16cvt,
     key_pool_src_plain2blocked_cvt,
+    key_prelu_reduction,
     key_reducer_space,
     key_reducer_space_bctx,
+    key_reduction,
     key_reorder_cross_space,
     key_reorder_space,
     key_reorder_scales,
@@ -287,6 +318,13 @@ inline size_t buffer_protect_size() {
 }
 
 struct registry_t {
+    struct entry_t {
+        size_t offset, size, capacity, alignment;
+
+        // apply offset and alignment + check memory_debug (host/cpu only)
+        const void *compute_ptr(const void *base_ptr) const;
+    };
+
     // perf_align is the desired alignment for performance.
     // data_align is the minimum data alignment required for functionality,
     //    this parameter is included for memory debugging purposes.
@@ -309,40 +347,17 @@ struct registry_t {
         size_ += capacity;
     }
 
-    void *get(const key_t &key, void *base_ptr) const {
-        if (!base_ptr) {
-            assert(size() == 0);
-            return nullptr;
-        }
-        if (offset_map_.count(key) != 1) return nullptr;
-
-        return get(offset_map_.at(key), base_ptr);
-    }
-
-    std::unique_ptr<memory_storage_t> get_memory_storage(
-            const key_t &key, const memory_storage_t *base_mem_storage) const {
-        if (!base_mem_storage) {
-            assert(size() == 0);
-            return nullptr;
-        }
-        if (offset_map_.count(key) != 1) return nullptr;
-
-        const auto &e = offset_map_.at(key);
-        const size_t aligned_offset
-                = reinterpret_cast<size_t>(utils::align_ptr<char>(
-                        reinterpret_cast<char *>(e.offset), e.alignment));
-        assert(aligned_offset + e.size <= size());
-        return base_mem_storage->get_sub_storage(aligned_offset, e.size);
+    entry_t get(const key_t &key) const {
+        if (size() == 0 || offset_map_.count(key) != 1)
+            return entry_t {0, 0, 0, 0};
+        return offset_map_.at(key);
     }
 
     size_t size() const { return size_; }
 
     registrar_t registrar();
-    grantor_t grantor(const memory_storage_t *mem_storage) const;
-
-    struct entry_t {
-        size_t offset, size, capacity, alignment;
-    };
+    grantor_t grantor(const memory_storage_t *mem_storage,
+            const exec_ctx_t &exec_ctx) const;
 
     template <typename return_type>
     class common_iterator_t {
@@ -372,11 +387,10 @@ struct registry_t {
             return iter != rhs.iter;
         }
         std::pair<return_type, size_t> operator*() const {
-            const void *ptr_start = nullptr;
-            const entry_t &e = iter->second;
-            ptr_start = get(e, base_ptr);
+            const entry_t &entry = iter->second;
+            const void *ptr_start = entry.compute_ptr(base_ptr);
             return std::pair<return_type, size_t> {
-                    (return_type)ptr_start, e.size};
+                    (return_type)ptr_start, entry.size};
         }
     };
     typedef common_iterator_t<void *> iterator;
@@ -397,27 +411,6 @@ struct registry_t {
 protected:
     std::unordered_map<key_t, entry_t> offset_map_;
     size_t size_ = 0;
-
-    static const void *get(const entry_t &e, const void *base_ptr) {
-        const char *ptr = reinterpret_cast<const char *>(base_ptr) + e.offset;
-        const char *aligned_ptr
-                = utils::align_ptr<const char>(ptr, get_alignment(e.alignment));
-        if (memory_debug::is_mem_debug_overflow()
-                && e.size % getpagesize() != 0) {
-            // Align to end of page
-            size_t page_end_offset
-                    = utils::rnd_up(e.size, e.alignment) % getpagesize();
-            aligned_ptr += getpagesize() - page_end_offset;
-            if (aligned_ptr - getpagesize() > ptr) aligned_ptr -= getpagesize();
-            assert((size_t)aligned_ptr % e.alignment == 0);
-        }
-        assert(aligned_ptr + e.size
-                <= ptr + e.capacity - buffer_protect_size());
-        return aligned_ptr;
-    }
-    static void *get(const entry_t &e, void *base_ptr) {
-        return const_cast<void *>(get(e, (const void *)base_ptr));
-    }
 };
 
 struct registrar_t {
@@ -453,29 +446,55 @@ protected:
 
 struct grantor_t {
     grantor_t(const registry_t &registry,
-            const memory_storage_t *base_mem_storage)
+            const memory_storage_t *base_mem_storage,
+            const exec_ctx_t &exec_ctx)
         : registry_(registry)
         , prefix_(0)
-        , base_mem_storage_(base_mem_storage) {}
+        , base_mem_storage_(base_mem_storage)
+        , exec_ctx_(&exec_ctx) {}
     grantor_t(const grantor_t &parent, const key_t &prefix)
         : registry_(parent.registry_)
         , prefix_(make_prefix(parent.prefix_, prefix))
-        , base_mem_storage_(parent.base_mem_storage_) {}
+        , base_mem_storage_(parent.base_mem_storage_)
+        , exec_ctx_(parent.exec_ctx_) {}
 
     template <typename T = void>
     T *get(const key_t &key) const {
-        if (!base_mem_storage_) return nullptr;
-        void *base_ptr = nullptr;
-        auto status = base_mem_storage_->get_data_handle(&base_ptr);
-        assert(status == status::success);
-        MAYBE_UNUSED(status);
-        return (T *)registry_.get(make_key(prefix_, key), base_ptr);
+        if (!base_mem_storage_) {
+            assert(registry_.size() == 0);
+            return nullptr;
+        }
+        auto e = registry_.get(make_key(prefix_, key));
+        if (e.size == 0) return nullptr;
+
+        char *host_storage_ptr = get_host_storage_ptr(base_mem_storage_);
+        char *base_ptr = host_storage_ptr + base_mem_storage_->base_offset();
+        return (T *)e.compute_ptr(base_ptr);
     }
 
     std::unique_ptr<memory_storage_t> get_memory_storage(
             const key_t &key) const {
-        return registry_.get_memory_storage(
-                make_key(prefix_, key), base_mem_storage_);
+        if (!base_mem_storage_) {
+            assert(registry_.size() == 0);
+            return nullptr;
+        }
+        auto e = registry_.get(make_key(prefix_, key));
+        if (e.size == 0) return nullptr;
+
+        if (is_cpu_engine(base_mem_storage_)) {
+            char *host_storage_ptr = get_host_storage_ptr(base_mem_storage_);
+            char *base_ptr
+                    = host_storage_ptr + base_mem_storage_->base_offset();
+            char *aligned_ptr = (char *)e.compute_ptr(base_ptr);
+            size_t aligned_offset = size_t(aligned_ptr - host_storage_ptr);
+            return base_mem_storage_->get_sub_storage(aligned_offset, e.size);
+        }
+
+        const size_t aligned_offset
+                = reinterpret_cast<size_t>(utils::align_ptr<char>(
+                        reinterpret_cast<char *>(e.offset), e.alignment));
+        assert(aligned_offset + e.size <= registry_.size());
+        return base_mem_storage_->get_sub_storage(aligned_offset, e.size);
     }
 
     const memory_storage_t *get_base_storage() const {
@@ -487,15 +506,19 @@ protected:
     const registry_t &registry_;
     const key_t prefix_;
     const memory_storage_t *base_mem_storage_;
+    const exec_ctx_t *exec_ctx_;
+
+private:
+    char *get_host_storage_ptr(const memory_storage_t *storage) const;
+    bool is_cpu_engine(const memory_storage_t *mem_storage) const;
 };
 
 inline registrar_t registry_t::registrar() {
     return registrar_t(*this);
 }
-
 inline grantor_t registry_t::grantor(
-        const memory_storage_t *mem_storage) const {
-    return grantor_t(*this, mem_storage);
+        const memory_storage_t *mem_storage, const exec_ctx_t &exec_ctx) const {
+    return grantor_t(*this, mem_storage, exec_ctx);
 }
 
 } // namespace memory_tracking

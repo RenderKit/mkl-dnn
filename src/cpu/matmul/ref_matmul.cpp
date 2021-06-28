@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@
 #include "cpu/cpu_primitive.hpp"
 #include "cpu/simple_q10n.hpp"
 
+#include "cpu/matmul/matmul_utils.hpp"
 #include "cpu/matmul/ref_matmul.hpp"
 
 namespace dnnl {
@@ -43,55 +44,71 @@ status_t ref_matmul_t<src_type, weights_type, dst_type, acc_type>::execute_ref(
     auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
 
     DEFINE_SCALES_BUFFER(scales);
-    DEFINE_ZERO_POINT_VALUE(src_zero_point, DNNL_ARG_SRC);
+    DEFINE_ZERO_POINTS_BUFFER(src_zero_point, DNNL_ARG_SRC);
     DEFINE_ZERO_POINT_VALUE(weights_zero_point, DNNL_ARG_WEIGHTS);
-    DEFINE_ZERO_POINT_VALUE(dst_zero_point, DNNL_ARG_DST);
+    DEFINE_ZERO_POINTS_BUFFER(dst_zero_point, DNNL_ARG_DST);
 
     const auto src_d = ctx.memory_mdw(DNNL_ARG_SRC, pd()->src_md());
     const auto weights_d = ctx.memory_mdw(DNNL_ARG_WEIGHTS, pd()->weights_md());
     const auto dst_d = ctx.memory_mdw(DNNL_ARG_DST, pd()->dst_md());
     const auto bia_d = ctx.memory_mdw(DNNL_ARG_BIAS, pd()->weights_md(1));
 
-    const bool batched = pd()->batched();
     const bool non_default_attrs = !pd()->attr()->has_default_values();
-    const bool do_sum = pd()->attr()->post_ops_.contain(primitive_kind::sum, 0)
-            && pd()->attr()->post_ops_.entry_[0].sum.scale != 0.f;
-    const float sum_scale
-            = do_sum ? pd()->attr()->post_ops_.entry_[0].sum.scale : 0.f;
 
-    const dim_t MB = batched ? dst_d.dims()[0] : 1;
-    const dim_t M = dst_d.dims()[batched + 0];
-    const dim_t N = dst_d.dims()[batched + 1];
-    const dim_t K = src_d.dims()[batched + 1];
+    matmul_helper_t helper(src_d, weights_d, dst_d);
+    const int ndims = pd()->ndims();
+    const int batch_ndims = ndims - 2;
+    const dim_t M = helper.M();
+    const dim_t N = helper.N();
+    const dim_t K = helper.K();
+    const dim_t batch = helper.batch();
+
+    const int src_mask
+            = utils::get_dims_mask(dst_d.dims(), src_d.dims(), ndims);
+    const int wei_mask
+            = utils::get_dims_mask(dst_d.dims(), weights_d.dims(), ndims);
+    const int bia_mask
+            = utils::get_dims_mask(dst_d.dims(), bia_d.dims(), ndims);
+
+    // zp_idx_mult = 1 for per_dim1 zero points and 0, otherwise
+    const int src_zp_idx_mult
+            = !pd()->attr()->zero_points_.common(DNNL_ARG_SRC);
+    const int dst_zp_idx_mult
+            = !pd()->attr()->zero_points_.common(DNNL_ARG_DST);
 
     // mm kernel
-    auto ker = [&](dim_t mb, dim_t m, dim_t n) {
+    auto ker = [&](const dims_t dst_dims_idx, dim_t m, dim_t n) {
         acc_data_t acc = 0;
-        if (batched)
-            for (dim_t k = 0; k < K; ++k)
-                acc += (src[src_d.off(mb, m, k)] - src_zero_point)
-                        * (weights[weights_d.off(mb, k, n)]
-                                - weights_zero_point);
-        else
-            for (dim_t k = 0; k < K; ++k)
-                acc += (src[src_d.off(m, k)] - src_zero_point)
-                        * (weights[weights_d.off(k, n)] - weights_zero_point);
+        dims_t src_dims_idx, weights_dims_idx;
+        utils::copy_dims_with_mask(src_dims_idx, dst_dims_idx, ndims, src_mask);
+        utils::copy_dims_with_mask(
+                weights_dims_idx, dst_dims_idx, ndims, wei_mask);
+        src_dims_idx[ndims - 2] = m;
+        weights_dims_idx[ndims - 1] = n;
+        auto &src_k_dim = src_dims_idx[ndims - 1];
+        auto &wei_k_dim = weights_dims_idx[ndims - 2];
+        for (dim_t k = 0; k < K; ++k) {
+            src_k_dim = k;
+            wei_k_dim = k;
+            acc_data_t s
+                    = static_cast<acc_data_t>(src[src_d.off_v(src_dims_idx)]);
+            if (src_zero_point)
+                s -= static_cast<acc_data_t>(
+                        src_zero_point[src_zp_idx_mult * k]);
+
+            acc += (acc_data_t)s
+                    * (weights[weights_d.off_v(weights_dims_idx)]
+                            - weights_zero_point);
+        }
         return acc;
     };
 
     // bias section
     const data_type_t bia_dt = pd()->desc()->bias_desc.data_type;
-    dim_t bia_stride_mb {}, bia_stride_m {}, bia_stride_n {};
-    if (bia_dt != data_type::undef) {
-        const auto &bia_strides = bia_d.blocking_desc().strides;
-        bia_stride_mb = batched && bia_d.dims()[0] > 1 ? bia_strides[0] : 0;
-        bia_stride_m
-                = bia_d.dims()[batched + 0] > 1 ? bia_strides[batched + 0] : 0;
-        bia_stride_n
-                = bia_d.dims()[batched + 1] > 1 ? bia_strides[batched + 1] : 0;
-    }
-    auto get_bias = [&](dim_t mb, dim_t m, dim_t n) -> float {
-        dim_t off = mb * bia_stride_mb + m * bia_stride_m + n * bia_stride_n;
+    auto get_bias = [&](const dims_t &dst_dims_idx) -> float {
+        dims_t bia_dims_idx;
+        utils::copy_dims_with_mask(bia_dims_idx, dst_dims_idx, ndims, bia_mask);
+        dim_t off = bia_d.off_v(bia_dims_idx);
         return math::get_bias(bias, off, bia_dt);
     };
 
@@ -99,28 +116,30 @@ status_t ref_matmul_t<src_type, weights_type, dst_type, acc_type>::execute_ref(
     const dim_t scale_stride = pd()->attr()->output_scales_.mask_ == 0 ? 0 : 1;
 
     // computations
-    parallel_nd(MB, M, N, [&](dim_t mb, dim_t m, dim_t n) {
-        auto &dst_value = dst[batched ? dst_d.off(mb, m, n) : dst_d.off(m, n)];
-
-        acc_data_t acc = ker(mb, m, n);
+    parallel_nd(batch, M, N, [&](dim_t mb, dim_t m, dim_t n) {
+        dims_t dst_dims_idx;
+        // account for M, N dims for index calculations
+        const size_t l_offset = mb * M * N + m * N + n;
+        utils::l_dims_by_l_offset(dst_dims_idx, l_offset, dst_d.dims(), ndims);
+        auto &dst_value = dst[dst_d.off_v(dst_dims_idx)];
+        acc_data_t acc = ker(dst_dims_idx, m, n);
+        float res = acc;
         if (bias || non_default_attrs) {
-            float res = acc;
-            if (bias) res += get_bias(mb, m, n);
+            if (bias) res += get_bias(dst_dims_idx);
             res *= scales[scale_stride * n];
-            if (do_sum) res = sum_scale * dst_value + res;
-            if (eltwise_ker_) res = eltwise_ker_->compute_scalar(res);
-            res += (float)dst_zero_point;
-            if (utils::one_of(dst_type, data_type::f32, data_type::bf16))
-                dst_value = res;
-            else
-                dst_value = cpu::saturate<dst_data_t>(
-                        cpu::out_round<int32_t>(res));
-        } else {
-            if (utils::one_of(dst_type, data_type::f32, data_type::bf16))
-                dst_value = (dst_data_t)acc;
-            else
-                dst_value = cpu::saturate<dst_data_t>(acc);
+
+            ref_post_ops_t::args_t args;
+            args.dst_val = dst_value;
+            args.ctx = &ctx;
+            args.l_offset = l_offset;
+            args.dst_md = pd()->dst_md();
+            ref_post_ops->execute(res, args);
+
+            if (dst_zero_point)
+                res += (float)dst_zero_point[dst_zp_idx_mult * n];
         }
+        dst_value = cpu::saturate_and_round<dst_data_t>(res);
+        utils::dim_iterator(dst_d.dims(), dst_dims_idx, batch_ndims);
     });
 
     return status::success;

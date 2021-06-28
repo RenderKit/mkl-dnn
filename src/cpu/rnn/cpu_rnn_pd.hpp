@@ -50,9 +50,6 @@ protected:
         if (is_lstm_peephole()
                 && weights_peephole_md_.format_kind == format_kind::any)
             CHECK(memory_desc_init_by_tag(weights_peephole_md_, ldgo));
-        if (is_lstm_projection()
-                && weights_projection_md_.format_kind == format_kind::any)
-            CHECK(memory_desc_init_by_tag(weights_projection_md_, ldio));
         if (with_bias() && bias_md_.format_kind == format_kind::any)
             CHECK(memory_desc_init_by_tag(bias_md_, ldgo));
         if (with_dst_iter() && dst_iter_md_.format_kind == format_kind::any)
@@ -93,39 +90,53 @@ protected:
                     && (weights_layer_md_.format_desc.rnn_packed_desc.format
                             == dnnl_ldigo_p);
         else
-            ok = ok && rnn_utils::is_ldigo(&weights_layer_md_);
+            ok = ok
+                    && (rnn_utils::is_ldigo(&weights_layer_md_)
+                            || rnn_utils::is_ldigo_blocked(&weights_layer_md_));
 
         if (weights_iter_md_.format_kind == format_kind::rnn_packed)
             ok = ok
                     && (weights_iter_md_.format_desc.rnn_packed_desc.format
                             == dnnl_ldigo_p);
         else
-            ok = ok && rnn_utils::is_ldigo(&weights_iter_md_);
+            ok = ok
+                    && (rnn_utils::is_ldigo(&weights_iter_md_)
+                            || rnn_utils::is_ldigo_blocked(&weights_iter_md_));
 
         ok = ok
-                && IMPLICATION(!is_zero_md(&weights_peephole_md_),
+                && IMPLICATION(is_lstm_peephole(),
                         memory_desc_matches_tag(weights_peephole_md_, ldgo));
 
-        ok = ok
-                && IMPLICATION(!is_zero_md(&weights_projection_md_),
-                        memory_desc_matches_tag(weights_projection_md_, ldio));
+        if (is_lstm_projection()) {
+            if (weights_projection_md_.format_kind == format_kind::rnn_packed)
+                ok = ok
+                        && (weights_projection_md_.format_desc.rnn_packed_desc
+                                        .format
+                                == dnnl_ldio_p);
+            else
+                ok = ok
+                        && (rnn_utils::is_ldio(&weights_projection_md_)
+                                || rnn_utils::is_ldio_blocked(
+                                        &weights_projection_md_));
+        }
 
         ok = ok
-                && IMPLICATION(!is_zero_md(&bias_md_),
-                        memory_desc_matches_tag(bias_md_, ldgo));
+                && IMPLICATION(
+                        with_bias(), memory_desc_matches_tag(bias_md_, ldgo));
 
-        /* Int8 is supported only for packed weights */
+        /* Int8 is supported only for packed weights, if not BRGEMM version */
         data_type_t weights_iter_dt = weights_iter_md_.data_type;
         data_type_t weights_layer_dt = weights_layer_md_.data_type;
-        ok = ok
-                && IMPLICATION(weights_iter_dt == s8,
-                        weights_iter_md_.format_kind
-                                == format_kind::rnn_packed);
-        ok = ok
-                && IMPLICATION(weights_layer_dt == s8,
-                        weights_layer_md_.format_kind
-                                == format_kind::rnn_packed);
-
+        if (!rnn_utils::is_ldigo_blocked(&weights_iter_md_))
+            ok = ok
+                    && IMPLICATION(weights_iter_dt == s8,
+                            weights_iter_md_.format_kind
+                                    == format_kind::rnn_packed);
+        if (!rnn_utils::is_ldigo_blocked(&weights_layer_md_))
+            ok = ok
+                    && IMPLICATION(weights_layer_dt == s8,
+                            weights_layer_md_.format_kind
+                                    == format_kind::rnn_packed);
         return ok ? status::success : status::unimplemented;
     }
 };
@@ -235,14 +246,14 @@ protected:
             ok = ok && rnn_utils::is_ldgoi(&weights_iter_md_);
 
         ok = ok
-                && IMPLICATION(!is_zero_md(&weights_peephole_md_),
+                && IMPLICATION(is_lstm_peephole(),
                         memory_desc_matches_tag(weights_peephole_md_, ldgo));
         ok = ok
-                && IMPLICATION(!is_zero_md(&weights_projection_md_),
+                && IMPLICATION(is_lstm_projection(),
                         memory_desc_matches_tag(weights_projection_md_, ldoi));
         ok = ok
-                && IMPLICATION(!is_zero_md(&bias_md_),
-                        memory_desc_matches_tag(bias_md_, ldgo));
+                && IMPLICATION(
+                        with_bias(), memory_desc_matches_tag(bias_md_, ldgo));
 
         ok = ok && is_blocked(diff_src_layer_md_, 3, true)
                 && is_blocked(diff_dst_layer_md_, 3, true);

@@ -9,7 +9,7 @@ Some primitives in the library support input/output tensors with the INT8
 reduced precision inference on the compatible hardware.
 
 Related materials:
-- [Lower Numerical Precision Deep Learning Inference and Training](https://software.intel.com/en-us/articles/lower-numerical-precision-deep-learning-inference-and-training)
+- [Lower Numerical Precision Deep Learning Inference and Training](https://software.intel.com/content/www/us/en/develop/articles/lower-numerical-precision-deep-learning-inference-and-training)
 - An example with annotations: @ref dev_guide_inference_int8
 
 ## Quantization Model
@@ -175,9 +175,8 @@ API:
 - C: @ref dnnl_primitive_attr_set_output_scales
 - C++: @ref dnnl::primitive_attr::set_output_scales
 
-The primitives do not support output scales if source (and weights) tensors
-are not of the int8 data type. In other words, regular `f32` convolution cannot
-scale the output result.
+Primitives support output scales only when the data type of computation is an
+integer.  
 
 The parameters (C++ API for simplicity):
 ~~~cpp

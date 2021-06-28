@@ -16,7 +16,7 @@
 
 #include <assert.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "concat_pd.hpp"
@@ -35,7 +35,7 @@ status_t dnnl_concat_primitive_desc_create(
     bool args_ok = !any_null(concat_pd_iface, src_mds) && n > 0;
     if (!args_ok) return invalid_arguments;
 
-    if (attr == NULL) attr = &default_attr();
+    if (attr == nullptr) attr = &default_attr();
 
     const int ndims = src_mds[0].ndims;
     const dims_t &dims = src_mds[0].dims;
@@ -77,8 +77,10 @@ status_t dnnl_concat_primitive_desc_create(
     for (auto c = engine->get_concat_implementation_list(); *c; ++c) {
         if ((*c)(&concat_pd, engine, attr, dst_md, n, concat_dim, src_mds)
                 == success) {
-            return safe_ptr_assign<primitive_desc_iface_t>(*concat_pd_iface,
+            auto status = safe_ptr_assign(*concat_pd_iface,
                     new primitive_desc_iface_t(concat_pd, engine));
+            if (status != status::success) delete concat_pd;
+            return status;
         }
     }
     return unimplemented;

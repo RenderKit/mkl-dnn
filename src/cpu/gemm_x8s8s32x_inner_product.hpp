@@ -31,6 +31,9 @@
 #include "cpu/gemm_inner_product_utils.hpp"
 
 #include "cpu/cpu_inner_product_pd.hpp"
+#if DNNL_X64
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
+#endif
 
 namespace dnnl {
 namespace impl {
@@ -48,7 +51,7 @@ struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_t {
         status_t init(engine_t *engine) {
             using namespace data_type;
 
-            bool ok = true && is_fwd() && !has_zero_dim_memory()
+            const bool ok = true && is_fwd() && !has_zero_dim_memory()
                     && src_md()->data_type == src_type
                     && dst_md()->data_type == dst_type
                     && weights_md()->data_type == s8
@@ -58,10 +61,13 @@ struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_t {
                     && attr()->has_default_values(
                             primitive_attr_t::skip_mask_t::oscale
                             | primitive_attr_t::skip_mask_t::post_ops)
-                    && output_scales_mask_ok() && post_ops_ok()
+                    && output_scales_mask_ok()
                     && set_default_params() == status::success
                     && dense_gemm_consitency_check(
-                            src_md(), weights_md(), dst_md());
+                            src_md(), weights_md(), dst_md())
+                    && inner_product_utils::post_ops_ok(
+                            attr()->post_ops_, &dst_md_);
+
             if (!ok) return status::unimplemented;
 
             bool do_sum = attr()->post_ops_.find(primitive_kind::sum) >= 0;
@@ -80,20 +86,6 @@ struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_t {
             return mask == 0 || mask == 1 << 1;
         }
 
-        bool post_ops_ok() const {
-            auto const &po = attr()->post_ops_;
-            auto is_eltwise
-                    = [&](int idx) { return po.entry_[idx].is_eltwise(false); };
-            auto is_sum = [&](int idx) { return po.entry_[idx].is_sum(false); };
-            switch (po.len_) {
-                case 0: return true; // no post_ops
-                case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
-                case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
-                default: return false;
-            }
-            return false;
-        }
-
     private:
         void init_scratchpad() {
             if (!dst_is_acc_) {
@@ -105,9 +97,7 @@ struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_t {
         }
     };
 
-    gemm_x8s8s32x_inner_product_fwd_t(const pd_t *apd) : primitive_t(apd) {
-        pp_kernel_.reset(pp_kernel_t::create(pd(), false));
-    }
+    gemm_x8s8s32x_inner_product_fwd_t(const pd_t *apd) : primitive_t(apd) {}
 
     typedef typename prec_traits<dst_type>::type data_t;
 
@@ -115,6 +105,11 @@ struct gemm_x8s8s32x_inner_product_fwd_t : public primitive_t {
     typedef typename prec_traits<data_type::s8>::type wei_data_t;
     typedef typename prec_traits<dst_type>::type dst_data_t;
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
+
+    status_t init(engine_t *engine) override {
+        CHECK(safe_ptr_assign(pp_kernel_, pp_kernel_t::create(pd(), false)));
+        return pp_kernel_->create_kernel();
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         return execute_forward(ctx);

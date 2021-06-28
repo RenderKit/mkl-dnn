@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ inline status_t get_depthwise_conv_desc(convolution_desc_t &cd_dw,
     const int ndims = src_dw_d.ndims();
     if (ndims != 4) return status::unimplemented;
 
-    if (dw_po_index == -1 || dw_po_index >= attr_1x1.post_ops_.len_
+    if (dw_po_index == -1 || dw_po_index >= attr_1x1.post_ops_.len()
             || !attr_1x1.post_ops_.entry_[dw_po_index].is_convolution())
         return status::invalid_arguments;
 
@@ -49,10 +49,11 @@ inline status_t get_depthwise_conv_desc(convolution_desc_t &cd_dw,
                 dw_po.count, dw_po.mask, dw_po.scales));
     }
 
-    auto &len = attr_dw.post_ops_.len_;
-    for (int i = dw_po_index + 1; i < attr_1x1.post_ops_.len_; ++i) {
-        CHECK(attr_dw.post_ops_.entry_[len++].copy_from(
-                attr_1x1.post_ops_.entry_[i]));
+    auto dw_po_len = attr_1x1.post_ops_.len() - (dw_po_index + 1);
+    attr_dw.post_ops_.entry_.resize(dw_po_len);
+    for (int i = 0; i < dw_po_len; ++i) {
+        CHECK(attr_dw.post_ops_.entry_[i].copy_from(
+                attr_1x1.post_ops_.entry_[i + dw_po_index + 1]));
     }
 
     attr_dw.scratchpad_mode_ = attr_1x1.scratchpad_mode_;
@@ -77,8 +78,13 @@ inline status_t get_depthwise_conv_desc(convolution_desc_t &cd_dw,
 
     memory_desc_t src_md, weights_md, bias_md, dst_md;
 
-    dnnl_memory_desc_init_by_tag(&src_md, ndims, src_dw_md.dims,
-            src_dw_md.data_type, format_tag::any);
+    const auto src_dw_tag = src_dw_d.matches_one_of_tag(
+            format_tag::nChw16c, format_tag::nChw8c, format_tag::nhwc);
+    const auto data_tag
+            = (src_dw_tag == format_tag::undef) ? format_tag::any : src_dw_tag;
+
+    dnnl_memory_desc_init_by_tag(
+            &src_md, ndims, src_dw_md.dims, src_dw_md.data_type, data_tag);
 
     dnnl_memory_desc_init_by_tag(
             &weights_md, ndims + 1, weights_tz, dw_po.wei_dt, format_tag::any);
@@ -88,7 +94,7 @@ inline status_t get_depthwise_conv_desc(convolution_desc_t &cd_dw,
                 &bias_md, 1, bias_tz, dw_po.bias_dt, format_tag::a);
 
     dnnl_memory_desc_init_by_tag(
-            &dst_md, ndims, dst_tz, dw_po.dst_dt, format_tag::any);
+            &dst_md, ndims, dst_tz, dw_po.dst_dt, data_tag);
 
     CHECK(conv_desc_init(&cd_dw, prop_kind::forward_inference,
             alg_kind::convolution_auto, &src_md, &weights_md,

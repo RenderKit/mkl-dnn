@@ -16,18 +16,23 @@
 
 #include <memory>
 
-#include "dnnl.h"
-#include "engine.hpp"
-#include "nstl.hpp"
-#include "primitive.hpp"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
+#include "engine.hpp"
+#include "memory.hpp"
+#include "nstl.hpp"
+#include "primitive.hpp"
 #include "utils.hpp"
 
 #include "cpu/cpu_engine.hpp"
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include "gpu/ocl/ocl_engine.hpp"
+#endif
+
+#ifdef DNNL_WITH_SYCL
+#include "sycl/sycl_engine.hpp"
 #endif
 
 namespace dnnl {
@@ -44,6 +49,10 @@ static inline std::unique_ptr<engine_factory_t> get_engine_factory(
         return std::unique_ptr<engine_factory_t>(
                 new gpu::ocl::ocl_engine_factory_t(kind));
     }
+#endif
+#ifdef DNNL_WITH_SYCL
+    if (runtime_kind == runtime_kind::sycl)
+        return sycl::get_engine_factory(kind);
 #endif
     return nullptr;
 }

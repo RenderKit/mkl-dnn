@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,8 +18,9 @@
 #define COMMON_PRIMITIVE_HPP
 
 #include <assert.h>
+#include <atomic>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "memory_storage.hpp"
@@ -65,36 +66,26 @@ struct primitive_t : public c_compatible {
 protected:
     template <typename impl_type, typename pd_t>
     static status_t create_primitive_common(
-            std::shared_ptr<primitive_t> &primitive, const pd_t *pd,
-            engine_t *engine, bool use_global_scratchpad,
-            bool is_primitive_nested) {
-        const auto print_verbose = [&](bool cache_hit, double time) {
-            if (get_verbose() >= 2) {
-                const char *str = cache_hit ? "dnnl_verbose,create:cache_hit"
-                                            : "dnnl_verbose,create:cache_miss";
-                printf("%s,%s,%g\n", str, primitive->pd()->info(engine), time);
-                fflush(0);
-            }
-        };
+            std::pair<std::shared_ptr<primitive_t>, bool> &primitive,
+            const pd_t *pd, engine_t *engine, bool use_global_scratchpad) {
+
         auto &global_primitive_cache = primitive_cache();
-        double ms = get_msec();
         primitive_hashing::key_t key(pd, engine, dnnl_get_max_threads());
 
         std::promise<primitive_cache_t::cache_value_t> p_promise;
-        const bool need_lock = !is_primitive_nested;
         // Try to get the shared future from the cache, if it's missing then
         // a shared future with no shared state is returned and the passed
         // shared future is added, otherwise a valid shared future is returned
         // and no insertion is performed.
         auto p_future = global_primitive_cache.get_or_add(
-                key, p_promise.get_future(), need_lock);
+                key, p_promise.get_future());
 
-        bool cache_hit = p_future.valid();
+        bool is_from_cache = p_future.valid();
 
         auto status = status::success;
         std::shared_ptr<primitive_t> p;
 
-        if (cache_hit) {
+        if (is_from_cache) {
             // The requested primitive is present in the cache or is being
             // created by another thread.
             p = p_future.get().primitive;
@@ -111,17 +102,26 @@ protected:
                 // Remove the shared future from the cache because it's
                 // invalidated. An invalidated shared future is the one that
                 // stores a nullptr.
-                global_primitive_cache.remove_if_invalidated(key, need_lock);
+                global_primitive_cache.remove_if_invalidated(key);
                 return status;
             } else {
                 // Store the created primitive in the shared future and notify
                 // the waiting threads.
                 p_promise.set_value({p, status});
+
+                // The key_t contains pointers to op_desc and attr objects that
+                // reside in pd. When primitive_t is created it copies the pd
+                // and hence contains a copy.
+                // Since the created primitive_t is stored in the cache with
+                // the corresponding key, the key must contain pointers to
+                // op_desc and attr that reside in the coppied pd
+                // in the primitive_t.
+                // Therefore the pointers in the key, which has already been put
+                // into the cache, must be updated.
+                global_primitive_cache.update_entry(key, p->pd().get());
             }
         }
-        primitive = p;
-        ms = get_msec() - ms;
-        print_verbose(cache_hit, ms);
+        primitive = std::make_pair(p, is_from_cache);
         return status;
     }
 
@@ -209,6 +209,9 @@ private:
     std::unordered_map<key_t *, mapped_t> primitive_to_resource_;
 };
 
+status_t primitive_execute(
+        const primitive_iface_t *primitive_iface, exec_ctx_t &ctx);
+
 } // namespace impl
 } // namespace dnnl
 
@@ -216,10 +219,16 @@ private:
     typename std::remove_cv<typename std::remove_pointer<t>::type>::type
 
 #define CTX_IN_MEM(type, arg) \
-    static_cast<const ARG_TYPE(type) *>(CTX_IN_STORAGE(arg).data_handle())
+    static_cast<const ARG_TYPE(type) *>(ctx.host_ptr(arg))
 
-#define CTX_OUT_MEM(type, arg) \
-    static_cast<ARG_TYPE(type) *>(CTX_OUT_STORAGE(arg).data_handle())
+// Returns destination memory which may not have been zero pad initialized.
+#define CTX_OUT_MEM(type, arg) static_cast<ARG_TYPE(type) *>(ctx.host_ptr(arg))
+
+// Returns destination memory which has been zero pad initialized. This macro
+// may result in a failure returned via the `status` input since zero pad
+// may fail.
+#define CTX_OUT_CLEAN_MEM(type, arg, status) \
+    static_cast<ARG_TYPE(type) *>(ctx.host_ptr(arg, true, &status))
 
 // dnnl_primitive is a user facing entity that has an alias primitive_iface_t
 // for internal use.
@@ -240,13 +249,27 @@ struct dnnl_primitive : public dnnl::impl::c_compatible {
     dnnl_primitive(const std::shared_ptr<dnnl::impl::primitive_t> &primitive,
             dnnl::impl::engine_t *engine);
 
-    ~dnnl_primitive();
+    // This is a ctor for reorder
+    dnnl_primitive(const std::shared_ptr<dnnl::impl::primitive_t> &primitive,
+            dnnl::impl::engine_t *engine, dnnl::impl::engine_t *src_engine,
+            dnnl::impl::engine_t *dst_engine);
+
     dnnl::impl::status_t init();
     dnnl::impl::engine_t *engine() const;
     const primitive_desc_iface_t *pd() const;
     dnnl::impl::status_t execute(dnnl::impl::exec_ctx_t &ctx) const;
 
+    void retain() { counter_++; }
+
+    void release() {
+        if (--counter_ == 0) { delete this; }
+    }
+
+protected:
+    ~dnnl_primitive();
+
 private:
+    std::atomic<int> counter_;
     std::shared_ptr<dnnl::impl::primitive_t> primitive_;
     std::unique_ptr<dnnl::impl::scratchpad_t> scratchpad_;
     std::unique_ptr<primitive_desc_iface_t> pd_;

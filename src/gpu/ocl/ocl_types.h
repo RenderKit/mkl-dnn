@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,8 +27,9 @@
 #define CONCAT2(a, b) CONCAt2(a, b)
 #define CONCAT3(a, b, c) CONCAT2(CONCAT2(a, b), c)
 
-#if (DT_F16 == 1) || (SRC_DT_F16 == 1) || (DST_DT_F16 == 1) \
-        || (WEI_DT_F16 == 1) || (BIA_DT_F16 == 1) || (ACC_DT_F16 == 1)
+#if defined(DT_F16) || defined(SRC_DT_F16) || defined(SRC0_DT_F16) \
+        || defined(SRC1_DT_F16) || defined(DST_DT_F16) || defined(WEI_DT_F16) \
+        || defined(BIA_DT_F16) || defined(ACC_DT_F16)
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 #endif
 
@@ -37,6 +38,7 @@
 #define DATA2_T float2
 #define DATA4_T float4
 #define DATA8_T float8
+#define DATA16_T float16
 #define DATA_MAX FLT_MAX
 #define DATA_MIN -DATA_MAX
 #define DATA_ZERO 0.0f
@@ -57,7 +59,6 @@
 #define CONVERT_FLOAT2_T convert_float2
 #define CONVERT_FLOAT4_T convert_float4
 #define CONVERT_FLOAT8_T convert_float8
-#define ROUND
 
 #define BLOCK_READ intel_sub_group_block_read
 #define BLOCK_WRITE intel_sub_group_block_write
@@ -92,6 +93,7 @@
 #define DATA2_T half2
 #define DATA4_T half4
 #define DATA8_T half8
+#define DATA16_T half16
 #define DATA_MAX HALF_MAX
 #define DATA_MIN -DATA_MAX
 #define DATA_ZERO 0.0h
@@ -112,7 +114,6 @@
 #define CONVERT_FLOAT2_T convert_float2
 #define CONVERT_FLOAT4_T convert_float4
 #define CONVERT_FLOAT8_T convert_float8
-#define ROUND
 
 #define BLOCK_READ intel_sub_group_block_read_us
 #define BLOCK_WRITE intel_sub_group_block_write_us
@@ -146,6 +147,7 @@
 #define DATA2_T ushort2
 #define DATA4_T ushort4
 #define DATA8_T ushort8
+#define DATA16_T ushort16
 #define DATA_MAX as_float(0x7f7f0000)
 #define DATA_MIN (-DATA_MAX)
 #define DATA_ZERO 0.0f
@@ -165,7 +167,6 @@
 #define CONVERT_FLOAT2_T cvt_bf16_to_f32
 #define CONVERT_FLOAT4_T cvt_bf16_to_f32
 #define CONVERT_FLOAT8_T cvt_bf16_to_f32
-#define ROUND
 
 #define BLOCK_READ intel_sub_group_block_read_us
 #define BLOCK_WRITE intel_sub_group_block_write_us
@@ -220,7 +221,6 @@
 #define CONVERT_FLOAT2_T convert_float2
 #define CONVERT_FLOAT4_T convert_float4
 #define CONVERT_FLOAT8_T convert_float8
-#define ROUND rint
 
 #define BLOCK_READ intel_sub_group_block_read_uc
 #define BLOCK_WRITE intel_sub_group_block_write_uc
@@ -277,7 +277,6 @@
 #define CONVERT_FLOAT2_T convert_float2
 #define CONVERT_FLOAT4_T convert_float4
 #define CONVERT_FLOAT8_T convert_float8
-#define ROUND rint
 
 #define BLOCK_READ intel_sub_group_block_read_uc
 #define BLOCK_WRITE intel_sub_group_block_write_uc
@@ -309,10 +308,51 @@
 #define AS_BLOCK_DATA8_T as_uchar8
 #elif DT_S32 == 1
 #define DATA_T int
+#define DATA2_T int2
 #define DATA4_T int4
+#define DATA8_T int8
+#define DATA16_T int16
 #define DATA_TO_REF convert_float
 #define CONVERT_DATA_T convert_int_sat_rte
+#define CONVERT_DATA2_T convert_int2_sat_rte
+#define CONVERT_DATA4_T convert_int4_sat_rte
+#define CONVERT_DATA8_T convert_int8_sat_rte
+#define CONVERT_FLOAT_T convert_float
+#define CONVERT_FLOAT2_T convert_float2
+#define CONVERT_FLOAT4_T convert_float4
+#define CONVERT_FLOAT8_T convert_float8
 #define POST_OP_DATA_T float
+#define DATA_MIN INT_MIN
+#define DATA_MAX INT_MAX
+#define ROUND
+
+#define BLOCK_READ intel_sub_group_block_read
+#define BLOCK_WRITE intel_sub_group_block_write
+#define BLOCK_READ2 intel_sub_group_block_read2
+#define BLOCK_READ4 intel_sub_group_block_read4
+#define BLOCK_READ8 intel_sub_group_block_read8
+#define BLOCK_WRITE2 intel_sub_group_block_write2
+#define BLOCK_WRITE4 intel_sub_group_block_write4
+#define BLOCK_WRITE8 intel_sub_group_block_write8
+
+#define AS_DATA_T as_int
+#define AS_DATA2_T as_int2
+#define AS_DATA4_T as_int4
+#define AS_DATA8_T as_int8
+
+#define AS_UINT_T as_uint
+#define AS_UINT2_T as_uint2
+#define AS_UINT4_T as_uint4
+#define AS_UINT8_T as_uint8
+
+#define BLOCK_DATA_T uint
+#define BLOCK_DATA2_T uint2
+#define BLOCK_DATA4_T uint4
+#define BLOCK_DATA8_T uint8
+#define AS_BLOCK_DATA_T as_uint
+#define AS_BLOCK_DATA2_T as_uint2
+#define AS_BLOCK_DATA4_T as_uint4
+#define AS_BLOCK_DATA8_T as_uint8
 #elif !defined(DT_UNDEF)
 #error "Unexpected data type"
 #endif
@@ -391,26 +431,30 @@
 #define AS_VECT_FLOAT_T as_float8
 #endif
 
+#define AS_MMAD_DATA_T CONCAT2(as_, MMAD_DATA_T)
+#define AS_MMAD_DATA4_T CONCAT2(as_, MMAD_DATA4_T)
+#define AS_MMAD_DATA8_T CONCAT2(as_, MMAD_DATA8_T)
+
 #ifdef SRC_DATA_T
 #define SRC_DATA2_T CONCAT2(SRC_DATA_T, 2)
 #define SRC_DATA4_T CONCAT2(SRC_DATA_T, 4)
 #define SRC_DATA8_T CONCAT2(SRC_DATA_T, 8)
 #define SRC_DATA16_T CONCAT2(SRC_DATA_T, 16)
 #ifdef SRC_DT_U8
-#define MMAD_DATA_T uint
-#define MMAD_DATA4_T uint4
-#define MMAD_DATA8_T uint8
+#define SRC_MMAD_DATA_T uint
+#define SRC_MMAD_DATA4_T uint4
+#define SRC_MMAD_DATA8_T uint8
 #elif SRC_DT_S8
-#define MMAD_DATA_T int
-#define MMAD_DATA4_T int4
-#define MMAD_DATA8_T int8
+#define SRC_MMAD_DATA_T int
+#define SRC_MMAD_DATA4_T int4
+#define SRC_MMAD_DATA8_T int8
 #endif
 #define AS_SRC_DATA2_T CONCAT2(as_, SRC_DATA2_T)
 #define AS_SRC_DATA4_T CONCAT2(as_, SRC_DATA4_T)
 #define AS_SRC_DATA16_T CONCAT2(as_, SRC_DATA16_T)
-#define AS_MMAD_DATA_T CONCAT2(as_, MMAD_DATA_T)
-#define AS_MMAD_DATA4_T CONCAT2(as_, MMAD_DATA4_T)
-#define AS_MMAD_DATA8_T CONCAT2(as_, MMAD_DATA8_T)
+#define AS_SRC_MMAD_DATA_T CONCAT2(as_, SRC_MMAD_DATA_T)
+#define AS_SRC_MMAD_DATA4_T CONCAT2(as_, SRC_MMAD_DATA4_T)
+#define AS_SRC_MMAD_DATA8_T CONCAT2(as_, SRC_MMAD_DATA8_T)
 #if SRC_DT_BF16
 #define SRC_TO_REF(x) cvt_bf16_to_f32(x)
 #define SRC_TO_REF8(x) cvt_bf16_to_f32(x)
@@ -478,6 +522,27 @@
 #endif
 #endif
 
+#ifdef DIFF_WEI_DATA_T
+#if DIFF_WEI_DT_BF16
+#define DIFF_WEI_TO_REF(x) cvt_bf16_to_f32(x)
+#define REF_TO_DIFF_WEI(x) cvt_f32_to_bf16(x)
+#else
+#define DIFF_WEI_TO_REF(x) (x)
+#define REF_TO_DIFF_WEI(x) (x)
+#endif
+#if DIFF_WEI_DT_BF16
+#define TO_DIFF_WEI(x) cvt_f32_to_bf16(x)
+#elif DIFF_WEI_DT_U8
+#define TO_DIFF_WEI(x) convert_uchar_sat_rte(x)
+#elif DIFF_WEI_DT_S8
+#define TO_DIFF_WEI(x) convert_char_sat_rte(x)
+#elif DIFF_WEI_DT_S32
+#define TO_DIFF_WEI(x) convert_int_sat_rte(x)
+#else
+#define TO_DIFF_WEI(x) (x)
+#endif
+#endif
+
 #ifdef B_DATA_T
 #if B_DT_BF16
 #define B_TO_REF(x) cvt_bf16_to_f32(x)
@@ -526,25 +591,48 @@
 #define DST_DATA8_T CONCAT2(DST_DATA_T, 8)
 #define DST_DATA16_T CONCAT2(DST_DATA_T, 16)
 
+#define AS_DST_DATA_T CONCAT2(as_, DST_DATA_T)
 #define AS_DST_DATA2_T CONCAT2(as_, DST_DATA2_T)
 #define AS_DST_DATA4_T CONCAT2(as_, DST_DATA4_T)
 #define AS_DST_DATA8_T CONCAT2(as_, DST_DATA8_T)
 #define AS_DST_DATA16_T CONCAT2(as_, DST_DATA16_T)
 
 #if DST_DT_F32 || DST_DT_F16
+#define CONVERT_DST_DATA_T CONCAT2(convert_, DST_DATA_T)
 #define CONVERT_DST_DATA2_T CONCAT2(convert_, DST_DATA2_T)
 #define CONVERT_DST_DATA4_T CONCAT2(convert_, DST_DATA4_T)
 #define CONVERT_DST_DATA8_T CONCAT2(convert_, DST_DATA8_T)
 #define CONVERT_DST_DATA16_T CONCAT2(convert_, DST_DATA16_T)
 #else
+#define CONVERT_DST_DATA_T CONCAT3(convert_, DST_DATA_T, _sat_rte)
 #define CONVERT_DST_DATA2_T CONCAT3(convert_, DST_DATA2_T, _sat_rte)
 #define CONVERT_DST_DATA4_T CONCAT3(convert_, DST_DATA4_T, _sat_rte)
 #define CONVERT_DST_DATA8_T CONCAT3(convert_, DST_DATA8_T, _sat_rte)
 #define CONVERT_DST_DATA16_T CONCAT3(convert_, DST_DATA16_T, _sat_rte)
 #endif
 
+#if DST_DT_U8
+#define MMAD_DATA_T uint
+#define MMAD_DATA4_T uint4
+#define MMAD_DATA8_T uint8
+#elif DST_DT_S8
+#define MMAD_DATA_T int
+#define MMAD_DATA4_T int4
+#define MMAD_DATA8_T int8
+#endif
+
 // Block read/write macros for dst.
 #if DST_DT_U8 || DST_DT_S8
+
+#define BLOCK_READ_DST(ptr) \
+    AS_DST_DATA_T(intel_sub_group_block_read_uc((__global uchar *)ptr))
+#define BLOCK_WRITE_DST(ptr, v) \
+    intel_sub_group_block_write_uc((__global uchar *)ptr, as_uchar(v))
+
+#define BLOCK_READ_DST2(ptr) \
+    AS_DST_DATA2_T(intel_sub_group_block_read_uc2((__global uchar *)ptr))
+#define BLOCK_WRITE_DST2(ptr, v) \
+    intel_sub_group_block_write_uc2((__global uchar *)ptr, as_uchar2(v))
 
 #define BLOCK_READ_DST4(ptr) \
     AS_DST_DATA4_T(intel_sub_group_block_read_uc4((__global uchar *)ptr))
@@ -563,6 +651,16 @@
 
 #elif DST_DT_S32 || DST_DT_F32
 
+#define BLOCK_READ_DST(ptr) \
+    AS_DST_DATA_T(intel_sub_group_block_read((__global uint *)ptr))
+#define BLOCK_WRITE_DST(ptr, v) \
+    intel_sub_group_block_write((__global uint *)ptr, as_uint(v))
+
+#define BLOCK_READ_DST2(ptr) \
+    AS_DST_DATA2_T(intel_sub_group_block_read2((__global uint *)ptr))
+#define BLOCK_WRITE_DST2(ptr, v) \
+    intel_sub_group_block_write2((__global uint *)ptr, as_uint2(v))
+
 #define BLOCK_READ_DST4(ptr) \
     AS_DST_DATA4_T(intel_sub_group_block_read4((__global uint *)ptr))
 #define BLOCK_WRITE_DST4(ptr, v) \
@@ -572,6 +670,37 @@
     AS_DST_DATA8_T(intel_sub_group_block_read8((__global uint *)ptr))
 #define BLOCK_WRITE_DST8(ptr, v) \
     intel_sub_group_block_write8((__global uint *)ptr, as_uint8(v))
+
+#define BLOCK_READ_DST16(ptr) \
+    (DST_DATA16_T)( \
+            BLOCK_READ_DST8(ptr), BLOCK_READ_DST8(ptr + 8 * SUB_GROUP_SIZE))
+#define BLOCK_WRITE_DST16(ptr, v) \
+    do { \
+        BLOCK_WRITE_DST8(ptr, (v).s01234567); \
+        BLOCK_WRITE_DST8(ptr + 8 * SUB_GROUP_SIZE, (v).s89abcdef); \
+    } while (0)
+
+#elif DST_DT_F16
+
+#define BLOCK_READ_DST(ptr) \
+    AS_DST_DATA_T(intel_sub_group_block_read_us((__global ushort *)ptr))
+#define BLOCK_WRITE_DST(ptr, v) \
+    intel_sub_group_block_write_us((__global ushort *)ptr, as_ushort(v))
+
+#define BLOCK_READ_DST2(ptr) \
+    AS_DST_DATA2_T(intel_sub_group_block_read_us2((__global ushort *)ptr))
+#define BLOCK_WRITE_DST2(ptr, v) \
+    intel_sub_group_block_write_us2((__global ushort *)ptr, as_short2(v))
+
+#define BLOCK_READ_DST4(ptr) \
+    AS_DST_DATA4_T(intel_sub_group_block_read_us4((__global ushort *)ptr))
+#define BLOCK_WRITE_DST4(ptr, v) \
+    intel_sub_group_block_write_us4((__global ushort *)ptr, as_ushort4(v))
+
+#define BLOCK_READ_DST8(ptr) \
+    AS_DST_DATA8_T(intel_sub_group_block_read_us8((__global ushort *)ptr))
+#define BLOCK_WRITE_DST8(ptr, v) \
+    intel_sub_group_block_write_us8((__global ushort *)ptr, as_ushort8(v))
 
 #define BLOCK_READ_DST16(ptr) \
     (DST_DATA16_T)( \
@@ -597,8 +726,8 @@
 #endif
 #if DST_DT_BF16
 #define TO_DST(x) cvt_f32_to_bf16(x)
-#define TO_DST2(x) cvt_f32_to_bf16(convert_float8(x))
-#define TO_DST4(x) cvt_f32_to_bf16(convert_float8(x))
+#define TO_DST2(x) cvt_f32_to_bf16(convert_float2(x))
+#define TO_DST4(x) cvt_f32_to_bf16(convert_float4(x))
 #define TO_DST8(x) cvt_f32_to_bf16(convert_float8(x))
 #elif DST_DT_F16
 #define TO_DST(x) convert_half(x)
@@ -697,25 +826,96 @@
 #endif
 #endif
 
+#define OFF_MD_2(prefix, x0, x1, x2, x3, x4, x5) \
+    ((((x0) / CONCAT2(prefix, _B0_2)) / CONCAT2(prefix, _B0_1) \
+             * CONCAT2(prefix, _S0_0)) \
+            + (((x0) / CONCAT2(prefix, _B0_2)) % CONCAT2(prefix, _B0_1) \
+                    * CONCAT2(prefix, _S0_1)) \
+            + (((x0) % CONCAT2(prefix, _B0_2)) * CONCAT2(prefix, _S0_2)) \
+            + (((x1) / CONCAT2(prefix, _B1_2)) / CONCAT2(prefix, _B1_1) \
+                    * CONCAT2(prefix, _S1_0)) \
+            + (((x1) / CONCAT2(prefix, _B1_2)) % CONCAT2(prefix, _B1_1) \
+                    * CONCAT2(prefix, _S1_1)) \
+            + (((x1) % CONCAT2(prefix, _B1_2)) * CONCAT2(prefix, _S1_2)) \
+            + (((x2) / CONCAT2(prefix, _B2_2)) / CONCAT2(prefix, _B2_1) \
+                    * CONCAT2(prefix, _S2_0)) \
+            + (((x2) / CONCAT2(prefix, _B2_2)) % CONCAT2(prefix, _B2_1) \
+                    * CONCAT2(prefix, _S2_1)) \
+            + (((x2) % CONCAT2(prefix, _B2_2)) * CONCAT2(prefix, _S2_2)) \
+            + (((x3) / CONCAT2(prefix, _B3_2)) / CONCAT2(prefix, _B3_1) \
+                    * CONCAT2(prefix, _S3_0)) \
+            + (((x3) / CONCAT2(prefix, _B3_2)) % CONCAT2(prefix, _B3_1) \
+                    * CONCAT2(prefix, _S3_1)) \
+            + (((x3) % CONCAT2(prefix, _B3_2)) * CONCAT2(prefix, _S3_2)) \
+            + (((x4) / CONCAT2(prefix, _B4_2)) / CONCAT2(prefix, _B4_1) \
+                    * CONCAT2(prefix, _S4_0)) \
+            + (((x4) / CONCAT2(prefix, _B4_2)) % CONCAT2(prefix, _B4_1) \
+                    * CONCAT2(prefix, _S4_1)) \
+            + (((x4) % CONCAT2(prefix, _B4_2)) * CONCAT2(prefix, _S4_2)) \
+            + (((x5) / CONCAT2(prefix, _B5_2)) / CONCAT2(prefix, _B5_1) \
+                    * CONCAT2(prefix, _S5_0)) \
+            + (((x5) / CONCAT2(prefix, _B5_2)) % CONCAT2(prefix, _B5_1) \
+                    * CONCAT2(prefix, _S5_1)) \
+            + (((x5) % CONCAT2(prefix, _B5_2)) * CONCAT2(prefix, _S5_2)))
+
+#define OFF_MD_3(prefix, x0, x1, x2, x3, x4, x5) \
+    ((((((x0) / CONCAT2(prefix, _B0_3)) / CONCAT2(prefix, _B0_2)) \
+              / CONCAT2(prefix, _B0_1)) \
+             * CONCAT2(prefix, _S0_0)) \
+            + (((((x0) / CONCAT2(prefix, _B0_3)) / CONCAT2(prefix, _B0_2)) \
+                       % CONCAT2(prefix, _B0_1)) \
+                    * CONCAT2(prefix, _S0_1)) \
+            + ((((x0) / CONCAT2(prefix, _B0_3)) % CONCAT2(prefix, _B0_2)) \
+                    * CONCAT2(prefix, _S0_2)) \
+            + (((x0) % CONCAT2(prefix, _B0_3)) * CONCAT2(prefix, _S0_3)) \
+            + (((((x1) / CONCAT2(prefix, _B1_3)) / CONCAT2(prefix, _B1_2)) \
+                       / CONCAT2(prefix, _B1_1)) \
+                    * CONCAT2(prefix, _S1_0)) \
+            + (((((x1) / CONCAT2(prefix, _B1_3)) / CONCAT2(prefix, _B1_2)) \
+                       % CONCAT2(prefix, _B1_1)) \
+                    * CONCAT2(prefix, _S1_1)) \
+            + ((((x1) / CONCAT2(prefix, _B1_3)) % CONCAT2(prefix, _B1_2)) \
+                    * CONCAT2(prefix, _S1_2)) \
+            + (((x1) % CONCAT2(prefix, _B1_3)) * CONCAT2(prefix, _S1_3)) \
+            + (((((x2) / CONCAT2(prefix, _B2_3)) / CONCAT2(prefix, _B2_2)) \
+                       / CONCAT2(prefix, _B2_1)) \
+                    * CONCAT2(prefix, _S2_0)) \
+            + (((((x2) / CONCAT2(prefix, _B2_3)) / CONCAT2(prefix, _B2_2)) \
+                       % CONCAT2(prefix, _B2_1)) \
+                    * CONCAT2(prefix, _S2_1)) \
+            + ((((x2) / CONCAT2(prefix, _B2_3)) % CONCAT2(prefix, _B2_2)) \
+                    * CONCAT2(prefix, _S2_2)) \
+            + (((x2) % CONCAT2(prefix, _B2_3)) * CONCAT2(prefix, _S2_3)) \
+            + (((((x3) / CONCAT2(prefix, _B3_3)) / CONCAT2(prefix, _B3_2)) \
+                       / CONCAT2(prefix, _B3_1)) \
+                    * CONCAT2(prefix, _S3_0)) \
+            + (((((x3) / CONCAT2(prefix, _B3_3)) / CONCAT2(prefix, _B3_2)) \
+                       % CONCAT2(prefix, _B3_1)) \
+                    * CONCAT2(prefix, _S3_1)) \
+            + ((((x3) / CONCAT2(prefix, _B3_3)) % CONCAT2(prefix, _B3_2)) \
+                    * CONCAT2(prefix, _S3_2)) \
+            + (((x3) % CONCAT2(prefix, _B3_3)) * CONCAT2(prefix, _S3_3)) \
+            + (((((x4) / CONCAT2(prefix, _B4_3)) / CONCAT2(prefix, _B4_2)) \
+                       / CONCAT2(prefix, _B4_1)) \
+                    * CONCAT2(prefix, _S4_0)) \
+            + (((((x4) / CONCAT2(prefix, _B4_3)) / CONCAT2(prefix, _B4_2)) \
+                       % CONCAT2(prefix, _B4_1)) \
+                    * CONCAT2(prefix, _S4_1)) \
+            + ((((x4) / CONCAT2(prefix, _B4_3)) % CONCAT2(prefix, _B4_2)) \
+                    * CONCAT2(prefix, _S4_2)) \
+            + (((x4) % CONCAT2(prefix, _B4_3)) * CONCAT2(prefix, _S4_3)) \
+            + (((((x5) / CONCAT2(prefix, _B5_3)) / CONCAT2(prefix, _B5_2)) \
+                       / CONCAT2(prefix, _B5_1)) \
+                    * CONCAT2(prefix, _S5_0)) \
+            + (((((x5) / CONCAT2(prefix, _B5_3)) / CONCAT2(prefix, _B5_2)) \
+                       % CONCAT2(prefix, _B5_1)) \
+                    * CONCAT2(prefix, _S5_1)) \
+            + ((((x5) / CONCAT2(prefix, _B5_3)) % CONCAT2(prefix, _B5_2)) \
+                    * CONCAT2(prefix, _S5_2)) \
+            + (((x5) % CONCAT2(prefix, _B5_3)) * CONCAT2(prefix, _S5_3)))
+
 #define OFF_MD(prefix, x0, x1, x2, x3, x4, x5) \
-    ((x0 / prefix##_B0_2) / prefix##_B0_1 * prefix##_S0_0) \
-            + ((x0 / prefix##_B0_2) % prefix##_B0_1 * prefix##_S0_1) \
-            + ((x0 % prefix##_B0_2) * prefix##_S0_2) \
-            + ((x1 / prefix##_B1_2) / prefix##_B1_1 * prefix##_S1_0) \
-            + ((x1 / prefix##_B1_2) % prefix##_B1_1 * prefix##_S1_1) \
-            + ((x1 % prefix##_B1_2) * prefix##_S1_2) \
-            + ((x2 / prefix##_B2_2) / prefix##_B2_1 * prefix##_S2_0) \
-            + ((x2 / prefix##_B2_2) % prefix##_B2_1 * prefix##_S2_1) \
-            + ((x2 % prefix##_B2_2) * prefix##_S2_2) \
-            + ((x3 / prefix##_B3_2) / prefix##_B3_1 * prefix##_S3_0) \
-            + ((x3 / prefix##_B3_2) % prefix##_B3_1 * prefix##_S3_1) \
-            + ((x3 % prefix##_B3_2) * prefix##_S3_2) \
-            + ((x4 / prefix##_B4_2) / prefix##_B4_1 * prefix##_S4_0) \
-            + ((x4 / prefix##_B4_2) % prefix##_B4_1 * prefix##_S4_1) \
-            + ((x4 % prefix##_B4_2) * prefix##_S4_2) \
-            + ((x5 / prefix##_B5_2) / prefix##_B5_1 * prefix##_S5_0) \
-            + ((x5 / prefix##_B5_2) % prefix##_B5_1 * prefix##_S5_1) \
-            + ((x5 % prefix##_B5_2) * prefix##_S5_2)
+    CONCAT2(OFF_MD_, CONCAT2(prefix, _NLEVELS))(prefix, x0, x1, x2, x3, x4, x5)
 
 #if NDIMS == 2
 #define SRC_OFF(x0, x1, d, h, w) \

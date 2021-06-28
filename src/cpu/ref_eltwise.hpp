@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,27 +25,13 @@
 #include "common/utils.hpp"
 
 #include "cpu/platform.hpp"
+#include "cpu/primitive_attr_postops.hpp"
 
 #include "cpu/cpu_eltwise_pd.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
-
-struct ref_eltwise_scalar_fwd_t {
-public:
-    ref_eltwise_scalar_fwd_t(
-            alg_kind_t alg, float alpha, float beta, float scale);
-
-    ref_eltwise_scalar_fwd_t(const post_ops_t::entry_t::eltwise_t &eltwise);
-
-    float compute_scalar(float s);
-
-    const alg_kind_t alg_;
-    const float alpha_;
-    const float beta_;
-    const float scale_;
-};
 
 template <impl::data_type_t data_type>
 struct ref_eltwise_fwd_t : public primitive_t {
@@ -56,11 +42,17 @@ struct ref_eltwise_fwd_t : public primitive_t {
 
         status_t init(engine_t *engine) {
             using namespace utils;
+            using sm = primitive_attr_t::skip_mask_t;
 
-            auto src_d = memory_desc_wrapper(src_md());
+            bool ok = is_fwd() && data_type == desc()->data_desc.data_type
+                    && platform::has_data_type_support(data_type)
+                    && attr()->has_default_values(sm::post_ops);
+            if (!ok) return status::unimplemented;
 
-            use_dense_ = src_d.is_dense()
-                    || (src_d.is_dense(true) && is_zero_preserved());
+            auto src_d = memory_desc_wrapper(data_md());
+
+            use_dense_ = src_d.is_dense(true)
+                    && IMPLICATION(!src_d.is_dense(), is_zero_preserved());
 
             use_nCspBc_padded_ = !use_dense_
                     && src_d.blocking_desc().inner_nblks == 1
@@ -68,14 +60,9 @@ struct ref_eltwise_fwd_t : public primitive_t {
                     && src_d.blocking_desc().inner_idxs[0] == 1
                     && src_d.only_padded_dim(1) && src_d.is_dense(true);
 
-            if (has_zero_dim_memory()) use_dense_ = use_nCspBc_padded_ = false;
-
-            bool ok = is_fwd() && data_type == desc()->data_desc.data_type
-                    && platform::has_data_type_support(data_type)
-                    && attr()->has_default_values()
-                    && IMPLICATION(desc()->data_desc.data_type == dnnl_u8,
-                            desc()->alg_kind == dnnl_eltwise_relu);
-            if (!ok) return status::unimplemented;
+            const auto &po = attr()->post_ops_;
+            if (has_zero_dim_memory() || !po.has_default_values())
+                use_dense_ = use_nCspBc_padded_ = false;
 
             return status::success;
         }
@@ -84,23 +71,31 @@ struct ref_eltwise_fwd_t : public primitive_t {
     };
 
     ref_eltwise_fwd_t(const pd_t *apd) : primitive_t(apd) {}
-    typedef typename prec_traits<data_type>::type data_t;
 
-    status_t execute(const exec_ctx_t &ctx) const override {
-        if (pd()->use_dense_)
-            execute_forward_dense(ctx);
-        else if (pd()->use_nCspBc_padded_)
-            execute_forward_nCspBc_padded(ctx);
-        else
-            execute_forward_generic(ctx);
+    status_t init(engine_t *engine) override {
+        ref_post_ops
+                = utils::make_unique<ref_post_ops_t>(pd()->attr()->post_ops_);
+        if (!ref_post_ops) return status::out_of_memory;
         return status::success;
     }
 
+    using data_t = typename prec_traits<data_type>::type;
+
+    status_t execute(const exec_ctx_t &ctx) const override {
+        if (pd()->use_dense_)
+            return execute_forward_dense(ctx);
+        else if (pd()->use_nCspBc_padded_)
+            return execute_forward_nCspBc_padded(ctx);
+        else
+            return execute_forward_generic(ctx);
+    }
+
 private:
-    void execute_forward_nCspBc_padded(const exec_ctx_t &ctx) const;
-    void execute_forward_dense(const exec_ctx_t &ctx) const;
-    void execute_forward_generic(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
+    status_t execute_forward_nCspBc_padded(const exec_ctx_t &ctx) const;
+    status_t execute_forward_dense(const exec_ctx_t &ctx) const;
+    status_t execute_forward_generic(const exec_ctx_t &ctx) const;
+    std::unique_ptr<ref_post_ops_t> ref_post_ops;
 };
 
 template <impl::data_type_t data_type>
@@ -127,7 +122,8 @@ struct ref_eltwise_bwd_t : public primitive_t {
                     || (diff_dst_d.is_dense(true) && is_zero_preserved());
 
             if (has_zero_dim_memory()) use_dense_ = false;
-            if (diff_dst_d != memory_desc_wrapper(src_md())) use_dense_ = false;
+            if (diff_dst_d != memory_desc_wrapper(data_md()))
+                use_dense_ = false;
 
             if (data_type == data_type::bf16) init_scratchpad();
 
@@ -138,7 +134,7 @@ struct ref_eltwise_bwd_t : public primitive_t {
 
     private:
         void init_scratchpad() {
-            const memory_desc_wrapper data_d(src_md());
+            const memory_desc_wrapper data_d(data_md());
             const memory_desc_wrapper diff_data_d(diff_dst_md());
             using namespace memory_tracking::names;
             auto scratchpad = scratchpad_registry().registrar();
@@ -155,15 +151,14 @@ struct ref_eltwise_bwd_t : public primitive_t {
 
     status_t execute(const exec_ctx_t &ctx) const override {
         if (pd()->use_dense_)
-            execute_backward_dense(ctx);
+            return execute_backward_dense(ctx);
         else
-            execute_backward_generic(ctx);
-        return status::success;
+            return execute_backward_generic(ctx);
     }
 
 private:
-    void execute_backward_dense(const exec_ctx_t &ctx) const;
-    void execute_backward_generic(const exec_ctx_t &ctx) const;
+    status_t execute_backward_dense(const exec_ctx_t &ctx) const;
+    status_t execute_backward_generic(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 

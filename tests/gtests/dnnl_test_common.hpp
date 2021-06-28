@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -32,13 +32,23 @@
 #define collapse(x)
 #endif
 
-#include "dnnl.hpp"
-#include "dnnl_debug.h"
-#include "dnnl_test_macros.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
+#include "oneapi/dnnl/dnnl_debug.h"
 
-#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
+#if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
+#include "oneapi/dnnl/dnnl_threadpool.hpp"
+#endif
+
+#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL || defined(DNNL_WITH_SYCL)
 #include "dnnl_test_common_ocl.hpp"
 #endif
+
+#ifdef DNNL_WITH_SYCL
+#include "oneapi/dnnl/dnnl_sycl.hpp"
+#endif
+
+// Don't move it higher than library public headers
+#include "dnnl_test_macros.hpp"
 
 #include "src/common/bfloat16.hpp"
 #include "src/common/float16.hpp"
@@ -68,6 +78,13 @@ using dnnl::impl::f16_support::float16_t;
     } while (0)
 #endif
 
+// XXX: Using EXPECT_NE in 'if' statement raises a warning when GCC compiler is
+// used: suggest explicit braces to avoid ambiguous 'else'
+#define GTEST_EXPECT_NE(val1, val2) \
+    do { \
+        EXPECT_NE(val1, val2); \
+    } while (0)
+
 using memory = dnnl::memory;
 
 bool is_current_test_failed();
@@ -77,6 +94,27 @@ dnnl::engine::kind get_test_engine_kind();
 dnnl::engine get_test_engine();
 #endif
 
+inline int get_vendor_id(const std::string &vendor) {
+    if (vendor == "nvidia") {
+        return 0x10DE;
+    } else if (vendor == "intel") {
+        return 0x8086;
+    } else {
+        return -1;
+    }
+}
+
+inline bool is_nvidia_gpu(const dnnl::engine &eng) {
+#ifdef DNNL_WITH_SYCL
+    const int nvidia_vendor_id = get_vendor_id("nvidia");
+    const auto device = dnnl::sycl_interop::get_device(eng);
+    const auto eng_vendor_id
+            = device.get_info<cl::sycl::info::device::vendor_id>();
+    return eng_vendor_id == nvidia_vendor_id;
+#endif
+    return false;
+}
+
 inline bool unsupported_data_type(memory::data_type dt, dnnl::engine eng) {
     dnnl::engine::kind kind = eng.get_kind();
 
@@ -84,7 +122,16 @@ inline bool unsupported_data_type(memory::data_type dt, dnnl::engine eng) {
     if (kind == dnnl::engine::kind::cpu)
         supported = dnnl::impl::cpu::platform::has_data_type_support(
                 memory::convert_to_c(dt));
-
+#ifdef DNNL_SYCL_CUDA
+    if (is_nvidia_gpu(eng)) {
+        switch (dt) {
+            case memory::data_type::f32: return false;
+            case memory::data_type::f16: return false;
+            case memory::data_type::s8: return false;
+            default: return true;
+        }
+    }
+#endif
     return !supported;
 }
 
@@ -513,7 +560,7 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
                 // Print unimplemented but do not treat as error
                 std::cout << "[  UNIMPL  ] "
                           << "Implementation not found" << std::endl;
-                reset_malloc_counter();
+                reset_failed_malloc_counter();
                 return true;
             } else if (test_out_of_memory()
                     && (e.status == dnnl_out_of_memory
@@ -525,7 +572,7 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
                 // gemm_pack_storage_shell_t ctor makes it unable to use the
                 // reference RNN impl, and the iterator produces an
                 // `dnnl_unimplemented` error.
-                increment_malloc_counter();
+                increment_failed_malloc_counter();
                 return catch_expected_failures(f, expect_to_fail,
                         expected_status, ignore_unimplemented);
             } else {
@@ -540,7 +587,7 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
         // Return normally if the failure is expected. Reset failed malloc
         // counter to zero before performing a new test.
         if (expect_to_fail) {
-            reset_malloc_counter();
+            reset_failed_malloc_counter();
             return true;
         }
     }
@@ -554,9 +601,30 @@ bool catch_expected_failures(const F &f, bool expect_to_fail,
     }
 
     // Reset failed malloc counter to zero before performing a new test.
-    reset_malloc_counter();
+    reset_failed_malloc_counter();
     return false;
 }
+
+namespace test {
+inline dnnl::memory make_memory(
+        const dnnl::memory::desc &md, const dnnl::engine &eng) {
+#if defined(TEST_DNNL_DPCPP_BUFFER)
+    return dnnl::sycl_interop::make_memory(
+            md, eng, dnnl::sycl_interop::memory_kind::buffer);
+#else
+    return dnnl::memory(md, eng);
+#endif
+}
+inline dnnl::memory make_memory(
+        const dnnl::memory::desc &md, const dnnl::engine &eng, void *handle) {
+#if defined(TEST_DNNL_DPCPP_BUFFER)
+    return dnnl::sycl_interop::make_memory(
+            md, eng, dnnl::sycl_interop::memory_kind::buffer, handle);
+#else
+    return dnnl::memory(md, eng, handle);
+#endif
+}
+} // namespace test
 
 #define TEST_MALLOC_OFFSET 8
 static char *test_malloc(size_t size) {
@@ -585,19 +653,35 @@ static void test_free(char *ptr) {
 class test_memory {
 public:
     test_memory(const memory::desc &d, const dnnl::engine &e) {
-        bool is_cpu_native = (e.get_kind() == dnnl::engine::kind::cpu);
+        bool is_cpu_native = (e.get_kind() == dnnl::engine::kind::cpu)
+                && DNNL_CPU_RUNTIME != DNNL_RUNTIME_SYCL;
 
         size_ = d.get_size();
         if (is_cpu_native) {
             data_.reset(test_malloc(size_), test_free);
-            mem_ = memory(d, e, data_.get());
+            mem_ = test::make_memory(d, e, data_.get());
         } else {
-            mem_ = memory(d, e);
+            mem_ = test::make_memory(d, e);
         }
         // Fill with a magic number to catch possible uninitialized access
         mapped_ptr_t<char> ptr(&mem_);
         memset(ptr, 0xFF, size_);
     }
+
+#if 0
+    template <typename malloc_t, typename free_t>
+    test_memory(const memory::desc &d, const dnnl::engine &e,
+            const malloc_t &f_malloc, const free_t &f_free) {
+        size_ = d.get_size();
+        data_.reset(static_cast<char *>(f_malloc(size_)), f_free);
+        mem_ = test::make_memory(d, e, data_.get());
+
+        // Fill with a magic number to catch possible uninitialized access
+        mapped_ptr_t<char> ptr(&mem_);
+        memset(ptr, 0xFF, size_);
+    }
+#endif
+
     size_t get_size() const { return size_; }
     const memory &get() const { return mem_; }
 
@@ -626,11 +710,24 @@ inline std::string to_string(dnnl_engine_kind_t engine_kind) {
     return ss.str();
 }
 
+inline std::string to_string(dnnl_stream_flags_t stream_flags) {
+    std::stringstream ss;
+    if (stream_flags & dnnl_stream_default_flags)
+        ss << "default";
+    else if (stream_flags & dnnl_stream_in_order)
+        ss << "in_order";
+    else if (stream_flags & dnnl_stream_out_of_order)
+        ss << "out_of_order";
+
+    return ss.str();
+}
+
 // testing all available C++ primitive descriptor constructors
 struct allows_attr_t {
     bool oscale;
     bool po_sum;
     bool po_eltwise;
+    bool po_binary;
     bool zp;
     bool scales;
 };
@@ -681,6 +778,21 @@ void test_fwd_pd_attr_po_eltwise(
 }
 
 template <typename op_desc_t, typename pd_t>
+void test_fwd_pd_attr_po_binary(
+        const op_desc_t &op_desc, const engine &eng, bool supports_po_binary) {
+    dnnl::post_ops ops_binary;
+    dnnl::memory::desc src1_desc(
+            {16}, memory::data_type::s8, memory::format_tag::x);
+    ops_binary.append_binary(dnnl::algorithm::binary_mul, src1_desc);
+    dnnl::primitive_attr attr_po_binary;
+    attr_po_binary.set_post_ops(ops_binary);
+    if (supports_po_binary)
+        EXPECT_NO_THROW(pd_t pd(op_desc, attr_po_binary, eng));
+    else
+        EXPECT_ANY_THROW(pd_t pd(op_desc, attr_po_binary, eng));
+}
+
+template <typename op_desc_t, typename pd_t>
 void test_fwd_pd_attr_zp(
         const op_desc_t &op_desc, const engine &eng, bool supports_zero_point) {
     dnnl::primitive_attr attr_zp;
@@ -694,18 +806,10 @@ void test_fwd_pd_attr_zp(
 template <typename op_desc_t, typename pd_t>
 void test_fwd_pd_attr_scales(
         const op_desc_t &op_desc, const engine &eng, bool supports_scales) {
-    using dt_t = memory::data_type;
-
     dnnl::primitive_attr attr_scales;
     attr_scales.set_scales(DNNL_ARG_SRC, 0, {2.f});
 
-    pd_t new_pd(op_desc, eng);
-    const auto dt = new_pd.src_desc().data.data_type;
-    const bool dt_is_integral
-            = dt == dt_t::s32 || dt == dt_t::s8 || dt == dt_t::u8;
-
-    // Scales are supposed to work on int8 data type only.
-    if (supports_scales && dt_is_integral) {
+    if (supports_scales) { // Currently only used with binary ops
         EXPECT_NO_THROW(pd_t pd(op_desc, attr_scales, eng));
 
         // Check oscale and scales don't work together
@@ -742,6 +846,7 @@ void test_fwd_pd_constructors(
     test_fwd_pd_attr_oscale<op_desc_t, pd_t>(op_desc, eng, aa.oscale);
     test_fwd_pd_attr_po_sum<op_desc_t, pd_t>(op_desc, eng, aa.po_sum);
     test_fwd_pd_attr_po_eltwise<op_desc_t, pd_t>(op_desc, eng, aa.po_eltwise);
+    test_fwd_pd_attr_po_binary<op_desc_t, pd_t>(op_desc, eng, aa.po_binary);
     test_fwd_pd_attr_zp<op_desc_t, pd_t>(op_desc, eng, aa.zp);
     test_fwd_pd_attr_scales<op_desc_t, pd_t>(op_desc, eng, aa.scales);
     // check allow empty, should not throw
@@ -794,6 +899,21 @@ void test_bwd_pd_attr_po_eltwise(const op_desc_t &op_desc, const engine &eng,
 }
 
 template <typename op_desc_t, typename pd_t, typename hint_pd_t>
+void test_bwd_pd_attr_po_binary(const op_desc_t &op_desc, const engine &eng,
+        const hint_pd_t &hint, bool supports_po_binary) {
+    dnnl::post_ops ops_binary;
+    dnnl::memory::desc src1_desc(
+            {16}, memory::data_type::s8, memory::format_tag::x);
+    ops_binary.append_binary(dnnl::algorithm::binary_mul, src1_desc);
+    dnnl::primitive_attr attr_po_binary;
+    attr_po_binary.set_post_ops(ops_binary);
+    if (supports_po_binary)
+        EXPECT_NO_THROW(pd_t pd(op_desc, attr_po_binary, eng, hint));
+    else
+        EXPECT_ANY_THROW(pd_t pd(op_desc, attr_po_binary, eng, hint));
+}
+
+template <typename op_desc_t, typename pd_t, typename hint_pd_t>
 void test_bwd_pd_attr_zp(const op_desc_t &op_desc, const engine &eng,
         const hint_pd_t &hint, bool supports_zero_point) {
     dnnl::primitive_attr attr_zp;
@@ -837,6 +957,8 @@ void test_bwd_pd_constructors(const op_desc_t &op_desc, const pd_t &pd,
     test_bwd_pd_attr_po_sum<op_desc_t, pd_t>(op_desc, eng, hint_pd, aa.po_sum);
     test_bwd_pd_attr_po_eltwise<op_desc_t, pd_t>(
             op_desc, eng, hint_pd, aa.po_eltwise);
+    test_bwd_pd_attr_po_binary<op_desc_t, pd_t>(
+            op_desc, eng, hint_pd, aa.po_binary);
     test_bwd_pd_attr_zp<op_desc_t, pd_t>(op_desc, eng, hint_pd, aa.zp);
     test_bwd_pd_attr_scales<op_desc_t, pd_t>(op_desc, eng, hint_pd, aa.scales);
     // check allow empty, should not throw
@@ -846,14 +968,11 @@ void test_bwd_pd_constructors(const op_desc_t &op_desc, const pd_t &pd,
 inline dnnl::stream make_stream(dnnl::engine engine,
         dnnl::stream::flags flags = dnnl::stream::flags::default_flags) {
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-    if (engine.get_kind() != dnnl::engine::kind::cpu)
-        return dnnl::stream(engine, flags);
-    dnnl::stream_attr stream_attr(dnnl::engine::kind::cpu);
-    stream_attr.set_threadpool(dnnl::testing::get_threadpool());
-    return dnnl::stream(engine, flags, stream_attr);
-#else
-    return dnnl::stream(engine, flags);
+    if (engine.get_kind() == dnnl::engine::kind::cpu)
+        return dnnl::threadpool_interop::make_stream(
+                engine, dnnl::testing::get_threadpool());
 #endif
+    return dnnl::stream(engine, flags);
 }
 
 #endif

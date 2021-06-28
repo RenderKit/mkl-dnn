@@ -1,10 +1,24 @@
+# bf16
 --reset
 --mb=2
 
-# bf16
 --cfg=bf16
---dir=FWD_D,FWD_I,BWD_D
---tag=abx,axb,aBx16b
---alg=MAX,AVG_NP,AVG_P --batch=set_pool_all
---alg=MAX,AVG_P        --batch=set_pool_ker_in_pad_all
+--alg=MAX,AVG_NP,AVG_P
+# Training
+--tag=abx,axb,aBx8b,aBx16b
 
+--dir=FWD_D,BWD_D
+--batch=set_all
+--batch=set_topologies
+
+--dir=FWD_D
+--attr-post-ops='mul:s32:per_oc'
+--batch=set_all_small
+
+# Inference
+--dir=FWD_I
+--tag=axb
+--batch=set_all
+
+--attr-post-ops='add:s8'
+--batch=set_all_small

@@ -20,9 +20,9 @@
 #include "common/c_types_map.hpp"
 #include "common/memory_tracking.hpp"
 
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_generator.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -32,26 +32,17 @@ namespace x64 {
 template <typename Vmm>
 struct _jit_avx512_core_x8s8s32x_1x1_conv_kernel : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(_jit_avx512_core_x8s8s32x_1x1_conv_fwd_ker_t)
-    _jit_avx512_core_x8s8s32x_1x1_conv_kernel(
-            const jit_1x1_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jcp(ajcp), attr_(attr), eltwise_injector_(nullptr) {
-        if (jcp.with_eltwise)
-            eltwise_injector_ = new jit_uni_eltwise_injector_f32<avx512_core>(
-                    this, jcp.eltwise);
+    _jit_avx512_core_x8s8s32x_1x1_conv_kernel(const jit_1x1_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md);
 
-        this->generate();
-        jit_ker = (void (*)(jit_1x1_conv_call_s *))this->getCode();
-    }
-
-    ~_jit_avx512_core_x8s8s32x_1x1_conv_kernel() { delete eltwise_injector_; }
-
-    bool maybe_eltwise(int position);
     jit_1x1_conv_conf_t jcp;
     const primitive_attr_t &attr_;
-    void (*jit_ker)(jit_1x1_conv_call_s *);
 
 private:
-    jit_uni_eltwise_injector_f32<avx512_core> *eltwise_injector_;
+    constexpr static int isa_simd_width_
+            = cpu_isa_traits<avx512_core>::vlen / sizeof(float);
+    std::unique_ptr<injector::jit_uni_postops_injector_t<avx512_core>>
+            postops_injector_;
 
     /* register mapping */
     const Xbyak::Reg64 reg_last_load = r8;
@@ -75,8 +66,15 @@ private:
     const Xbyak::Reg64 reg_load_loop_work = rsi;
     const Xbyak::Reg64 aux_reg_output_data = abi_not_param1;
     const Xbyak::Reg64 reduce_loop_iter = abi_param1;
+    // zero-point computation
+    const Xbyak::Reg64 reg_zp_compensation = aux_reg_load_data; // r15
+    const Xbyak::Reg64 reg_src_zero_point = aux_reg_bcast_data; // r14
+    const Xbyak::Reg64 reg_dst_zero_point = reg_src_zero_point;
+    const Xbyak::Reg64 reg_load_dim_tail_mask = reg_scratch;
 
-    const Xbyak::Opmask ktail_mask = k6;
+    const Xbyak::Opmask k_load_dim_mask = Xbyak::Opmask(2);
+    const Xbyak::Opmask k_load_dim_tail_mask = Xbyak::Opmask(3);
+    const Xbyak::Opmask postops_mask = Xbyak::Opmask(4);
     const Xbyak::Opmask vmask = k7;
 
     const Vmm vmm_tmp = Vmm(28);
@@ -88,59 +86,64 @@ private:
     const Vmm vmm_bcast = Vmm(31);
     const Vmm vmm_bias_alpha = Vmm(31);
     const Xbyak::Xmm xmm_bias_alpha = Xbyak::Xmm(31);
+    /* zero-point */
+    const Vmm vmm_zp = Vmm(30);
+    const Vmm vmm_zp_tmp = vmm_zp;
 
-    int bcast_loop_work_off = 0;
-    int reg_bias_data_off = 8;
-    int reg_bcast_data_off = 16;
-    int reg_load_data_off = 24;
-    int reg_ptr_sum_scale_off = 32;
-    int reg_comp_data_off = 40;
-    int stack_space_needed = 48;
+    constexpr static int reg64_size_ = sizeof(int64_t);
+    constexpr static int bcast_loop_work_off = 0;
+    constexpr static int reg_bias_data_off = 1 * reg64_size_;
+    constexpr static int reg_bcast_data_off = 2 * reg64_size_;
+    constexpr static int reg_load_data_off = 3 * reg64_size_;
+    constexpr static int reg_ptr_sum_scale_off = 4 * reg64_size_;
+    constexpr static int reg_comp_data_off = 5 * reg64_size_;
+    constexpr static int reg_zp_compensation_off = 6 * reg64_size_;
+    constexpr static int reg_src_zero_point_off = 7 * reg64_size_;
+    constexpr static int reg_dst_zero_point_off = 8 * reg64_size_;
+    constexpr static int reg_binary_post_op_acc_off = 9 * reg64_size_;
+    constexpr static int reg_abi_param1_backup = 10 * reg64_size_;
+    constexpr static int stack_space_needed = 11 * reg64_size_;
 
     void bcast_loop(int load_loop_blk);
     void reduce_loop(int load_loop_blk, int ur, int substep, bool wraparound);
 
-    void generate();
+    Xbyak::Address output_ptr(const int i_load, const int i_ur);
+    int vreg_accum_idx(const int load_loop_blk, int i_load, int i_ur) const;
+    Vmm vreg_accum(const int load_loop_blk, int i_load, int i_ur) const;
+    void apply_sum(const int load_loop_blk, const int ur,
+            const bool mask_flag_in, const float *p_sum_scale);
+    void apply_postops(const int load_loop_blk, const int ur,
+            const bool mask_flag_in, const float *p_sum_scale);
+    void generate() override;
     void cvt2ps(data_type_t type_in, const Vmm vmm_in, const Xbyak::Operand &op,
             bool mask_flag);
 };
 
 struct jit_avx512_core_x8s8s32x_1x1_conv_kernel {
-    jit_avx512_core_x8s8s32x_1x1_conv_kernel(
-            const jit_1x1_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jit_ker(nullptr)
-        , zmm_kernel_(nullptr)
-        , ymm_kernel_(nullptr)
-        , xmm_kernel_(nullptr) {
+    jit_avx512_core_x8s8s32x_1x1_conv_kernel(const jit_1x1_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md)
+        : kernel_(nullptr) {
         int ch_block = ajcp.ic_block;
         switch (ch_block) {
             case 16:
-                zmm_kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
-                        Xbyak::Zmm>(ajcp, attr);
-                jit_ker = zmm_kernel_->jit_ker;
+                kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
+                        Xbyak::Zmm>(ajcp, attr, dst_md);
                 return;
             case 8:
-                ymm_kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
-                        Xbyak::Ymm>(ajcp, attr);
-                jit_ker = ymm_kernel_->jit_ker;
+                kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
+                        Xbyak::Ymm>(ajcp, attr, dst_md);
                 return;
             case 4:
-                xmm_kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
-                        Xbyak::Xmm>(ajcp, attr);
-                jit_ker = xmm_kernel_->jit_ker;
+                kernel_ = new _jit_avx512_core_x8s8s32x_1x1_conv_kernel<
+                        Xbyak::Xmm>(ajcp, attr, dst_md);
                 return;
             default: assert(!"invalid channel blocking");
         }
     }
 
-    ~jit_avx512_core_x8s8s32x_1x1_conv_kernel() {
-        delete xmm_kernel_;
-        delete ymm_kernel_;
-        delete zmm_kernel_;
-    }
+    status_t create_kernel() { return kernel_->create_kernel(); }
 
-    static bool post_ops_ok(
-            jit_1x1_conv_conf_t &jcp, const primitive_attr_t &attr);
+    ~jit_avx512_core_x8s8s32x_1x1_conv_kernel() { delete kernel_; }
 
     static status_t init_conf(jit_1x1_conv_conf_t &jcp,
             const convolution_desc_t &cd, const memory_desc_t *&src_md,
@@ -151,13 +154,12 @@ struct jit_avx512_core_x8s8s32x_1x1_conv_kernel {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_1x1_conv_conf_t &jcp, const primitive_attr_t &attr);
 
-    void (*jit_ker)(jit_1x1_conv_call_s *);
-    _jit_avx512_core_x8s8s32x_1x1_conv_kernel<Xbyak::Zmm> *zmm_kernel_;
-    _jit_avx512_core_x8s8s32x_1x1_conv_kernel<Xbyak::Ymm> *ymm_kernel_;
-    _jit_avx512_core_x8s8s32x_1x1_conv_kernel<Xbyak::Xmm> *xmm_kernel_;
+    void operator()(const jit_1x1_conv_call_s *p) const { (*kernel_)(p); }
+    const Xbyak::uint8 *jit_ker() const { return kernel_->jit_ker(); }
 
 private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_core_x8s8s32x_1x1_conv_kernel);
+    jit_generator *kernel_;
 };
 
 } // namespace x64

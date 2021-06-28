@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,27 +30,23 @@ namespace x64 {
 
 using namespace Xbyak;
 
-struct jit_args {
+struct jit_args_t {
     const void *from;
     const void *for_comparison;
     const void *to;
     size_t work_amount;
 };
 
-struct jit_uni_eltwise_int_kernel : public c_compatible {
+struct jit_uni_eltwise_int_kernel : public jit_generator {
     jit_uni_eltwise_int_kernel(const eltwise_desc_t &desc) : desc_(desc) {}
-    virtual ~jit_uni_eltwise_int_kernel() {}
 
-    void operator()(const jit_args *args) {
-        assert(ker_);
-        ker_(args);
-    }
+    void operator()(jit_args_t *p) { jit_generator::operator()(p); }
 
 protected:
-    void (*ker_)(const jit_args *) = nullptr;
-
     data_type_t data_type() const { return desc_.data_desc.data_type; }
     int dtype_size() const { return types::data_type_size(data_type()); }
+
+    const eltwise_desc_t &desc() const { return desc_; }
 
 private:
     const eltwise_desc_t &desc_;
@@ -61,12 +57,11 @@ namespace {
 using namespace Xbyak;
 
 template <cpu_isa_t isa>
-struct jit_uni_subkernel_int : public jit_uni_eltwise_int_kernel,
-                               public jit_generator {
+struct jit_uni_subkernel_int_t : public jit_uni_eltwise_int_kernel {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_subkernel_int)
 
-    jit_uni_subkernel_int(const eltwise_desc_t &desc)
-        : jit_uni_eltwise_int_kernel(desc), jit_generator() {
+    jit_uni_subkernel_int_t(const eltwise_desc_t &desc)
+        : jit_uni_eltwise_int_kernel(desc) {
         using namespace data_type;
 
         // Relu and linear for int types: s32, s8, u8; Only forward direction
@@ -74,7 +69,9 @@ struct jit_uni_subkernel_int : public jit_uni_eltwise_int_kernel,
                 alg_kind::eltwise_linear));
         assert(utils::one_of(data_type(), s32, s8, u8));
         assert(utils::one_of(isa, sse41, avx2, avx512_common));
+    }
 
+    void generate() override {
         Reg64 param = abi_param1;
 
         const size_t vlen = cpu_isa_traits<isa>::vlen;
@@ -86,17 +83,17 @@ struct jit_uni_subkernel_int : public jit_uni_eltwise_int_kernel,
 
         preamble();
 
-#define GET_OFF(field) offsetof(jit_args, field)
+#define GET_OFF(field) offsetof(jit_args_t, field)
         mov(reg_from, ptr[param + GET_OFF(from)]);
         mov(reg_to, ptr[param + GET_OFF(to)]);
         mov(reg_work_amount, ptr[param + GET_OFF(work_amount)]);
 #undef GET_OFF
 
-        mov(imm_addr64, float2int(desc.alpha));
+        mov(imm_addr64, float2int(desc().alpha));
         uni_vmovq(xmm_alpha, imm_addr64);
         uni_vbroadcastss(vmm_alpha, xmm_alpha);
 
-        mov(imm_addr64, float2int(desc.beta));
+        mov(imm_addr64, float2int(desc().beta));
         uni_vmovq(xmm_beta, imm_addr64);
         uni_vbroadcastss(vmm_beta, xmm_beta);
 
@@ -114,7 +111,8 @@ struct jit_uni_subkernel_int : public jit_uni_eltwise_int_kernel,
             cmp(reg_work_amount, uf[id] * loop_dec[id] - 1);
             jle(loop_label[id + 1], T_NEAR);
 
-            compute_step(loop_vectorize[id], uf[id], shift[id], desc.alg_kind);
+            compute_step(
+                    loop_vectorize[id], uf[id], shift[id], desc().alg_kind);
 
             add(reg_from, uf[id] * shift[id]);
             add(reg_to, uf[id] * shift[id]);
@@ -125,8 +123,6 @@ struct jit_uni_subkernel_int : public jit_uni_eltwise_int_kernel,
 
         L(loop_label[2]);
         postamble();
-
-        ker_ = (decltype(ker_))this->getCode();
     }
 
 private:
@@ -259,7 +255,7 @@ private:
 };
 
 template <cpu_isa_t isa>
-void jit_uni_subkernel_int<isa>::process_linear(
+void jit_uni_subkernel_int_t<isa>::process_linear(
         const Vmm &vr_to, const Vmm &vr_from) {
     uni_vcvtdq2ps(vr_to, vr_from);
     uni_vfmadd213ps(vr_to, vmm_alpha, vmm_beta);
@@ -276,13 +272,13 @@ void jit_uni_subkernel_int<isa>::process_linear(
 }
 
 template <cpu_isa_t isa>
-void jit_uni_subkernel_int<isa>::process_relu(
+void jit_uni_subkernel_int_t<isa>::process_relu(
         const Vmm &vr_to, const Vmm &vr_from) {
     assert(!"unsupported isa");
 }
 
 template <>
-void jit_uni_subkernel_int<sse41>::process_relu(
+void jit_uni_subkernel_int_t<sse41>::process_relu(
         const Vmm &vr_to, const Vmm &vr_from) {
 
     cvtdq2ps(vr_from, vr_from);
@@ -297,7 +293,7 @@ void jit_uni_subkernel_int<sse41>::process_relu(
 }
 
 template <>
-void jit_uni_subkernel_int<avx2>::process_relu(
+void jit_uni_subkernel_int_t<avx2>::process_relu(
         const Vmm &vr_to, const Vmm &vr_from) {
 
     vcvtdq2ps(vr_from, vr_from);
@@ -308,7 +304,7 @@ void jit_uni_subkernel_int<avx2>::process_relu(
 }
 
 template <>
-void jit_uni_subkernel_int<avx512_common>::process_relu(
+void jit_uni_subkernel_int_t<avx512_common>::process_relu(
         const Vmm &vr_to, const Vmm &vr_from) {
 
     vcvtdq2ps(vr_from, vr_from);
@@ -319,13 +315,13 @@ void jit_uni_subkernel_int<avx512_common>::process_relu(
 }
 
 template <cpu_isa_t isa>
-void jit_uni_subkernel_int<isa>::store_8bit(const bool vectorize,
+void jit_uni_subkernel_int_t<isa>::store_8bit(const bool vectorize,
         const Address &mem_to, const Vmm &vr_to, bool is_signed) {
     assert(!"unsupported isa");
 }
 
 template <>
-void jit_uni_subkernel_int<sse41>::store_8bit(const bool vectorize,
+void jit_uni_subkernel_int_t<sse41>::store_8bit(const bool vectorize,
         const Address &mem_to, const Vmm &vr_to, bool is_signed) {
     if (vectorize) {
         // store full Vmm size
@@ -352,7 +348,7 @@ void jit_uni_subkernel_int<sse41>::store_8bit(const bool vectorize,
 }
 
 template <>
-void jit_uni_subkernel_int<avx2>::store_8bit(const bool vectorize,
+void jit_uni_subkernel_int_t<avx2>::store_8bit(const bool vectorize,
         const Address &mem_to, const Vmm &vr_to, bool is_signed) {
     if (vectorize) {
         // store full Vmm size
@@ -381,7 +377,7 @@ void jit_uni_subkernel_int<avx2>::store_8bit(const bool vectorize,
 }
 
 template <>
-void jit_uni_subkernel_int<avx512_common>::store_8bit(const bool vectorize,
+void jit_uni_subkernel_int_t<avx512_common>::store_8bit(const bool vectorize,
         const Address &mem_to, const Vmm &vr_to, bool is_signed) {
     if (vectorize) {
         // store full Vmm size
@@ -409,7 +405,7 @@ status_t jit_uni_eltwise_int_fwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
             && utils::one_of(desc()->alg_kind, alg_kind::eltwise_relu,
                     alg_kind::eltwise_linear)
             && !has_zero_dim_memory()
-            && memory_desc_wrapper(src_md()).is_dense(true)
+            && memory_desc_wrapper(data_md()).is_dense(true)
             && attr()->has_default_values();
 
     return ok ? status::success : status::unimplemented;
@@ -418,9 +414,13 @@ status_t jit_uni_eltwise_int_fwd_t<isa, d_type>::pd_t::init(engine_t *engine) {
 template <cpu_isa_t isa, data_type_t d_type>
 jit_uni_eltwise_int_fwd_t<isa, d_type>::jit_uni_eltwise_int_fwd_t(
         const pd_t *apd)
-    : primitive_t(apd) {
+    : primitive_t(apd) {}
+
+template <cpu_isa_t isa, data_type_t d_type>
+status_t jit_uni_eltwise_int_fwd_t<isa, d_type>::init(engine_t *engine) {
     const auto &desc = *pd()->desc();
-    kernel_ = new jit_uni_subkernel_int<isa>(desc);
+    CHECK(safe_ptr_assign(kernel_, new jit_uni_subkernel_int_t<isa>(desc)));
+    return kernel_->create_kernel();
 }
 
 template <cpu_isa_t isa, data_type_t d_type>
@@ -429,12 +429,14 @@ jit_uni_eltwise_int_fwd_t<isa, d_type>::~jit_uni_eltwise_int_fwd_t() {
 }
 
 template <cpu_isa_t isa, impl::data_type_t d_type>
-void jit_uni_eltwise_int_fwd_t<isa, d_type>::execute_forward(
+status_t jit_uni_eltwise_int_fwd_t<isa, d_type>::execute_forward(
         const exec_ctx_t &ctx) const {
+    status_t status = status::success;
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
-    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
+    auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
 
-    const memory_desc_wrapper data_d(pd()->src_md());
+    const memory_desc_wrapper data_d(pd()->data_md());
 
     const size_t nelems = data_d.nelems(true);
 
@@ -449,13 +451,14 @@ void jit_uni_eltwise_int_fwd_t<isa, d_type>::execute_forward(
         start = nstl::min(nelems, start * cache_line);
         end = nstl::min(nelems, end * cache_line);
 
-        auto arg = jit_args();
+        auto arg = jit_args_t();
         arg.from = (const void *)&src[start];
         arg.for_comparison = (const void *)&src[start];
         arg.to = (const void *)&dst[start];
         arg.work_amount = end - start;
         if (arg.work_amount) (*kernel_)(&arg);
     });
+    return status::success;
 }
 
 using namespace data_type;

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 #include "common/utils.hpp"
 
 #include "cpu/platform.hpp"
-#include "cpu/ref_eltwise.hpp"
+#include "cpu/primitive_attr_postops.hpp"
 
 #include "cpu/cpu_binary_pd.hpp"
 
@@ -45,21 +45,16 @@ struct ref_binary_t : public primitive_t {
             using namespace data_type;
             using sm = primitive_attr_t::skip_mask_t;
 
-            bool ok = src0_type == src_md(0)->data_type
+            const bool ok = src0_type == src_md(0)->data_type
                     && src1_type == src_md(1)->data_type
                     && dst_type == dst_md()->data_type
                     && platform::has_data_type_support(src0_type)
                     && platform::has_data_type_support(src1_type)
                     && platform::has_data_type_support(dst_type)
                     && set_default_params() == status::success
-                    && IMPLICATION(utils::one_of(src0_type, f32, bf16),
-                            attr()->has_default_values(sm::post_ops))
-                    && IMPLICATION(utils::one_of(src0_type, s8, u8),
-                            attr()->has_default_values(
-                                    sm::post_ops | sm::scales))
+                    && attr()->has_default_values(sm::post_ops | sm::scales)
                     && IMPLICATION(!attr()->scales_.has_default_values(),
-                            check_scales_mask())
-                    && attr_post_ops_ok();
+                            check_scales_mask());
             if (!ok) return status::unimplemented;
 
             return status::success;
@@ -77,10 +72,9 @@ struct ref_binary_t : public primitive_t {
     ref_binary_t(const pd_t *apd) : primitive_t(apd) {}
 
     status_t init(engine_t *engine) override {
-        int e_idx = pd()->attr()->post_ops_.find(primitive_kind::eltwise);
-        if (e_idx != -1)
-            eltwise_ker_.reset(new ref_eltwise_scalar_fwd_t(
-                    pd()->attr()->post_ops_.entry_[e_idx].eltwise));
+        ref_post_ops
+                = utils::make_unique<ref_post_ops_t>(pd()->attr()->post_ops_);
+        if (!ref_post_ops) return status::out_of_memory;
         return status::success;
     }
 
@@ -95,7 +89,7 @@ struct ref_binary_t : public primitive_t {
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     status_t execute_ref(const exec_ctx_t &ctx) const;
-    std::unique_ptr<ref_eltwise_scalar_fwd_t> eltwise_ker_;
+    std::unique_ptr<ref_post_ops_t> ref_post_ops;
 };
 
 } // namespace cpu

@@ -47,7 +47,7 @@ public:
     inline int getArgumentSurface(const std::string &name) const;
     inline GRF getLocalID(int dim) const;
 
-    const std::string &getExternalName()                { return kernelName; }
+    const std::string &getExternalName() const          { return kernelName; }
 
 protected:
     struct Assignment {
@@ -257,6 +257,8 @@ void NEOInterfaceHandler::generateDummyCL(std::ostream &stream) const
     }
     stream << ") {\n";
     stream << "    global volatile int *____;\n";
+    if (hw == HW::Gen9)
+        stream << "    volatile double *__df; *__df = 1.1 / *__df;\n";
 
     if (needLocalID)        stream << "    (void) ____[get_local_id(0)];\n";
     if (needLocalSize)      stream << "    (void) ____[get_enqueued_local_size(0)];\n";

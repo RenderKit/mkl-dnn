@@ -6,14 +6,15 @@
 --cfg=bf16bf16bf16 --batch=set_conv_all
 
 --dir=FWD_D
---cfg=bf16bf16bf16 --batch=shapes_resnet_50
+--cfg=bf16bf16bf16 --batch=shapes_resnet_50 --batch=shapes_regression_1x1
 
 --dir=BWD_D
---cfg=f32bf16bf16  --batch=shapes_resnet_50
+--cfg=f32bf16bf16  --batch=shapes_resnet_50 --batch=shapes_regression_1x1
 --cfg=bf16bf16bf16 --batch=set_conv_all
 
 --dir=BWD_WB
---cfg=bf16f32bf16 --batch=set_conv_all --batch=set_dilated-conv
+--cfg=bf16f32bf16
+--batch=set_conv_all --batch=set_dilated-conv --batch=shapes_regression_1x1
 --cfg=bf16bf16bf16 --batch=shapes_resnet_50 --batch=set_dilated-conv
 
 --reset
@@ -34,7 +35,8 @@
 ## Post-Ops
 --attr-post-ops='sum' --batch=shapes_resnet_50
 --attr-post-ops='relu' --batch=shapes_googlenet_v3
---attr-post-ops='sum;tanh:1:1:2.5' --batch=shapes_tails
+--attr-post-ops='add:bf16:per_oc' --batch=shapes_tails
+--attr-post-ops='mul:f32;sum;tanh:1:1:2.5' --batch=shapes_tails
 
 ## Depthwise fusion stride 1
 --attr-post-ops='dw_k3s1p1:bf16;relu'

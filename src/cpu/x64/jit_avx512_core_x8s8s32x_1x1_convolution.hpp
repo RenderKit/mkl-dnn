@@ -59,6 +59,7 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
                 jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t);
 
         status_t init(engine_t *engine) {
+            using smask_t = primitive_attr_t::skip_mask_t;
             bool ok = true && is_fwd()
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(src_type, data_type::s8,
@@ -67,11 +68,11 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
                             utils::one_of(desc()->bias_desc.data_type,
                                     data_type::f32, data_type::s32,
                                     data_type::s8, data_type::u8))
-                    && attr()->has_default_values(
-                            primitive_attr_t::skip_mask_t::oscale
-                                    | primitive_attr_t::skip_mask_t::post_ops,
+                    && attr()->has_default_values(smask_t::oscale
+                                    | smask_t::zero_points_runtime
+                                    | smask_t::post_ops,
                             dst_type)
-                    && !has_zero_dim_memory()
+                    && !has_zero_dim_memory() && zero_points_ok()
                     && set_default_formats_common(
                             dat_tag(), format_tag::any, dat_tag());
 
@@ -118,9 +119,11 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
         }
 
         arg_usage_t arg_usage(int arg) const override {
+            if (arg == (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS))
+                return arg_usage_t::input;
 
-            if (utils::one_of(arg, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS,
-                        DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS))
+            if (arg == (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS)
+                    && attr_post_op_dw_inputs() > 1)
                 return arg_usage_t::input;
 
             return convolution_fwd_pd_t::arg_usage(arg);
@@ -138,6 +141,16 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
         format_tag_t dat_tag() const {
             return utils::pick(src_md_.ndims - 3, format_tag::nwc,
                     format_tag::nhwc, format_tag::ndhwc);
+        }
+
+        bool zero_points_ok() const {
+            using namespace data_type;
+            int mask_src = 0, mask_dst = 0;
+            attr()->zero_points_.get(DNNL_ARG_SRC, nullptr, &mask_src, nullptr);
+            attr()->zero_points_.get(DNNL_ARG_DST, nullptr, &mask_dst, nullptr);
+            return attr()->zero_points_.has_default_values(DNNL_ARG_WEIGHTS)
+                    && utils::one_of(mask_src, 0, 0x1, 0x3)
+                    && utils::one_of(mask_dst, 0, 0x1, 0x3);
         }
 
         status_t copy(const pd_t &other) {
@@ -298,26 +311,10 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
         }
     };
     template <cpu_isa_t isa, typename conv_t>
-    friend void init_rtus_driver(conv_t *self);
+    friend status_t init_rtus_driver(conv_t *self);
 
     jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t(const pd_t *apd)
-        : primitive_t(apd), kernel_(nullptr), rtus_driver_(nullptr) {
-        kernel_ = new jit_avx512_core_x8s8s32x_1x1_conv_kernel(
-                pd()->jcp_, *pd()->attr());
-
-        if (pd()->jcp_.with_dw_conv) {
-            kernel_dw_ = new dw_conv_kernel_t(
-                    *(pd()->jcp_dw_), *(pd()->dw_conv_pd_->attr()));
-        }
-
-        init_rtus_driver<avx512_common>(this);
-    }
-
-    ~jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t() {
-        delete kernel_;
-        if (kernel_dw_) { delete kernel_dw_; }
-        delete rtus_driver_;
-    }
+        : primitive_t(apd) {}
 
     typedef typename prec_traits<src_type>::type src_data_t;
     typedef typename prec_traits<data_type::s8>::type wei_data_t;
@@ -326,22 +323,41 @@ struct jit_avx512_core_x8s8s32x_1x1_convolution_fwd_t : public primitive_t {
     // after fusion may not be dst_data_t.
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
 
-    status_t execute(const exec_ctx_t &ctx) const override {
-        execute_forward(ctx);
+    status_t init(engine_t *engine) override {
+        CHECK(safe_ptr_assign(kernel_,
+                new jit_avx512_core_x8s8s32x_1x1_conv_kernel(
+                        pd()->jcp_, *pd()->attr(), *pd()->dst_md(0))));
+        CHECK(kernel_->create_kernel());
+
+        if (pd()->jcp_.with_dw_conv) {
+            CHECK(safe_ptr_assign(kernel_dw_,
+                    new dw_conv_kernel_t(*(pd()->jcp_dw_),
+                            *(pd()->dw_conv_pd_->attr()), *pd()->dst_md(0))));
+            CHECK(kernel_dw_->create_kernel());
+        }
+
+        CHECK(init_rtus_driver<avx512_common>(this));
         return status::success;
     }
 
+    status_t execute(const exec_ctx_t &ctx) const override {
+        return execute_forward(ctx);
+    }
+
 private:
-    void execute_forward(const exec_ctx_t &ctx) const;
+    status_t execute_forward(const exec_ctx_t &ctx) const;
     void execute_forward_thr(const int ithr, const int nthr,
             const src_data_t *src, const wei_data_t *weights, const char *bias,
             const wei_data_t *weights_dw, const char *bias_dw, dst_data_t *dst,
-            const memory_tracking::grantor_t &scratchpad) const;
+            const int32_t *src_zero_point, const int32_t *dst_zero_point,
+            const memory_tracking::grantor_t &scratchpad,
+            const void *post_ops_binary_rhs_arg_vec,
+            const void *post_ops_binary_rhs_arg_vec_dw) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    jit_avx512_core_x8s8s32x_1x1_conv_kernel *kernel_;
-    rtus_driver_t<avx512_common> *rtus_driver_;
+    std::unique_ptr<jit_avx512_core_x8s8s32x_1x1_conv_kernel> kernel_;
+    std::unique_ptr<rtus_driver_t<avx512_common>> rtus_driver_;
     using dw_conv_kernel_t = jit_avx512_core_x8s8s32x_fwd_kernel;
-    dw_conv_kernel_t *kernel_dw_ = nullptr;
+    std::unique_ptr<dw_conv_kernel_t> kernel_dw_;
 };
 
 } // namespace x64

@@ -25,8 +25,9 @@
 #include <cstring>
 #include <math.h>
 #include <numeric>
+#include <utility>
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 #include "example_utils.hpp"
 
@@ -172,12 +173,12 @@ void simple_net(engine::kind engine_kind) {
     // Create auxillary f32 memory descriptor
     // based on user- supplied dimensions and layout.
     auto formatted_md
-            = [=](memory::dims dimensions, memory::format_tag layout) {
+            = [=](const memory::dims &dimensions, memory::format_tag layout) {
                   return memory::desc {{dimensions}, dt::f32, layout};
               };
     // Create auxillary generic f32 memory descriptor
     // based on supplied dimensions, with format_tag::any.
-    auto generic_md = [=](memory::dims dimensions) {
+    auto generic_md = [=](const memory::dims &dimensions) {
         return formatted_md(dimensions, tag::any);
     };
 

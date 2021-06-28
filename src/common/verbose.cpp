@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <atomic>
+
 #include <stdlib.h>
 #ifndef _WIN32
 #include <sys/time.h>
@@ -21,9 +23,9 @@
 #include <windows.h>
 #endif
 
-#include "dnnl.h"
-#include "dnnl_debug.h"
-#include "dnnl_version.h"
+#include "oneapi/dnnl/dnnl.h"
+#include "oneapi/dnnl/dnnl_debug.h"
+#include "oneapi/dnnl/dnnl_version.h"
 
 #include "c_types_map.hpp"
 #include "verbose.hpp"
@@ -40,6 +42,8 @@
 #include "lrn_pd.hpp"
 #include "matmul_pd.hpp"
 #include "pooling_pd.hpp"
+#include "prelu_pd.hpp"
+#include "reduction_pd.hpp"
 #include "reorder_pd.hpp"
 #include "resampling_pd.hpp"
 #include "rnn_pd.hpp"
@@ -51,6 +55,10 @@
 
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
 #include "gpu/ocl/verbose.hpp"
+#endif
+
+#ifdef DNNL_WITH_SYCL
+#include "sycl/verbose.hpp"
 #endif
 
 namespace dnnl {
@@ -67,8 +75,8 @@ int get_verbose() {
         if (getenv("DNNL_VERBOSE", val, len) == 1) verbose.set(atoi(val));
         if (!verbose.initialized()) verbose.set(0);
     }
-    static bool version_printed = false;
-    if (!version_printed && verbose.get() > 0) {
+    static std::atomic_flag version_printed = ATOMIC_FLAG_INIT;
+    if (!version_printed.test_and_set() && verbose.get() > 0) {
         printf("dnnl_verbose,info,oneDNN v%d.%d.%d (commit %s)\n",
                 dnnl_version()->major, dnnl_version()->minor,
                 dnnl_version()->patch, dnnl_version()->hash);
@@ -80,10 +88,33 @@ int get_verbose() {
 #if DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
         gpu::ocl::print_verbose_header();
 #endif
-        version_printed = true;
+#ifdef DNNL_WITH_SYCL
+        sycl::print_verbose_header();
+#endif
+        printf("dnnl_verbose,info,prim_template:");
+        printf("%soperation,engine,primitive,implementation,prop_"
+               "kind,memory_descriptors,attributes,auxiliary,problem_desc,exec_"
+               "time\n",
+                get_verbose_timestamp() ? "timestamp," : "");
     }
 #endif
     return verbose.get();
+}
+
+static setting_t<bool> verbose_timestamp {false};
+bool get_verbose_timestamp() {
+#if !defined(DISABLE_VERBOSE)
+    if (!verbose_timestamp.initialized()) {
+        // Assumes that all threads see the same environment
+        const int len = 2;
+        char val[len] = {0};
+        if (getenv("DNNL_VERBOSE_TIMESTAMP", val, len) == 1)
+            verbose_timestamp.set(atoi(val));
+        if (!verbose_timestamp.initialized()) verbose_timestamp.set(false);
+    }
+#endif
+    // No effect if verbose is not set.
+    return verbose.get() && verbose_timestamp.get();
 }
 
 double get_msec() {
@@ -95,7 +126,7 @@ double get_msec() {
     return 1e+3 * now.QuadPart / frequency.QuadPart;
 #else
     struct timeval time;
-    gettimeofday(&time, NULL);
+    gettimeofday(&time, nullptr);
     return 1e+3 * time.tv_sec + 1e-3 * time.tv_usec;
 #endif
 }
@@ -108,10 +139,10 @@ void pd_info_t::init(
 
 /* init_info section */
 namespace {
-#define DNNL_VERBOSE_DAT_LEN 256
-#define DNNL_VERBOSE_ATTR_LEN 128
-#define DNNL_VERBOSE_AUX_LEN 384
-#define DNNL_VERBOSE_PRB_LEN 384
+#define DNNL_VERBOSE_DAT_LEN 2048
+#define DNNL_VERBOSE_ATTR_LEN 768
+#define DNNL_VERBOSE_AUX_LEN 256
+#define DNNL_VERBOSE_PRB_LEN 1024
 
 #define DECL_DAT_AUX_PRB_STRS() \
     int dat_written = 0, aux_written = 0, prb_written = 0, attr_written = 0; \
@@ -136,10 +167,11 @@ void clear_buf(char *buf, int &written) {
 
 #define CHECK_WRITTEN(buf, buf_len, written_now, written_total) \
     do { \
-        if (written_now < 0 || written_total + written_now > buf_len) { \
+        if ((written_now) < 0 \
+                || (written_total) + (written_now) > (buf_len)) { \
             clear_buf(buf, written_total); \
         } else { \
-            written_total += written_now; \
+            (written_total) += (written_now); \
         } \
     } while (0)
 
@@ -151,13 +183,13 @@ void clear_buf(char *buf, int &written) {
 
 #define MD2STR(buf, buf_len, written, md) \
     do { \
-        int l = dnnl_md2fmt_str(buf + written, buf_len - written, md); \
+        int l = dnnl_md2fmt_str((buf) + (written), (buf_len) - (written), md); \
         CHECK_WRITTEN(buf, buf_len, l, written); \
     } while (0)
 
 #define DIM2STR(buf, buf_len, written, md) \
     do { \
-        int l = dnnl_md2dim_str(buf + written, buf_len - written, md); \
+        int l = dnnl_md2dim_str((buf) + (written), (buf_len) - (written), md); \
         CHECK_WRITTEN(buf, buf_len, l, written); \
     } while (0)
 
@@ -244,30 +276,54 @@ void attr2str(char *str, int len, int written, const primitive_attr_t *attr) {
     const post_ops_t &po = attr->post_ops_;
     if (!po.has_default_values()) {
         DPRINT(str, len, written, "post_ops:'");
-        for (int i = 0; i < po.len_; ++i) {
+        for (int i = 0; i < po.len(); ++i) {
             const post_ops_t::entry_t &e = po.entry_[i];
-            if (e.is_sum()) {
-                DPRINT(str, len, written, "sum;");
-            } else if (e.is_sum(false)) {
-                DPRINT(str, len, written, "sum:%g;", e.sum.scale);
-            } else if (e.is_eltwise(true)) {
-                const post_ops_t::entry_t::eltwise_t &ew = e.eltwise;
-                if (ew.beta == 0) {
-                    if (ew.alpha == 0) {
-                        DPRINT(str, len, written, "%s;",
-                                dnnl_alg_kind2str(ew.alg));
-                    } else {
-                        DPRINT(str, len, written, "%s:%g;",
-                                dnnl_alg_kind2str(ew.alg), ew.alpha);
+            switch (e.kind) {
+                case primitive_kind::sum: {
+                    if (e.sum.scale == 1.f)
+                        DPRINT(str, len, written, "sum;");
+                    else
+                        DPRINT(str, len, written, "sum:%g;", e.sum.scale);
+                } break;
+                case primitive_kind::convolution: {
+                    using namespace data_type;
+                    const auto &c = e.depthwise_conv;
+                    DPRINT(str, len, written, "dw_k3s%dp1", c.stride);
+                    if (c.wei_dt == s8) {
+                        DPRINT(str, len, written, ":%s:%d",
+                                dnnl_dt2str(c.dst_dt), c.mask);
+                        if (c.mask == 0)
+                            DPRINT(str, len, written, ":%g", c.scales[0]);
+                    } else if (c.dst_dt != f32) {
+                        DPRINT(str, len, written, ":%s", dnnl_dt2str(c.dst_dt));
                     }
-                } else {
-                    DPRINT(str, len, written, "%s:%g:%g;",
-                            dnnl_alg_kind2str(ew.alg), ew.alpha, ew.beta);
-                }
-            } else if (e.is_eltwise(false)) {
-                const post_ops_t::entry_t::eltwise_t &ew = e.eltwise;
-                DPRINT(str, len, written, "%s:%g:%g:%g;",
-                        dnnl_alg_kind2str(ew.alg), ew.alpha, ew.beta, ew.scale);
+                    DPRINT(str, len, written, ";");
+                } break;
+                case primitive_kind::eltwise: {
+                    const post_ops_t::entry_t::eltwise_t &ew = e.eltwise;
+                    const char *alg_str = dnnl_alg_kind2str(ew.alg);
+                    if (ew.scale != 1.f)
+                        DPRINT(str, len, written, "%s:%g:%g:%g;", alg_str,
+                                ew.alpha, ew.beta, ew.scale);
+                    else if (ew.beta != 0.f)
+                        DPRINT(str, len, written, "%s:%g:%g;", alg_str,
+                                ew.alpha, ew.beta);
+                    else if (ew.alpha != 0.f)
+                        DPRINT(str, len, written, "%s:%g;", alg_str, ew.alpha);
+                    else
+                        DPRINT(str, len, written, "%s;", alg_str);
+                } break;
+                case primitive_kind::binary: {
+                    const post_ops_t::entry_t::binary_t &eb = e.binary;
+                    int mask = 0;
+                    for (int d = 0; d < eb.src1_desc.ndims; ++d)
+                        mask += eb.src1_desc.dims[d] != 1 ? (1 << d) : 0;
+
+                    DPRINT(str, len, written, "%s:%s:%d;",
+                            dnnl_alg_kind2str(eb.alg),
+                            dnnl_dt2str(eb.src1_desc.data_type), mask);
+                } break;
+                default: assert(!"unsupported post op primitive kind!"); break;
             }
         }
         DPRINT(str, len, written, "';");
@@ -288,18 +344,37 @@ void flags2str(char *str, int len, int written, unsigned flags) {
     DPRINT(str, len, written, "flags:%s", s.c_str());
 }
 
+const char *prim_kind2str(dnnl_primitive_kind_t prim_kind) {
+    switch ((int)prim_kind) {
+        case primitive_kind::zero_pad: return "zero_pad";
+        default: return dnnl_prim_kind2str(prim_kind);
+    }
+}
+
+// needed for cross engine reorder dump
+void verbose_templ_no_engine_kind(char *buffer, dnnl_primitive_kind_t prim_kind,
+        const char *impl_str, dnnl_prop_kind_t prop_kind, const char *data_str,
+        const char *attr_str, const char *aux_str, const char *prb_str,
+        int written = 0) {
+    MAYBE_UNUSED(verbose_templ_no_engine_kind);
+    DPRINT(buffer, DNNL_VERBOSE_BUF_LEN, written, "%s,%s,%s,%s,%s,%s,%s",
+            prim_kind2str(prim_kind), impl_str, dnnl_prop_kind2str(prop_kind),
+            data_str, attr_str, aux_str, prb_str);
+}
+
 void verbose_templ(char *buffer, const engine_t *engine,
         dnnl_primitive_kind_t prim_kind, const char *impl_str,
         dnnl_prop_kind_t prop_kind, const char *data_str, const char *attr_str,
         const char *aux_str, const char *prb_str) {
     MAYBE_UNUSED(verbose_templ);
+    std::string engine_idx;
+    if (dnnl_engine_get_count(engine->kind()) > 1)
+        engine_idx = ":" + std::to_string(engine->index());
     int written = 0;
-    dnnl_engine_kind_t engine_kind;
-    engine_kind = engine->kind();
-    DPRINT(buffer, DNNL_VERBOSE_BUF_LEN, written, "%s,%s,%s,%s,%s,%s,%s,%s",
-            dnnl_engine_kind2str(engine_kind), dnnl_prim_kind2str(prim_kind),
-            impl_str, dnnl_prop_kind2str(prop_kind), data_str, attr_str,
-            aux_str, prb_str);
+    DPRINT(buffer, DNNL_VERBOSE_BUF_LEN, written, "%s%s,",
+            dnnl_engine_kind2str(engine->kind()), engine_idx.c_str());
+    verbose_templ_no_engine_kind(buffer, prim_kind, impl_str, prop_kind,
+            data_str, attr_str, aux_str, prb_str, written);
 }
 
 template <typename pd_t>
@@ -509,16 +584,16 @@ static void init_info_gemm(const engine_t *e, pd_t *s, char *buffer) {
     attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
 
     const char *s_transa
-            = (s->desc()->transa == transpose::notrans ? "N" : "T");
+            = (s->desc()->transa() == transpose::notrans ? "N" : "T");
     const char *s_transb
-            = (s->desc()->transb == transpose::notrans ? "N" : "T");
+            = (s->desc()->transb() == transpose::notrans ? "N" : "T");
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, dat_written,
             "m" DFMT "n" DFMT "k" DFMT "_lda" DFMT "ldb" DFMT "ldc" DFMT
             " trans:%s%s a_dt:%s b_dt:%s c_dt:%s acc_dt:%s",
-            s->desc()->m, s->desc()->n, s->desc()->k, s->desc()->lda,
-            s->desc()->ldb, s->desc()->ldc, s_transa, s_transb,
-            dnnl_dt2str(s->desc()->a_type), dnnl_dt2str(s->desc()->b_type),
-            dnnl_dt2str(s->desc()->c_type), dnnl_dt2str(s->desc()->acc_type));
+            s->desc()->m(), s->desc()->n(), s->desc()->k(), s->desc()->lda(),
+            s->desc()->ldb(), s->desc()->ldc(), s_transa, s_transb,
+            dnnl_dt2str(s->desc()->a_type()), dnnl_dt2str(s->desc()->b_type()),
+            dnnl_dt2str(s->desc()->c_type()), dnnl_dt2str(s->desc()->acc_type));
 
     verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
             attr_str, aux_str, prb_str);
@@ -674,7 +749,39 @@ static void init_info_mem(const engine_t *e, pd_t *s, char *buffer) {
 
 template <typename pd_t>
 static void init_info_reorder(engine_t *e, pd_t *s, char *buffer) {
-    init_info_mem(e, s, buffer);
+    DECL_DAT_AUX_PRB_STRS();
+
+    { // src
+        for (int i = 0; i < s->n_inputs(); ++i) {
+            auto md = s->src_md(i);
+            DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "src_");
+            MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+            DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " ");
+        }
+    }
+    { // dst
+        auto md = s->dst_md();
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "dst_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+    }
+
+    attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
+
+    dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->dst_md());
+
+    auto src_ek = s->desc()->src_engine_kind;
+    auto dst_ek = s->desc()->dst_engine_kind;
+
+    if (src_ek != dst_ek) {
+        int written = 0;
+        DPRINT(buffer, DNNL_VERBOSE_BUF_LEN, written, "%s2%s,",
+                dnnl_engine_kind2str(src_ek), dnnl_engine_kind2str(dst_ek));
+        verbose_templ_no_engine_kind(buffer, s->kind(), s->name(),
+                prop_kind::undef, dat_str, attr_str, aux_str, prb_str, written);
+    } else {
+        verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef,
+                dat_str, attr_str, aux_str, prb_str);
+    }
 }
 
 template <typename pd_t>
@@ -713,24 +820,63 @@ static void init_info_pooling(engine_t *e, pd_t *s, char *buffer) {
         DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
                 "mb" DFMT "ic" DFMT
                 "_"
-                "id" DFMT "od" DFMT "kd" DFMT "sd" DFMT "pd" DFMT
+                "id" DFMT "od" DFMT "kd" DFMT "dd" DFMT "sd" DFMT "pd" DFMT
                 "_"
-                "ih" DFMT "oh" DFMT "kh" DFMT "sh" DFMT "ph" DFMT
+                "ih" DFMT "oh" DFMT "kh" DFMT "dh" DFMT "sh" DFMT "ph" DFMT
                 "_"
-                "iw" DFMT "ow" DFMT "kw" DFMT "sw" DFMT "pw" DFMT "",
-                s->MB(), s->C(), s->ID(), s->OD(), s->KD(), s->KSD(),
-                s->padFront(), s->IH(), s->OH(), s->KH(), s->KSH(), s->padT(),
-                s->IW(), s->OW(), s->KW(), s->KSW(), s->padL());
+                "iw" DFMT "ow" DFMT "kw" DFMT "dw" DFMT "sw" DFMT "pw" DFMT "",
+                s->MB(), s->C(), s->ID(), s->OD(), s->KD(), s->DD(), s->KSD(),
+                s->padFront(), s->IH(), s->OH(), s->KH(), s->DH(), s->KSH(),
+                s->padT(), s->IW(), s->OW(), s->KW(), s->DW(), s->KSW(),
+                s->padL());
     } else {
         DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
                 "mb" DFMT "ic" DFMT
                 "_"
-                "ih" DFMT "oh" DFMT "kh" DFMT "sh" DFMT "ph" DFMT
+                "ih" DFMT "oh" DFMT "kh" DFMT "dh" DFMT "sh" DFMT "ph" DFMT
                 "_"
-                "iw" DFMT "ow" DFMT "kw" DFMT "sw" DFMT "pw" DFMT,
-                s->MB(), s->C(), s->IH(), s->OH(), s->KH(), s->KSH(), s->padT(),
-                s->IW(), s->OW(), s->KW(), s->KSW(), s->padL());
+                "iw" DFMT "ow" DFMT "kw" DFMT "dw" DFMT "sw" DFMT "pw" DFMT,
+                s->MB(), s->C(), s->IH(), s->OH(), s->KH(), s->DH(), s->KSH(),
+                s->padT(), s->IW(), s->OW(), s->KW(), s->DW(), s->KSW(),
+                s->padL());
     }
+
+    verbose_templ(buffer, e, s->desc()->primitive_kind, s->name(),
+            s->desc()->prop_kind, dat_str, attr_str, aux_str, prb_str);
+}
+
+template <typename pd_t>
+static void init_info_prelu(const engine_t *e, pd_t *s, char *buffer) {
+    DECL_DAT_AUX_PRB_STRS();
+    { // data
+        const auto md = s->src_md(0);
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "data_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+    }
+    { // weights
+        const auto md = s->weights_md(0);
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " weights_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+    }
+    { // diff data
+        const auto md = s->diff_src_md(0);
+        if (md) {
+            DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " diff_");
+            MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+        }
+    }
+    { // diff weights
+        const auto md = s->diff_weights_md(0);
+        if (md) {
+            DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written,
+                    " diff_weights_");
+            MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+        }
+    }
+
+    attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
+
+    dnnl_md2dim_str(prb_str, DNNL_VERBOSE_PRB_LEN, s->src_md(0));
 
     verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
             dat_str, attr_str, aux_str, prb_str);
@@ -779,7 +925,7 @@ static void init_info_rnn(engine_t *e, pd_t *s, char *buffer) {
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "src_layer_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
-    { // src iter
+    if (s->with_src_iter()) { // src iter
         auto md = s->is_fwd() ? s->src_md(1) : s->diff_src_md(1);
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " src_iter_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
@@ -800,7 +946,13 @@ static void init_info_rnn(engine_t *e, pd_t *s, char *buffer) {
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_peephole_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
-    { // bias
+    if (s->is_lstm_projection()) { // wei_projection
+        auto md = s->arg_md(s->is_fwd() ? DNNL_ARG_WEIGHTS_PROJECTION
+                                        : DNNL_ARG_DIFF_WEIGHTS_PROJECTION);
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_proj_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+    }
+    if (s->with_bias()) { // bias
         auto md = s->arg_md(s->is_fwd() ? DNNL_ARG_BIAS : DNNL_ARG_DIFF_BIAS);
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " bias_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
@@ -810,7 +962,7 @@ static void init_info_rnn(engine_t *e, pd_t *s, char *buffer) {
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " dst_layer_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
     }
-    { // dst iter
+    if (s->with_dst_iter()) { // dst iter
         auto md = s->is_fwd() ? s->dst_md(1) : s->diff_dst_md(1);
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " dst_iter_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
@@ -826,8 +978,8 @@ static void init_info_rnn(engine_t *e, pd_t *s, char *buffer) {
 
     DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
             "l" DFMT "t" DFMT "mb" DFMT "sic" DFMT "slc" DFMT "dhc" DFMT
-            "dlc" DFMT,
-            s->L(), s->T(), s->MB(), s->SIC(), s->SLC(), s->DHC(), s->DLC());
+            "dic" DFMT,
+            s->L(), s->T(), s->MB(), s->SIC(), s->SLC(), s->DHC(), s->DIC());
 
     verbose_templ(buffer, e, s->kind(), s->name(), s->desc()->prop_kind,
             dat_str, attr_str, aux_str, prb_str);
@@ -856,9 +1008,6 @@ static void init_info_binary(const engine_t *e, pd_t *s, char *buffer) {
         auto md = s->dst_md();
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " dst_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
-
-        DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, " ");
-        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
     }
 
     attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
@@ -878,32 +1027,42 @@ static void init_info_matmul(const engine_t *e, pd_t *s, char *buffer) {
         auto md = s->src_md();
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "src_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+
+        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
+        DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, ":");
     }
     { // src1
         auto md = s->weights_md(0);
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " wei_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+
+        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
+        DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, ":");
     }
     { // bia
-        auto md = s->weights_md(1);
-        if (md->ndims != 0) {
+        if (s->with_bias()) {
+            auto md = s->weights_md(1);
             DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " bia_");
             MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+
+            auto bia_ndims = s->weights_md(1)->ndims;
+            auto bia_dims = s->weights_md(1)->dims;
+            int mask = 0;
+            for (int d = bia_ndims - 1; d >= 0; --d) {
+                mask += bia_dims[d] != 1 ? 1 << d : 0;
+            }
+            DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "_mask%d", mask);
         }
     }
     { // dst
         auto md = s->dst_md();
         DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " dst_");
         MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+
+        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
     }
 
     attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
-
-    if (s->batched())
-        DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, "b" DFMT,
-                s->batch());
-    DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written,
-            "m" DFMT "n" DFMT "k" DFMT, s->M(), s->N(), s->K());
 
     verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
             attr_str, aux_str, prb_str);
@@ -937,6 +1096,41 @@ static void init_info_resampling(const engine_t *e, pd_t *s, char *buffer) {
             dat_str, attr_str, aux_str, prb_str);
 }
 
+void init_info_zero_pad(
+        const engine_t *e, const primitive_desc_t *s, char *buffer) {
+    DECL_DAT_AUX_PRB_STRS();
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
+}
+
+template <typename pd_t>
+static void init_info_reduction(const engine_t *e, pd_t *s, char *buffer) {
+    DECL_DAT_AUX_PRB_STRS();
+
+    { // src
+        auto md = s->src_md();
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, "src_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
+        DPRINT(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, ":");
+    }
+    { // dst
+        auto md = s->dst_md();
+        DPRINT(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, " dst_");
+        MD2STR(dat_str, DNNL_VERBOSE_DAT_LEN, dat_written, md);
+        DIM2STR(prb_str, DNNL_VERBOSE_PRB_LEN, prb_written, md);
+    }
+
+    attr2str(attr_str, DNNL_VERBOSE_ATTR_LEN, attr_written, s->attr());
+
+    DPRINT(aux_str, DNNL_VERBOSE_AUX_LEN, aux_written, "alg:%s p:%g eps:%g",
+            dnnl_alg_kind2str(s->desc()->alg_kind), s->desc()->p,
+            s->desc()->eps);
+
+    verbose_templ(buffer, e, s->kind(), s->name(), prop_kind::undef, dat_str,
+            attr_str, aux_str, prb_str);
+}
+
 #undef DPRINT
 } // namespace
 
@@ -947,12 +1141,13 @@ void pd_info_t::init(engine_t *engine, const primitive_desc_t *pd) {
         str_.resize(DNNL_VERBOSE_BUF_LEN, '\0');
 
         using logsoftmax_pd_t = softmax_pd_t;
+// clang-format off
 #define CASE(kind) \
     case primitive_kind::kind: \
         init_info_##kind(engine, (const kind##_pd_t *)pd, &str_[0]); \
         break
 
-        switch (pd->kind()) {
+        switch ((int)pd->kind()) {
             CASE(batch_normalization);
             CASE(binary);
             CASE(concat);
@@ -965,16 +1160,23 @@ void pd_info_t::init(engine_t *engine, const primitive_desc_t *pd) {
             CASE(lrn);
             CASE(logsoftmax);
             CASE(matmul);
+            case primitive_kind::pooling_v2:
             CASE(pooling);
+            CASE(prelu);
+            CASE(reduction);
             CASE(reorder);
             CASE(resampling);
             CASE(rnn);
             CASE(shuffle);
             CASE(softmax);
             CASE(sum);
+            case primitive_kind::zero_pad:
+                init_info_zero_pad(engine, pd, &str_[0]);
+                break;
             default: assert(!"unknown primitive kind");
         }
 #undef CASE
+        // clang-format on
 
         is_initialized_ = true;
     });
@@ -991,7 +1193,7 @@ dnnl_status_t dnnl_set_verbose(int level) {
     return success;
 }
 
-const dnnl_version_t *dnnl_version() {
+const dnnl_version_t *dnnl_version(void) {
     static const dnnl_version_t ver
             = {DNNL_VERSION_MAJOR, DNNL_VERSION_MINOR, DNNL_VERSION_PATCH,
                     DNNL_VERSION_HASH, DNNL_CPU_RUNTIME, DNNL_GPU_RUNTIME};

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 #include <stdio.h>
 
 #include "c_types_map.hpp"
-#include "dnnl_debug.h"
+#include "oneapi/dnnl/dnnl_debug.h"
 #include "utils.hpp"
 #include "z_magic.hpp"
 
@@ -34,10 +34,11 @@ struct verbose_t {
 };
 
 int get_verbose();
+bool get_verbose_timestamp();
 double get_msec();
 
 #if !defined(DISABLE_VERBOSE)
-#define DNNL_VERBOSE_BUF_LEN 1024
+#define DNNL_VERBOSE_BUF_LEN 4096
 #else
 #define DNNL_VERBOSE_BUF_LEN 1
 #endif

@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2018-2020 Intel Corporation
+# Copyright 2018-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,6 +44,10 @@ option(DNNL_ENABLE_MAX_CPU_ISA
     "enables control of CPU ISA detected by oneDNN via DNNL_MAX_CPU_ISA
     environment variable and dnnl_set_max_cpu_isa() function" ON)
 
+option(DNNL_ENABLE_CPU_ISA_HINTS
+    "enables control of CPU ISA specific hints by oneDNN via DNNL_CPU_ISA_HINTS
+    environment variable and dnnl_set_cpu_isa_hints() function" ON)
+
 # =============================
 # Building properties and scope
 # =============================
@@ -63,15 +67,6 @@ set(DNNL_TEST_SET "CI" CACHE STRING
 
     When CI option is set, it enables a subset of test targets to run. When
     NIGHTLY option is set, it enables a broader set of test targets to run.")
-# Transfer string literal into a number to support nested inclusions easier
-set(DNNL_TEST_SET_CI "1")
-set(DNNL_TEST_SET_NIGHTLY "2")
-
-if(DNNL_TEST_SET STREQUAL "NIGHTLY")
-    set(DNNL_TEST_SET ${DNNL_TEST_SET_NIGHTLY})
-else()
-    set(DNNL_TEST_SET ${DNNL_TEST_SET_CI})
-endif()
 
 set(DNNL_INSTALL_MODE "DEFAULT" CACHE STRING
     "specifies installation mode; supports DEFAULT or BUNDLE.
@@ -113,11 +108,20 @@ set(DNNL_ARCH_OPT_FLAGS "HostOpts" CACHE STRING
 # Profiling capabilities
 # ======================
 
+# TODO: restore default to ON after the issue with linking C files by 
+# Intel oneAPI DPC++ Compiler is fixed. Currently this compiler issues a warning
+# when linking object files built from C and C++ sources.
 option(DNNL_ENABLE_JIT_PROFILING
     "Enable registration of oneDNN kernels that are generated at
     runtime with VTune Amplifier (on by default). Without the
     registrations, VTune Amplifier would report data collected inside
     the kernels as `outside any known module`."
+    ON)
+
+option(DNNL_ENABLE_ITT_TASKS
+    "Enable ITT Tasks tagging feature and tag all primitive execution 
+    (on by default). VTune Amplifier can group profiling results based 
+    on those ITT tasks and show corresponding timeline information."
     ON)
 
 # ===================
@@ -126,12 +130,12 @@ option(DNNL_ENABLE_JIT_PROFILING
 
 set(DNNL_CPU_RUNTIME "OMP" CACHE STRING
     "specifies the threading runtime for CPU engines;
-    supports OMP (default) or TBB.
+    supports OMP (default), TBB or DPCPP (DPC++ CPU engines).
 
     To use Threading Building Blocks (TBB) one should also
     set TBBROOT (either environment variable or CMake option) to the library
     location.")
-if(NOT "${DNNL_CPU_RUNTIME}" MATCHES "^(OMP|TBB|SEQ|THREADPOOL)$")
+if(NOT "${DNNL_CPU_RUNTIME}" MATCHES "^(OMP|TBB|SEQ|THREADPOOL|DPCPP|SYCL)$")
     message(FATAL_ERROR "Unsupported CPU runtime: ${DNNL_CPU_RUNTIME}")
 endif()
 
@@ -150,17 +154,49 @@ set(TBBROOT "" CACHE STRING
 
 set(DNNL_GPU_RUNTIME "NONE" CACHE STRING
     "specifies the runtime to use for GPU engines.
-    Can be NONE (default; no GPU engines) or OCL (OpenCL GPU engines).
+    Can be NONE (default; no GPU engines), OCL (OpenCL GPU engines)
+    or DPCPP (DPC++ GPU engines).
 
     Using OpenCL for GPU requires setting OPENCLROOT if the libraries are
     installed in a non-standard location.")
-if(NOT "${DNNL_GPU_RUNTIME}" MATCHES "^(OCL|NONE)$")
+if(NOT "${DNNL_GPU_RUNTIME}" MATCHES "^(OCL|NONE|DPCPP|SYCL)$")
     message(FATAL_ERROR "Unsupported GPU runtime: ${DNNL_GPU_RUNTIME}")
+endif()
+
+set(DNNL_GPU_VENDOR "INTEL" CACHE STRING
+    "specifies target GPU vendor for GPU engines.
+    Can be INTEL (default) or NVIDIA.")
+if(NOT "${DNNL_GPU_VENDOR}" MATCHES "^(INTEL|NVIDIA)$")
+    message(FATAL_ERROR "Unsupported GPU vendor: ${DNNL_GPU_VENDOR}")
 endif()
 
 set(OPENCLROOT "" CACHE STRING
     "path to Intel SDK for OpenCL applications.
     Use this option to specify custom location for OpenCL.")
+
+# TODO: move logic to other cmake files?
+# Shortcuts for SYCL/DPC++
+if(DNNL_CPU_RUNTIME STREQUAL "DPCPP" OR DNNL_CPU_RUNTIME STREQUAL "SYCL")
+    set(DNNL_CPU_SYCL true)
+else()
+    set(DNNL_CPU_SYCL false)
+endif()
+
+if(DNNL_GPU_RUNTIME STREQUAL "DPCPP" OR DNNL_GPU_RUNTIME STREQUAL "SYCL")
+    set(DNNL_GPU_SYCL true)
+    set(DNNL_SYCL_CUDA OFF)
+    if(DNNL_GPU_VENDOR STREQUAL "NVIDIA")
+        set(DNNL_SYCL_CUDA ON)
+    endif()
+else()
+    set(DNNL_GPU_SYCL false)
+endif()
+
+if(DNNL_CPU_SYCL OR DNNL_GPU_SYCL)
+    set(DNNL_WITH_SYCL true)
+else()
+    set(DNNL_WITH_SYCL false)
+endif()
 
 # =============
 # Miscellaneous
@@ -178,8 +214,10 @@ option(BENCHDNN_USE_RDPMC
 set(DNNL_USE_CLANG_SANITIZER "" CACHE STRING
     "instructs build system to use a Clang sanitizer. Possible values:
     Address: enables AddressSanitizer
+    Leak: enables LeakSanitizer
     Memory: enables MemorySanitizer
     MemoryWithOrigin: enables MemorySanitizer with origin tracking
+    Thread: enables ThreadSanitizer
     Undefined: enables UndefinedBehaviourSanitizer
     This feature is experimental and is only available on Linux.")
 
@@ -188,6 +226,16 @@ option(DNNL_ENABLE_MEM_DEBUG "enables memory-related debug functionality,
     Additionaly, this option enables testing of out-of-memory handling by the
     library, such as failed memory allocations, using primitive-related gtests.
     This feature is experimental and is only available on Linux." OFF)
+
+set(DNNL_USE_CLANG_TIDY "NONE" CACHE STRING
+    "Instructs build system to use clang-tidy. Valid values:
+    - NONE (default)
+      Clang-tidy is disabled.
+    - CHECK
+      Enables checks from .clang-tidy.
+    - FIX
+      Enables checks from .clang-tidy and fix found issues.
+    This feature is only available on Linux.")
 
 # =============================
 # External BLAS library options
@@ -204,6 +252,16 @@ set(DNNL_BLAS_VENDOR "NONE" CACHE STRING
         (https://www.openblas.net)
       - ARMPL
         Arm Performance Libraries
-        (https://developer.arm.com/tools-and-software/server-and-hpc/compile/arm-compiler-for-linux/arm-performance-libraries)
+        (https://developer.arm.com/tools-and-software/server-and-hpc/downloads/arm-performance-libraries)
       - ANY
         FindBLAS will search default library paths for a known BLAS installation.")
+
+# ==============================================
+# AArch64 optimizations with Arm Compute Library
+# ==============================================
+
+option(DNNL_AARCH64_USE_ACL "Enables use of AArch64 optimised functions
+    from Arm Compute Library.
+    This is only supported on AArch64 builds and assumes there is a
+    functioning Compute Library build available at the location specified by the
+    environment variable ACL_ROOT_DIR." OFF)

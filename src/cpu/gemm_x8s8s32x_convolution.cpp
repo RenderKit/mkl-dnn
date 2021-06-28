@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
 
-#include "cpu/simple_q10n.hpp"
-
+#include "cpu/binary_injector_utils.hpp"
+#include "cpu/cpu_primitive.hpp"
 #include "cpu/gemm/gemm.hpp"
+#include "cpu/gemm_x8s8s32x_conv_zp_src_pad_comp.hpp"
 #include "cpu/gemm_x8s8s32x_convolution.hpp"
+#include "cpu/simple_q10n.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -35,25 +37,104 @@ using namespace dnnl::impl::utils;
 using namespace dnnl::impl::math;
 using namespace dnnl::impl::memory_tracking::names;
 
+const int32_t *mul_zp_src_comp_from_wei_by_zp_src(const int zp_comp_size,
+        int32_t *zp_src_comp_scratch_dst,
+        const int32_t *const zp_src_comp_from_wei, const int32_t zp_src) {
+    static constexpr int cache_line_size
+            = platform::get_cache_line_size() / sizeof(int);
+    const auto res = std::div(zp_comp_size, cache_line_size);
+
+    if (res.quot) {
+        parallel_nd(res.quot, [&](const int shift_factor) {
+            const auto shift = shift_factor * cache_line_size;
+            const int32_t *__restrict const src = zp_src_comp_from_wei + shift;
+            int32_t *__restrict dst = zp_src_comp_scratch_dst + shift;
+
+            PRAGMA_OMP_SIMD()
+            for (int i = 0; i < cache_line_size; ++i) {
+                dst[i] = src[i] * zp_src;
+            }
+        });
+    }
+
+    if (res.rem) {
+        const auto shift = res.quot * cache_line_size;
+        const int32_t *__restrict const src = zp_src_comp_from_wei + shift;
+        int32_t *__restrict dst = zp_src_comp_scratch_dst + shift;
+
+        PRAGMA_OMP_SIMD()
+        for (int i = 0; i < res.rem; ++i) {
+            dst[i] = src[i] * zp_src;
+        }
+    }
+
+    return zp_src_comp_scratch_dst;
+}
+
+static zero_point_call_params_t prepare_zp_params(const conv_gemm_conf_t &jcp,
+        const memory_tracking::grantor_t &scratchpad, const int8_t *weights,
+        const memory_desc_wrapper &weights_md, bool with_groups,
+        const int32_t *zp_src, const int32_t *zp_dst) {
+
+    int32_t *zp_src_comp_pad = nullptr;
+    const int32_t *zp_src_comp = nullptr;
+
+    if (jcp.zp.src_exists) {
+        const int32_t *zp_src_comp_from_wei = get_src_zp_comp_from_wei(
+                weights, weights_md, jcp.signed_input, jcp.ngroups, jcp.oc);
+        int32_t *zp_src_comp_scratch
+                = scratchpad.get<int32_t>(key_conv_gemm_zp_src_comp);
+        static constexpr auto cache_line_size
+                = platform::get_cache_line_size() / sizeof(int);
+        const auto zp_comp_size = jcp.oc * jcp.ngroups;
+
+        if (jcp.zp.src_is_common) {
+            zp_src_comp = mul_zp_src_comp_from_wei_by_zp_src(zp_comp_size,
+                    zp_src_comp_scratch, zp_src_comp_from_wei, *zp_src);
+        } else
+            zp_src_comp = zp_src_comp_from_wei;
+
+        if (jit_gemm_convolution_utils::padding_exists(jcp)) {
+            const auto shift = jcp.zp.src_is_common
+                    ? utils::rnd_up(zp_comp_size, cache_line_size)
+                    : 0;
+            zp_src_comp_pad = zp_src_comp_scratch + shift;
+            compute_zp_src_comp_pad(jcp, zp_src_comp_pad, zp_src, weights,
+                    weights_md, with_groups);
+        }
+    }
+
+    return {zp_src, zp_dst, zp_src_comp, zp_src_comp_pad};
+}
+
 template <data_type_t src_type, data_type_t dst_type>
 status_t _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward(
         const exec_ctx_t &ctx) const {
+    const conv_gemm_conf_t &jcp = this->pd()->jcp_;
     auto src_base = CTX_IN_MEM(const src_data_t *, DNNL_ARG_SRC);
     auto wei_base = CTX_IN_MEM(const wei_data_t *, DNNL_ARG_WEIGHTS);
     auto bia_base = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
     auto dst_base = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
+    DEFINE_ZERO_POINTS_BUFFER(zp_src, DNNL_ARG_SRC);
+    DEFINE_ZERO_POINTS_BUFFER(zp_dst, DNNL_ARG_DST);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector_utils::prepare_binary_args(
+                    this->pd()->attr()->post_ops_, ctx);
 
     auto scratchpad = ctx.get_scratchpad_grantor();
 
-    const conv_gemm_conf_t &jcp = this->pd()->jcp_;
-
     assert(IMPLICATION(jcp.ow_block != jcp.ow, jcp.oh_block == 1));
+
+    const zero_point_call_params_t zp = prepare_zp_params(jcp, scratchpad,
+            wei_base, memory_desc_wrapper(pd()->weights_md(0)),
+            this->pd()->with_groups(), zp_src, zp_dst);
 
     std::atomic<status_t> st(status::success);
 
     parallel(jcp.nthr, [&](const int ithr, const int nthr) {
-        status_t st_thr = execute_forward_thr(
-                ithr, nthr, src_base, wei_base, bia_base, dst_base, scratchpad);
+        status_t st_thr = execute_forward_thr(ithr, nthr, src_base, wei_base,
+                bia_base, dst_base, zp, scratchpad,
+                post_ops_binary_rhs_arg_vec.data(), ctx);
 
         if (st_thr != status::success) st = st_thr;
     });
@@ -61,12 +142,22 @@ status_t _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward(
     return st;
 }
 
+static const int32_t *get_wei_comp(
+        const int8_t *weights, const memory_desc_wrapper &weights_md) {
+    const size_t comp_off
+            = weights_md.size() - weights_md.additional_buffer_size();
+    return reinterpret_cast<const int32_t *>(&weights[comp_off]);
+}
+
 template <data_type_t src_type, data_type_t dst_type>
 status_t
 _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
         const int ithr, const int nthr, const src_data_t *src_base,
         const wei_data_t *wei_base, const char *bia_base, dst_data_t *dst_base,
-        const memory_tracking::grantor_t &scratchpad) const {
+        const zero_point_call_params_t &zp,
+        const memory_tracking::grantor_t &scratchpad,
+        const void *post_ops_binary_rhs_arg_vec, const exec_ctx_t &ctx) const {
+
     const conv_gemm_conf_t &jcp = this->pd()->jcp_;
 
     const auto src_md = memory_desc_wrapper(pd()->src_md());
@@ -86,15 +177,6 @@ _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
     const bool do_sum = post_ops.contain(primitive_kind::sum, 0);
     const float sum_scale = do_sum ? post_ops.entry_[0].sum.scale : 0;
 
-    float nslope = 0;
-    for (int idx = 0; idx < post_ops.len_; ++idx) {
-        const auto &e = post_ops.entry_[idx];
-        if (e.is_relu(true, false)) {
-            nslope = e.eltwise.alpha;
-            break;
-        }
-    }
-
     uint8_t *__restrict col = scratchpad.get<uint8_t>(key_conv_gemm_col)
             + (ptrdiff_t)ithr * jcp.im2col_sz;
     src_data_t *__restrict imtr = scratchpad.get<src_data_t>(key_conv_gemm_imtr)
@@ -103,8 +185,17 @@ _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
             = scratchpad.get<acc_data_t>(key_conv_int_dat_in_acc_dt)
             + (ptrdiff_t)ithr * jcp.oh_block * jcp.ow_block * jcp.oc;
 
-    const ptrdiff_t offset = (ptrdiff_t)jcp.ngroups * jcp.ks * jcp.ic * jcp.oc;
-    const int32_t *_wei_comp = (const int32_t *)(wei_base + offset);
+    const int32_t *_wei_comp
+            = jcp.signed_input ? get_wei_comp(wei_base, wei_md) : nullptr;
+
+    const bool should_apply_zp_src_comp_pad = jcp.zp.src_exists
+            && jit_gemm_convolution_utils::padding_exists(jcp);
+    const bool should_apply_zp_src_comp_pad_jit_pp
+            = should_apply_zp_src_comp_pad
+            && gemm_x8s8s32x_convolution_utils::mayiuse_jit_pp_kernel();
+    const bool should_apply_zp_src_comp_outside_pp
+            = should_apply_zp_src_comp_pad
+            && !gemm_x8s8s32x_convolution_utils::mayiuse_jit_pp_kernel();
 
     int g {0}, n {0}, ohb {0}, owb {0};
     size_t start = 0, end = 0;
@@ -119,14 +210,14 @@ _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
     const size_t work_amount = (size_t)jcp.ngroups * jcp.mb * nb_oh * nb_ow;
     balance211(work_amount, nthr, ithr, start, end);
     nd_iterator_init(start, n, jcp.mb, g, jcp.ngroups, ohb, nb_oh, owb, nb_ow);
-    uint8_t shift = jcp.signed_input ? 128 : 0;
+    const uint8_t shift = jcp.signed_input ? 128 : 0;
     parallel_nd(jcp.im2col_sz, [&](ptrdiff_t i) { col[i] = shift; });
 
     status_t st = status::success;
 
     for (size_t iwork = start; iwork < end; ++iwork) {
-        int oh = ohb * jcp.oh_block;
-        int ow = owb * jcp.ow_block;
+        const int oh = ohb * jcp.oh_block;
+        const int ow = owb * jcp.ow_block;
         const src_data_t *__restrict src
                 = src_base + n * src_mb_stride + g * src_g_stride;
         const wei_data_t *__restrict wei = wei_base + g * wei_g_stride;
@@ -140,8 +231,7 @@ _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
         for (int od = 0; od < jcp.od; od++) {
             dst_data_t *__restrict dst = dst_base + n * dst_mb_stride
                     + g * dst_g_stride
-                    + ((od * jcp.oh + oh) * jcp.ow + ow)
-                            * pp_ker_->dst_os_stride_;
+                    + ((od * jcp.oh + oh) * jcp.ow + ow) * jcp.dst_os_stride;
             if (jcp.im2col_sz) {
                 if (is_problem_3d)
                     jit_gemm_convolution_utils::im2col_dt_3d<src_data_t,
@@ -170,16 +260,29 @@ _gemm_x8s8s32x_convolution_fwd_t<src_type, dst_type>::execute_forward_thr(
 
             if (st != status::success) return st;
 
-            auto wei_adj_scale
+            const auto wei_adj_scale
                     = (wei_md.extra().flags & memory_extra_flags::scale_adjust)
                     ? wei_md.extra().scale_adjust
                     : 1.f;
 
+            if (should_apply_zp_src_comp_outside_pp)
+                apply_zp_src_comp_pad(jcp, g, od, oh, ow, h_step, w_step, acc,
+                        zp.src_pad_comp);
+
+            const single_gemm_conv_chunk_desc_t chunk_desc
+                    = should_apply_zp_src_comp_pad_jit_pp
+                    ? single_gemm_conv_chunk_desc_t {od, 1, oh, h_step, ow,
+                            w_step}
+                    : single_gemm_conv_chunk_desc_t {};
+
             parallel(0, [&](int ithr, int nthr) {
-                size_t start, end;
-                balance211((size_t)N * jcp.oc, nthr, ithr, start, end);
-                (*pp_ker_)(dst, acc, bia_base, scales, nslope, sum_scale,
-                        1.f / wei_adj_scale, g, start, end);
+                size_t _start, _end;
+                balance211((size_t)N * jcp.oc, nthr, ithr, _start, _end);
+
+                (*pp_ker_)(dst, acc, bia_base, scales, sum_scale,
+                        1.f / wei_adj_scale, g, _start, _end, zp,
+                        post_ops_binary_rhs_arg_vec, dst_base, ctx,
+                        *pd()->dst_md(), chunk_desc);
             });
         }
         nd_iterator_step(n, jcp.mb, g, jcp.ngroups, ohb, nb_oh, owb, nb_ow);
@@ -276,6 +379,7 @@ _gemm_u8s8s32x_convolution_bwd_data_t<dst_type>::execute_backward_data_thr(
         if (jcp.im2col_sz)
             jit_gemm_convolution_utils::col2im_dt<int32_t>(jcp, col, acc);
 
+        // TODO: the code below is not tested and broken anyway.
         parallel_nd(jcp.is * jcp.id, [&](int is) {
             diff_src_data_t *__restrict diff_src_loc
                     = diff_src + is * diff_src_os_stride;

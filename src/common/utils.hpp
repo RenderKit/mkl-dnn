@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 #ifndef COMMON_UTILS_HPP
 #define COMMON_UTILS_HPP
 
+#include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +28,7 @@
 
 #include <memory>
 #include <string>
+#include <tuple>
 
 #define MSAN_ENABLED 0
 #define ATTR_NO_MSAN
@@ -235,6 +238,18 @@ inline R array_product(const T *arr, size_t size) {
     for (size_t i = 0; i < size; ++i)
         prod *= arr[i];
     return prod;
+}
+
+template <typename T, typename R = T>
+inline R array_min(const T *arr, size_t size) {
+    R min = std::numeric_limits<R>::max();
+    for (size_t i = 0; i < size; ++i)
+        min = std::min(min, arr[i]);
+    return min;
+}
+
+inline bool equal_with_nan(float v1, float v2) {
+    return (v1 == v2) || (std::isnan(v1) && std::isnan(v2));
 }
 
 /* Sorts an array of @p vals using @p comparator. Uses @p vals_2nd_level as a
@@ -464,6 +479,47 @@ std::string format(const char *fmt, Args &&... args) {
     return format_impl(fmt, format_cvt_impl(std::forward<Args>(args))...);
 }
 
+// transforms @param l(ogical)_offset into a @param dims_pos based on input
+// dimensions @param dims and @param ndims.
+inline void l_dims_by_l_offset(
+        dims_t dims_pos, dim_t l_offset, const dims_t dims, int ndims) {
+    for (int rd = 0; rd < ndims; ++rd) {
+        const int d = ndims - 1 - rd;
+        /* switch to faster 32-bit division when possible. */
+        if (l_offset <= INT32_MAX && dims[d] <= INT32_MAX) {
+            dims_pos[d] = (int32_t)l_offset % (int32_t)dims[d];
+            l_offset = (int32_t)l_offset / (int32_t)dims[d];
+        } else {
+            dims_pos[d] = l_offset % dims[d];
+            l_offset /= dims[d];
+        }
+    }
+}
+
+inline int get_dims_mask(const dims_t dims1, const dims_t dims2, int ndims) {
+    int mask = 0;
+    for (int d = 0; d < ndims; ++d)
+        mask += dims1[d] == dims2[d] ? (1 << d) : 0;
+    return mask;
+};
+
+inline void copy_dims_with_mask(
+        dims_t ddims, const dims_t sdims, int ndims, int mask) {
+    for (int d = 0; d < ndims; ++d) {
+        ddims[d] = (mask & (1 << d)) ? sdims[d] : 0;
+    }
+}
+
+inline void apply_mask_on_dims(dims_t dims, int ndims, int mask) {
+    copy_dims_with_mask(dims, dims, ndims, mask);
+}
+
+inline void dim_iterator(const dims_t dims, dims_t indices, int ndims) {
+    while (--ndims >= 0 && ++indices[ndims] >= dims[ndims]) {
+        indices[ndims] = 0;
+    }
+}
+
 } // namespace utils
 
 int32_t fetch_and_add(int32_t *dst, int32_t val);
@@ -525,6 +581,88 @@ public:
         initialized_ = true;
     }
     DNNL_DISALLOW_COPY_AND_ASSIGN(setting_t);
+};
+
+// The following code is derived from Boost C++ library
+// Copyright 2005-2014 Daniel James.
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE or copy at http://www.boost.org/LICENSE_1_0.txt)
+template <typename T>
+static size_t hash_combine(size_t seed, const T &v) {
+    return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
+inline int float2int(float x) {
+    return utils::bit_cast<int>(x);
+}
+
+// XXX: Currently SYCL doesn't provide an API to get device UUID but
+// we need to be able to distinguish OpenCL device from Level0 device.
+// As a temporary solution the compound ID will be used for that.
+// Below is a table explaning what the numbers are for different backends:
+//
+// -------------------------------------------------------------
+//  Backend      | Compound ID
+// -------------------------------------------------------------
+//  Host         | <backend_t::host, 0, 0>
+//  OpenCL       | <backend_t::opencl, cl_device, 0>
+//  NVIDIA       | <backend_t::nvidia, cuDevice, 0>
+//  Level0       | <backend_t::level0, uuid[0-63], uuid[64-127]>
+//  Pure CPU     | <0, 0, 0>
+//  Pure GPU     | <0, cl_device, 0>
+using device_id_t = std::tuple<int, uint64_t, uint64_t>;
+
+struct device_id_hash_t {
+    size_t operator()(const device_id_t &id) const {
+        size_t result = 0;
+        result = hash_combine(result, std::get<0>(id));
+        result = hash_combine(result, std::get<1>(id));
+        result = hash_combine(result, std::get<2>(id));
+        return result;
+    }
+};
+
+// A setting (basically a value) that can be set() multiple times until the
+// time first time the get() method is called. The set() method is expected to
+// be as expensive as a busy-waiting spinlock. The get() method is expected to
+// be asymptotically as expensive as a single lock-prefixed memory read. The
+// get() method also has a 'soft' mode when the setting is not locked for
+// re-setting. This is used for testing purposes.
+template <typename T>
+struct set_before_first_get_setting_t {
+private:
+    T value_;
+    std::atomic<unsigned> state_;
+    enum : unsigned { idle = 0, busy_setting = 1, locked_after_a_get = 2 };
+
+public:
+    set_before_first_get_setting_t(T init) : value_ {init}, state_ {idle} {}
+
+    bool set(T new_value) {
+        if (state_.load() == locked_after_a_get) return false;
+
+        while (true) {
+            unsigned expected = idle;
+            if (state_.compare_exchange_weak(expected, busy_setting)) break;
+            if (expected == locked_after_a_get) return false;
+        }
+
+        value_ = new_value;
+        state_.store(idle);
+        return true;
+    }
+
+    T get(bool soft = false) {
+        if (!soft && state_.load() != locked_after_a_get) {
+            while (true) {
+                unsigned expected = idle;
+                if (state_.compare_exchange_weak(expected, locked_after_a_get))
+                    break;
+                if (expected == locked_after_a_get) break;
+            }
+        }
+        return value_;
+    }
 };
 
 } // namespace impl

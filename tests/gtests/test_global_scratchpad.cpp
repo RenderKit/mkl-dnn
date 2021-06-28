@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -30,21 +30,13 @@ using tag = memory::format_tag;
 // The cause was thread-local non-trivially-constructed object in
 // global_scratchpad_t object which got destroyed before global_scratchpad_t
 // causing a crash.
-class global_scratchpad : public ::testing::Test {};
+class global_scratchpad_t : public ::testing::Test {};
 
 struct conv_ctx_t {
-    conv_ctx_t() : eng_(engine::kind::cpu, 0), c_() {}
+    conv_ctx_t() : eng_(engine::kind::cpu, 0) {}
 
     struct conv_t {
-        conv_t()
-            : src_md()
-            , wei_md()
-            , dst_md()
-            , pd()
-            , src_mem()
-            , wei_mem()
-            , dst_mem()
-            , prim() {}
+        conv_t() = default;
 
         memory::desc src_md;
         memory::desc wei_md;
@@ -56,10 +48,11 @@ struct conv_ctx_t {
         primitive prim;
     };
 
-    void Setup(memory::dims src_dims, memory::dims wei_dims,
-            memory::dims dst_dims, memory::dims strides_dims,
-            memory::dims dilations_dims, memory::dims padding_left,
-            memory::dims padding_right) {
+    void Setup(const memory::dims &src_dims, const memory::dims &wei_dims,
+            const memory::dims &dst_dims, const memory::dims &strides_dims,
+            const memory::dims &dilations_dims,
+            const memory::dims &padding_left,
+            const memory::dims &padding_right) {
         c_.src_md = memory::desc(src_dims, dt::f32, tag::any);
         c_.wei_md = memory::desc(wei_dims, dt::f32, tag::any);
         c_.dst_md = memory::desc(dst_dims, dt::f32, tag::any);
@@ -70,9 +63,9 @@ struct conv_ctx_t {
 
         c_.pd = convolution_forward::primitive_desc(desc, eng_);
 
-        c_.src_mem = memory(c_.pd.src_desc(), eng_);
-        c_.wei_mem = memory(c_.pd.weights_desc(), eng_);
-        c_.dst_mem = memory(c_.pd.dst_desc(), eng_);
+        c_.src_mem = test::make_memory(c_.pd.src_desc(), eng_);
+        c_.wei_mem = test::make_memory(c_.pd.weights_desc(), eng_);
+        c_.dst_mem = test::make_memory(c_.pd.dst_desc(), eng_);
 
         c_.prim = convolution_forward(c_.pd);
     }
@@ -84,7 +77,13 @@ struct conv_ctx_t {
 conv_ctx_t global_conv_ctx1;
 conv_ctx_t global_conv_ctx2;
 
-HANDLE_EXCEPTIONS_FOR_TEST(global_scratchpad, TestGlobalScratchpad) {
+HANDLE_EXCEPTIONS_FOR_TEST(global_scratchpad_t, TestGlobalScratchpad) {
+#if defined(DNNL_WITH_SYCL) && defined(TEST_DNNL_DPCPP_BUFFER)
+    // It seems static USM data doesn't get along with OpenCL runtime.
+    // TODO: investigate.
+    if (get_test_engine_kind() == engine::kind::gpu) return;
+#endif
+
     memory::dims src1 = {1, 1, 3, 4};
     memory::dims wei1 = {1, 1, 3, 3};
     memory::dims dst1 = {1, 1, 8, 5};

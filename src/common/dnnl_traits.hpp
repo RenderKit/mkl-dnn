@@ -20,9 +20,10 @@
 #include <assert.h>
 #include <stdint.h>
 
+#include "oneapi/dnnl/dnnl.h"
+
 #include "bfloat16.hpp"
 #include "c_types_map.hpp"
-#include "dnnl.h"
 #include "float16.hpp"
 #include "nstl.hpp"
 #include "utils.hpp"
@@ -115,6 +116,8 @@ PKIND_TRAITS_INST(shuffle);
 PKIND_TRAITS_INST(eltwise);
 PKIND_TRAITS_INST(softmax);
 PKIND_TRAITS_INST(pooling);
+PKIND_TRAITS_INST(pooling_v2);
+PKIND_TRAITS_INST(prelu);
 PKIND_TRAITS_INST(lrn);
 PKIND_TRAITS_INST(batch_normalization);
 PKIND_TRAITS_INST(layer_normalization);
@@ -126,6 +129,7 @@ PKIND_TRAITS_INST(binary);
 PKIND_TRAITS_INST(logsoftmax);
 PKIND_TRAITS_INST(matmul);
 PKIND_TRAITS_INST(resampling);
+PKIND_TRAITS_INST(reduction);
 #undef PKIND_TRAITS_INST
 
 } // namespace impl

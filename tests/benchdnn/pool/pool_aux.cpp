@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "dnnl_common.hpp"
 #include "dnnl_debug.hpp"
@@ -57,7 +57,7 @@ dnnl_alg_kind_t alg2alg_kind(alg_t alg) {
 
 int str2desc(desc_t *desc, const char *str) {
     /* canonical form:
-     * mbXicX_odXihXiwX_odXohXowX_kdXkhXkwX_sdXshXswX_pdXphXpwX_nS
+     * mbXicX_odXihXiwX_odXohXowX_kdXkhXkwX_sdXshXswX_pdXphXpwX_ddXdhXdwX_nS
      *
      * where X is number, S - string
      * note: symbol `_` is ignored
@@ -76,16 +76,16 @@ int str2desc(desc_t *desc, const char *str) {
     const char *s = str;
     assert(s);
 
-#define CASE_NN(p, c) \
+#define CASE_NN(prb, c) \
     do { \
-        if (!strncmp(p, s, strlen(p))) { \
+        if (!strncmp(prb, s, strlen(prb))) { \
             ok = 1; \
-            s += strlen(p); \
+            s += strlen(prb); \
             char *end_s; \
             d.c = strtol(s, &end_s, 10); \
             s += (end_s - s); \
             if (d.c < 0) return FAIL; \
-            /* printf("@@@debug: %s: %ld\n", p, d. c); */ \
+            /* printf("@@@debug: %s: %ld\n", prb, d. c); */ \
         } \
     } while (0)
 #define CASE_N(c) CASE_NN(#c, c)
@@ -108,6 +108,9 @@ int str2desc(desc_t *desc, const char *str) {
         CASE_N(pd);
         CASE_N(ph);
         CASE_N(pw);
+        CASE_N(dd);
+        CASE_N(dh);
+        CASE_N(dw);
         if (*s == 'n') {
             d.name = s + 1;
             break;
@@ -121,12 +124,14 @@ int str2desc(desc_t *desc, const char *str) {
     if (d.ic == 0) return FAIL;
     if (d.sd <= 0 || d.sh <= 0 || d.sw <= 0) return FAIL;
 
-    auto compute_out = [](int64_t i, int64_t k, int64_t s, int64_t p) {
-        return (i - k + 2 * p) / s + 1;
-    };
-    auto compute_pad = [](int64_t o, int64_t i, int64_t k, int64_t s) {
-        return ((o - 1) * s - i + k) / 2;
-    };
+    auto compute_out
+            = [](int64_t i, int64_t k, int64_t d, int64_t s, int64_t prb) {
+                  return (i - (k - 1) * d + k + 2 * prb) / s + 1;
+              };
+    auto compute_pad
+            = [](int64_t o, int64_t i, int64_t k, int64_t d, int64_t s) {
+                  return ((o - 1) * s - i + (k - 1) * d + k) / 2;
+              };
 
     const bool no_d = (d.id | d.kd | d.od) == 0 && d.sd == 1 && d.pd < 1;
     const bool no_h = (d.ih | d.kh | d.oh) == 0 && d.sh == 1 && d.ph < 1;
@@ -136,35 +141,39 @@ int str2desc(desc_t *desc, const char *str) {
         if (!d.id || !d.kd) return FAIL;
         if (!d.od) {
             if (d.pd < 0) d.pd = 0;
-            d.od = compute_out(d.id, d.kd, d.sd, d.pd);
+            d.od = compute_out(d.id, d.kd, d.dd, d.sd, d.pd);
+            if (d.od <= 0) return FAIL;
         } else if (d.pd < 0)
-            d.pd = compute_pad(d.od, d.id, d.kd, d.sd);
+            d.pd = compute_pad(d.od, d.id, d.kd, d.dd, d.sd);
     }
 
     if (!no_h) {
         if (!d.ih || !d.kh) return FAIL;
         if (!d.oh) {
             if (d.ph < 0) d.ph = 0;
-            d.oh = compute_out(d.ih, d.kh, d.sh, d.ph);
+            d.oh = compute_out(d.ih, d.kh, d.dh, d.sh, d.ph);
+            if (d.oh <= 0) return FAIL;
         } else if (d.ph < 0)
-            d.ph = compute_pad(d.oh, d.ih, d.kh, d.sh);
+            d.ph = compute_pad(d.oh, d.ih, d.kh, d.dh, d.sh);
     }
 
     if (!no_w) {
         if (!d.iw || !d.kw) return FAIL;
         if (!d.ow) {
             if (d.pw < 0) d.pw = 0;
-            d.ow = compute_out(d.iw, d.kw, d.sw, d.pw);
+            d.ow = compute_out(d.iw, d.kw, d.dw, d.sw, d.pw);
+            if (d.ow <= 0) return FAIL;
         } else if (d.pw < 0)
-            d.pw = compute_pad(d.ow, d.iw, d.kw, d.sw);
+            d.pw = compute_pad(d.ow, d.iw, d.kw, d.dw, d.sw);
     }
 
-    if (sanitize_desc(d.ndims, {d.od, d.id, d.kd, d.sd, d.pd},
-                {d.oh, d.ih, d.kh, d.sh, d.ph}, {d.ow, d.iw, d.kw, d.sw, d.pw},
-                {1, 1, 1, 1, 0}, true)
+    if (sanitize_desc(d.ndims, {d.od, d.id, d.kd, d.sd, d.pd, d.dd},
+                {d.oh, d.ih, d.kh, d.sh, d.ph, d.dh},
+                {d.ow, d.iw, d.kw, d.sw, d.pw, d.dw}, {1, 1, 1, 1, 0, 0}, true)
             != OK)
         return FAIL;
 
+    d.init_pad_r();
     *desc = d;
 
     return OK;
@@ -173,8 +182,9 @@ int str2desc(desc_t *desc, const char *str) {
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
     bool print_d = true, print_h = true, print_w = true;
     print_dhw(print_d, print_h, print_w, d.ndims,
-            {d.od, d.id, d.kd, d.sd, d.pd}, {d.oh, d.ih, d.kh, d.sh, d.ph},
-            {d.ow, d.iw, d.kw, d.sw, d.pw});
+            {d.od, d.id, d.kd, d.sd, d.pd, d.dd},
+            {d.oh, d.ih, d.kh, d.sh, d.ph, d.dh},
+            {d.ow, d.iw, d.kw, d.sw, d.pw, d.dw});
 
     auto print_spatial
             = [&](const char *d_str, int64_t d_val, const char *h_str,
@@ -195,22 +205,26 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
 
     print_spatial("pd", d.pd, "ph", d.ph, "pw", d.pw);
 
+    if (canonical || d.dh != 0 || d.dw != 0 || d.dd != 0)
+        print_spatial("dd", d.dd, "dh", d.dh, "dw", d.dw);
+
     if (d.name) s << "n" << d.name;
 
     return s;
 }
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+std::ostream &operator<<(std::ostream &s, const prb_t &prb) {
     dump_global_params(s);
     settings_t def;
 
-    if (canonical || p.dir != def.dir[0]) s << "--dir=" << p.dir << " ";
-    if (canonical || p.cfg != def.cfg[0]) s << "--cfg=" << p.cfg << " ";
-    if (canonical || p.tag != def.tag[0]) s << "--tag=" << p.tag << " ";
-    if (canonical || p.alg != def.alg[0])
-        s << "--alg=" << alg2str(p.alg) << " ";
+    if (canonical || prb.dir != def.dir[0]) s << "--dir=" << prb.dir << " ";
+    if (canonical || prb.cfg != def.cfg[0]) s << "--cfg=" << prb.cfg << " ";
+    if (canonical || prb.tag != def.tag[0]) s << "--tag=" << prb.tag << " ";
+    if (canonical || prb.alg != def.alg[0])
+        s << "--alg=" << alg2str(prb.alg) << " ";
 
-    s << static_cast<const desc_t &>(p);
+    s << prb.attr;
+    s << static_cast<const desc_t &>(prb);
 
     return s;
 }

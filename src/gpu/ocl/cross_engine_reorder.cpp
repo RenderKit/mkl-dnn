@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -35,7 +35,8 @@ void cross_engine_reorder_t::pd_t::init_scratchpad() {
     auto scratchpad = scratchpad_registry().registrar();
     scratchpad.book(memory_tracking::names::key_reorder_cross_space,
             wspace_md.size(), 1, OCL_BUFFER_ALIGNMENT);
-    scratchpad.book(key_nested, reorder_pd_->scratchpad_registry());
+    scratchpad.book(key_nested, reorder_pd_->scratchpad_registry().size(), 1,
+            OCL_BUFFER_ALIGNMENT);
 }
 
 status_t cross_engine_reorder_t::pd_t::init(
@@ -81,6 +82,8 @@ status_t cross_engine_reorder_t::execute(const exec_ctx_t &ctx) const {
     auto *compute_stream
             = utils::downcast<compute::compute_stream_t *>(ctx.stream());
 
+    status_t status = status::success;
+
     auto &src = CTX_IN_STORAGE(DNNL_ARG_FROM);
     auto &dst = CTX_OUT_STORAGE(DNNL_ARG_TO);
 
@@ -94,8 +97,9 @@ status_t cross_engine_reorder_t::execute(const exec_ctx_t &ctx) const {
                 ? pd()->dst_md()
                 : pd()->src_md();
         auto wspace_ptr = scratchpad->data_handle();
-        wspace.reset(new memory_t(ctx.stream()->engine(), wspace_md,
-                memory_flags_t::use_runtime_ptr, wspace_ptr));
+        CHECK(safe_ptr_assign(wspace,
+                new memory_t(ctx.stream()->engine(), wspace_md,
+                        memory_flags_t::use_runtime_ptr, wspace_ptr)));
     }
 
     auto exec_reorder = [&](const memory_t *src_mem, const memory_t *dst_mem) {
@@ -112,14 +116,18 @@ status_t cross_engine_reorder_t::execute(const exec_ctx_t &ctx) const {
         return reorder_->execute(r_ctx);
     };
 
-    status_t status = status::success;
     if (pd()->desc()->src_engine_kind == engine_kind::gpu) {
         // GPU -> CPU or GPU -> GPU
+        memory_desc_wrapper dst_mdw(pd()->dst_md());
         if (pd()->do_reorder_) {
-            status = exec_reorder(ctx.input(DNNL_ARG_FROM), wspace.get());
+            if (pd()->beta() != 0.f) {
+                status = compute_stream->copy(
+                        dst, *wspace->memory_storage(), dst_mdw.size());
+            }
+            if (status == status::success)
+                status = exec_reorder(ctx.input(DNNL_ARG_FROM), wspace.get());
         }
         if (status == status::success) {
-            memory_desc_wrapper dst_mdw(pd()->dst_md());
             status = compute_stream->copy(
                     pd()->do_reorder_ ? *wspace->memory_storage() : src, dst,
                     dst_mdw.size());

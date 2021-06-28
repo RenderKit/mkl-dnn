@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -25,18 +25,18 @@ using tag = memory::format_tag;
 
 /* iface tests */
 
-class iface_sum_test : public ::testing::Test {
+class iface_sum_test_t : public ::testing::Test {
 protected:
     engine eng;
     stream strm;
 
-    virtual void SetUp() {
+    void SetUp() override {
         eng = get_test_engine();
         strm = make_stream(eng);
     }
 };
 
-TEST_F(iface_sum_test, SumTestDstDataTypeCompliance) {
+TEST_F(iface_sum_test_t, SumTestDstDataTypeCompliance) {
     using dt = memory::data_type;
 
     const dt src_dt = dt::s8;
@@ -47,7 +47,7 @@ TEST_F(iface_sum_test, SumTestDstDataTypeCompliance) {
     for_(tag dst_tag : {tag::any, tag::abcd, tag::acdb})
     for (dt dst_dt : {dt::undef, dt::s8, dt::s32, dt::f32}) {
         sum::primitive_desc sum_pd;
-
+        SKIP_FOR_LOOP_CUDA(dst_dt == dt::s32, "Unsupported data_type");
         if (dst_dt != dt::undef) {
             memory::desc dst_md(shape, dst_dt, dst_tag);
             sum_pd = sum::primitive_desc(
@@ -74,19 +74,20 @@ struct sum_test_params {
 };
 
 template <typename src_data_t, typename acc_t, typename dst_data_t = src_data_t>
-class sum_test : public ::testing::TestWithParam<sum_test_params> {
+class sum_test_t : public ::testing::TestWithParam<sum_test_params> {
 private:
     memory::data_type src_data_type;
     memory::data_type dst_data_type;
 
     void check_data(const std::vector<memory> &srcs,
-            const std::vector<float> scale, const memory &dst) {
+            const std::vector<float> &scale, const memory &dst) {
         auto dst_data = map_memory<const dst_data_t>(dst);
         const auto &dst_d = dst.get_desc();
         const auto dst_dims = dst_d.data.dims;
         const dnnl::impl::memory_desc_wrapper dst_mdw(dst_d.data);
 
         std::vector<mapped_ptr_t<const src_data_t>> mapped_srcs;
+        mapped_srcs.reserve(srcs.size());
         for (auto &src : srcs)
             mapped_srcs.emplace_back(map_memory<const src_data_t>(src));
 
@@ -131,7 +132,15 @@ private:
     }
 
 protected:
-    virtual void SetUp() {
+    bool cuda_supported_format_tag(memory::format_tag tag) {
+        return impl::utils::one_of(tag, dnnl_a, dnnl_ab, dnnl_abc, dnnl_abcd,
+                dnnl_abcde, dnnl_abcdef, dnnl_abdec, dnnl_acb, dnnl_acbde,
+                dnnl_acbdef, dnnl_acdb, dnnl_acdeb, dnnl_ba, dnnl_bac,
+                dnnl_bacd, dnnl_bca, dnnl_bcda, dnnl_bcdea, dnnl_cba, dnnl_cdba,
+                dnnl_cdeba, dnnl_decab, dnnl_defcab, dnnl_aBc4b, dnnl_aBcd4b,
+                dnnl_aBcde4b);
+    }
+    void SetUp() override {
         src_data_type = data_traits<src_data_t>::data_type;
         dst_data_type = data_traits<dst_data_t>::data_type;
         sum_test_params p
@@ -141,6 +150,15 @@ protected:
                 "GPU does not support bfloat16 data type.");
         SKIP_IF(unsupported_data_type(src_data_type),
                 "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(dst_data_type),
+                "Engine does not support this data type.");
+
+        SKIP_IF_CUDA(!cuda_supported_format_tag(p.dst_format),
+                "Unsupported format tag");
+        for (size_t i = 0; i < p.srcs_format.size(); i++) {
+            SKIP_IF_CUDA(!cuda_supported_format_tag(p.srcs_format[i]),
+                    "Unsupported format tag");
+        }
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
@@ -159,7 +177,7 @@ protected:
 
         for (size_t i = 0; i < num_srcs; i++) {
             auto desc = memory::desc(p.dims, src_data_type, p.srcs_format[i]);
-            auto src_memory = memory(desc, eng);
+            auto src_memory = test::make_memory(desc, eng);
             const size_t sz
                     = src_memory.get_desc().get_size() / sizeof(src_data_t);
             fill_data<src_data_t>(sz, src_memory);
@@ -194,7 +212,7 @@ protected:
 
             ASSERT_EQ(sum_pd.dst_desc().data.ndims, dst_desc.data.ndims);
         }
-        dst = memory(sum_pd.dst_desc(), eng);
+        dst = test::make_memory(sum_pd.dst_desc(), eng);
         // test construction from a C pd
         sum_pd = sum::primitive_desc(sum_pd.get());
 
@@ -343,23 +361,23 @@ static auto corner_test_cases = []() {
     CPU_INST_TEST_CASE(test, omit_output) \
     GPU_INST_TEST_CASE(test, omit_output)
 
-using sum_test_float_omit_output = sum_test<float, float>;
-using sum_test_u8_omit_output = sum_test<uint8_t, int32_t>;
-using sum_test_s8_omit_output = sum_test<int8_t, int32_t>;
-using sum_test_s32_omit_output = sum_test<int32_t, float>;
-using sum_test_f16_omit_output = sum_test<float16_t, float>;
-using sum_test_bf16bf16_omit_output = sum_test<bfloat16_t, float>;
-using sum_test_bf16f32_omit_output = sum_test<bfloat16_t, float, float>;
+using sum_test_float_omit_output = sum_test_t<float, float>;
+using sum_test_u8_omit_output = sum_test_t<uint8_t, int32_t>;
+using sum_test_s8_omit_output = sum_test_t<int8_t, int32_t>;
+using sum_test_s32_omit_output = sum_test_t<int32_t, float>;
+using sum_test_f16_omit_output = sum_test_t<float16_t, float>;
+using sum_test_bf16bf16_omit_output = sum_test_t<bfloat16_t, float>;
+using sum_test_bf16f32_omit_output = sum_test_t<bfloat16_t, float, float>;
 
-using sum_test_float = sum_test<float, float>;
-using sum_test_u8 = sum_test<uint8_t, int32_t>;
-using sum_test_s8 = sum_test<int8_t, int32_t>;
-using sum_test_s32 = sum_test<int32_t, float>;
-using sum_test_f16 = sum_test<float16_t, float>;
-using sum_test_bf16bf16 = sum_test<bfloat16_t, float>;
-using sum_test_bf16f32 = sum_test<bfloat16_t, float, float>;
+using sum_test_float = sum_test_t<float, float>;
+using sum_test_u8 = sum_test_t<uint8_t, int32_t>;
+using sum_test_s8 = sum_test_t<int8_t, int32_t>;
+using sum_test_s32 = sum_test_t<int32_t, float>;
+using sum_test_f16 = sum_test_t<float16_t, float>;
+using sum_test_bf16bf16 = sum_test_t<bfloat16_t, float>;
+using sum_test_bf16f32 = sum_test_t<bfloat16_t, float, float>;
 
-using sum_cc_f32 = sum_test<float, float>;
+using sum_cc_f32 = sum_test_t<float, float>;
 
 TEST_P(sum_cc_f32, TestSumCornerCases) {}
 INSTANTIATE_TEST_SUITE_P(TestSumCornerCases, sum_cc_f32, corner_test_cases());

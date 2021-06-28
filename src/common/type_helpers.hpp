@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 #include <assert.h>
 #include <math.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "bit_cast.hpp"
 #include "c_types_map.hpp"
@@ -35,10 +35,17 @@ namespace impl {
 // Global zero memory descriptor. Mostly used for queries to return
 extern memory_desc_t DNNL_API glob_zero_md;
 
-template <typename T>
-status_t safe_ptr_assign(T *&lhs, T *rhs) {
+template <typename base_type, typename derived_type>
+status_t safe_ptr_assign(base_type *&lhs, derived_type *rhs) {
     if (rhs == nullptr) return status::out_of_memory;
     lhs = rhs;
+    return status::success;
+}
+
+template <typename base_type, typename derived_type>
+status_t safe_ptr_assign(std::unique_ptr<base_type> &lhs, derived_type *rhs) {
+    if (rhs == nullptr) return status::out_of_memory;
+    lhs.reset(rhs);
     return status::success;
 }
 
@@ -105,6 +112,57 @@ inline T max_value(data_type_t data_type) {
 #undef CASE
 }
 
+// This is a hack to comply with a big comment below.
+template <>
+inline float max_value(data_type_t data_type) {
+    using namespace data_type;
+#define CASE(x) \
+    case x: \
+        return static_cast<float>( \
+                nstl::numeric_limits<prec_traits<x>::type>::max())
+    switch (data_type) {
+        CASE(f16);
+        CASE(bf16);
+        CASE(s8);
+        CASE(u8);
+        // INT_MAX is not representable in float. The nearest float to it is
+        // INT_MAX + 1 = 2^31 (0x4f000000). Regular conversion instructions such
+        // as `cvtps2dq` or `cvtss2si` will convert this number to INT_MIN
+        // making the result negative. We on purpose choose the previous float
+        // number (0x4effffff) to return leaving the output close to INT_MAX but
+        // still positive. In addition, we adjust validation of this approach.
+        // The main concern against `real` saturation is performance, which
+        // likely to drop (but it was not proved). The only drawback of current
+        // approach is saturating on some integer values before it should happen
+        // in the reality.
+        case s32: return 2147483520.f;
+        case data_type::undef:
+        default: assert(!"unknown data_type");
+    }
+    return 0.f; /* not supposed to be reachable */
+#undef CASE
+}
+
+inline float get_float_value(data_type_t dt, const void *ptr, dim_t idx) {
+#define CASE(dt) \
+    case dt: \
+        return static_cast<float>(((typename prec_traits<dt>::type *)ptr)[idx]);
+
+    using namespace data_type;
+    switch (dt) {
+        CASE(bf16);
+        CASE(f16);
+        CASE(f32);
+        CASE(s32);
+        CASE(s8);
+        CASE(u8);
+        default: assert(!"bad data_type");
+    }
+
+#undef CASE
+    return NAN;
+}
+
 inline format_kind_t format_tag_to_kind(format_tag_t tag) {
     switch (tag) {
         case format_tag::undef: return format_kind::undef;
@@ -119,15 +177,16 @@ inline format_kind_t format_tag_to_kind(format_tag_t tag) {
 
 inline bool memory_extra_desc_is_equal(
         const memory_extra_desc_t &lhs, const memory_extra_desc_t &rhs) {
+    using namespace memory_extra_flags;
     return true && lhs.flags == rhs.flags
-            && IMPLICATION(
-                    lhs.flags & memory_extra_flags::compensation_conv_s8s8,
+            && IMPLICATION(lhs.flags & compensation_conv_s8s8,
                     lhs.compensation_mask == rhs.compensation_mask)
-            && IMPLICATION(
-                    lhs.flags & memory_extra_flags::gpu_rnn_u8s8_compensation,
+            && IMPLICATION(lhs.flags & rnn_u8s8_compensation,
                     lhs.compensation_mask == rhs.compensation_mask)
-            && IMPLICATION(lhs.flags & memory_extra_flags::scale_adjust,
-                    lhs.scale_adjust == rhs.scale_adjust);
+            && IMPLICATION(lhs.flags & scale_adjust,
+                    lhs.scale_adjust == rhs.scale_adjust)
+            && IMPLICATION(lhs.flags & compensation_conv_asymmetric_src,
+                    lhs.asymm_compensation_mask == rhs.asymm_compensation_mask);
 }
 
 inline bool blocking_desc_is_equal(const memory_desc_t &lhs_md,
@@ -208,9 +267,10 @@ inline data_type_t default_accum_data_type(data_type_t src_dt,
     using namespace prop_kind;
 
     /* prop_kind doesn't matter */
-    if (everyone_is(f16, src_dt, wei_dt, dst_dt)) return f16;
+    if (everyone_is(f16, src_dt, wei_dt) && one_of(dst_dt, f16, f32, s8))
+        return f16;
     if (one_of(bf16, src_dt, wei_dt, dst_dt)) return f32;
-    if (everyone_is(f32, src_dt, wei_dt, dst_dt)) return f32;
+    if (everyone_is(f32, src_dt, wei_dt)) return f32;
 
     if (one_of(prop_kind, forward_training, forward_inference)) {
         if ((src_dt == u8 || src_dt == s8) && wei_dt == s8
@@ -258,6 +318,9 @@ inline bool operator!=(const memory_desc_t &lhs, const memory_desc_t &rhs) {
 // Comparison operators for descriptors
 #define COMPARE_DESC_MEMBERS(m) lhs.m == rhs.m
 #define COMPARE_DESC_ARRAY_MEMBERS(m, s) utils::array_cmp(lhs.m, rhs.m, s)
+#define COMPARE_FLOAT_DESC_MEMBERS(m) utils::equal_with_nan(lhs.m, rhs.m)
+#define COMPARE_FLOAT_DESC_ARRAY_MEMBERS(m, s) \
+    !std::memcmp(lhs.m, rhs.m, sizeof(float) * s)
 
 // clang-format off
 inline bool operator==(const batch_normalization_desc_t &lhs,
@@ -269,7 +332,7 @@ inline bool operator==(const batch_normalization_desc_t &lhs,
             && COMPARE_DESC_MEMBERS(data_scaleshift_desc)
             && COMPARE_DESC_MEMBERS(diff_data_scaleshift_desc)
             && COMPARE_DESC_MEMBERS(stat_desc)
-            && COMPARE_DESC_MEMBERS(batch_norm_epsilon)
+            && COMPARE_FLOAT_DESC_MEMBERS(batch_norm_epsilon)
             && COMPARE_DESC_MEMBERS(flags);
     return ret;
 }
@@ -325,31 +388,18 @@ inline bool operator==(const eltwise_desc_t &lhs, const eltwise_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(alg_kind)
             && COMPARE_DESC_MEMBERS(data_desc)
             && COMPARE_DESC_MEMBERS(diff_data_desc)
-            && COMPARE_DESC_MEMBERS(alpha)
-            && COMPARE_DESC_MEMBERS(beta);
+            && COMPARE_FLOAT_DESC_MEMBERS(alpha)
+            && COMPARE_FLOAT_DESC_MEMBERS(beta);
     return ret;
 }
 
 inline bool operator==(const gemm_desc_t &lhs, const gemm_desc_t &rhs) {
     bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
-            && COMPARE_DESC_MEMBERS(transa)
-            && COMPARE_DESC_MEMBERS(transb)
-            && COMPARE_DESC_MEMBERS(batch)
-            && COMPARE_DESC_MEMBERS(m)
-            && COMPARE_DESC_MEMBERS(n)
-            && COMPARE_DESC_MEMBERS(k)
-            && COMPARE_DESC_MEMBERS(stride_a)
-            && COMPARE_DESC_MEMBERS(stride_b)
-            && COMPARE_DESC_MEMBERS(stride_c)
-            && COMPARE_DESC_MEMBERS(lda)
-            && COMPARE_DESC_MEMBERS(ldb)
-            && COMPARE_DESC_MEMBERS(ldc)
-            && COMPARE_DESC_MEMBERS(bias_mask)
-            && COMPARE_DESC_MEMBERS(a_type)
-            && COMPARE_DESC_MEMBERS(b_type)
-            && COMPARE_DESC_MEMBERS(c_type)
-            && COMPARE_DESC_MEMBERS(acc_type)
-            && COMPARE_DESC_MEMBERS(bias_type);
+            && COMPARE_DESC_MEMBERS(a_desc)
+            && COMPARE_DESC_MEMBERS(b_desc)
+            && COMPARE_DESC_MEMBERS(c_desc)
+            && COMPARE_DESC_MEMBERS(bias_desc)
+            && COMPARE_DESC_MEMBERS(acc_type);
     return ret;
 }
 
@@ -378,7 +428,7 @@ inline bool operator==(const layer_normalization_desc_t &lhs,
             && COMPARE_DESC_MEMBERS(data_scaleshift_desc)
             && COMPARE_DESC_MEMBERS(diff_data_scaleshift_desc)
             && COMPARE_DESC_MEMBERS(stat_desc)
-            && COMPARE_DESC_MEMBERS(layer_norm_epsilon)
+            && COMPARE_FLOAT_DESC_MEMBERS(layer_norm_epsilon)
             && COMPARE_DESC_MEMBERS(flags);
     return ret;
 }
@@ -390,9 +440,9 @@ inline bool operator==(const lrn_desc_t &lhs, const lrn_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(data_desc)
             && COMPARE_DESC_MEMBERS(diff_data_desc)
             && COMPARE_DESC_MEMBERS(local_size)
-            && COMPARE_DESC_MEMBERS(lrn_alpha)
-            && COMPARE_DESC_MEMBERS(lrn_beta)
-            && COMPARE_DESC_MEMBERS(lrn_k);
+            && COMPARE_FLOAT_DESC_MEMBERS(lrn_alpha)
+            && COMPARE_FLOAT_DESC_MEMBERS(lrn_beta)
+            && COMPARE_FLOAT_DESC_MEMBERS(lrn_k);
     return ret;
 }
 
@@ -406,7 +456,7 @@ inline bool operator==(const matmul_desc_t &lhs, const matmul_desc_t &rhs) {
     return ret;
 }
 
-inline bool operator==(const pooling_desc_t &lhs, const pooling_desc_t &rhs) {
+inline bool operator==(const pooling_v2_desc_t &lhs, const pooling_v2_desc_t &rhs) {
     bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
             && COMPARE_DESC_MEMBERS(prop_kind)
             && COMPARE_DESC_MEMBERS(alg_kind)
@@ -418,7 +468,29 @@ inline bool operator==(const pooling_desc_t &lhs, const pooling_desc_t &rhs) {
             && COMPARE_DESC_ARRAY_MEMBERS(kernel, DNNL_MAX_NDIMS)
             && COMPARE_DESC_ARRAY_MEMBERS(padding[0], DNNL_MAX_NDIMS)
             && COMPARE_DESC_ARRAY_MEMBERS(padding[1], DNNL_MAX_NDIMS)
+            && COMPARE_DESC_ARRAY_MEMBERS(dilation, DNNL_MAX_NDIMS)
             && COMPARE_DESC_MEMBERS(accum_data_type);
+    return ret;
+}
+
+inline bool operator==(const prelu_desc_t &lhs, const prelu_desc_t &rhs) {
+    const bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
+            && COMPARE_DESC_MEMBERS(prop_kind)
+            && COMPARE_DESC_MEMBERS(data_desc)
+            && COMPARE_DESC_MEMBERS(weights_desc)
+            && COMPARE_DESC_MEMBERS(diff_data_desc)
+            && COMPARE_DESC_MEMBERS(diff_weights_desc);
+    return ret;
+}
+
+inline bool operator==(
+        const reduction_desc_t &lhs, const reduction_desc_t &rhs) {
+    bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
+            && COMPARE_DESC_MEMBERS(alg_kind)
+            && COMPARE_DESC_MEMBERS(src_desc)
+            && COMPARE_DESC_MEMBERS(dst_desc)
+            && COMPARE_FLOAT_DESC_MEMBERS(p)
+            && COMPARE_FLOAT_DESC_MEMBERS(eps);
     return ret;
 }
 
@@ -439,7 +511,7 @@ inline bool operator==(
             && COMPARE_DESC_MEMBERS(diff_src_desc)
             && COMPARE_DESC_MEMBERS(dst_desc)
             && COMPARE_DESC_MEMBERS(diff_dst_desc)
-            && COMPARE_DESC_ARRAY_MEMBERS(factors, DNNL_MAX_NDIMS);
+            && COMPARE_FLOAT_DESC_ARRAY_MEMBERS(factors, DNNL_MAX_NDIMS);
     return ret;
 }
 
@@ -472,8 +544,8 @@ inline bool operator==(const rnn_desc_t &lhs, const rnn_desc_t &rhs) {
             && COMPARE_DESC_MEMBERS(diff_weights_projection_desc)
             && COMPARE_DESC_MEMBERS(flags)
             && COMPARE_DESC_MEMBERS(activation_kind)
-            && COMPARE_DESC_MEMBERS(alpha)
-            && COMPARE_DESC_MEMBERS(beta);
+            && COMPARE_FLOAT_DESC_MEMBERS(alpha)
+            && COMPARE_FLOAT_DESC_MEMBERS(beta);
     return ret;
 }
 
@@ -498,14 +570,21 @@ inline bool operator==(const softmax_desc_t &lhs, const softmax_desc_t &rhs) {
 inline bool operator==(const sum_desc_t &lhs, const sum_desc_t &rhs) {
     bool ret = COMPARE_DESC_MEMBERS(primitive_kind)
             && COMPARE_DESC_MEMBERS(dst_md)
-            && COMPARE_DESC_MEMBERS(n)
-            && COMPARE_DESC_MEMBERS(scales);
+            && COMPARE_DESC_MEMBERS(n);
     if (!ret) return ret;
 
     for (int i = 0; i < lhs.n; i++) {
         ret = COMPARE_DESC_MEMBERS(src_mds[i]);
         if (!ret) break;
     }
+
+    if (!ret) return ret;
+
+    for (int i = 0; i < lhs.n; i++) {
+        ret = ret && COMPARE_FLOAT_DESC_MEMBERS(scales[i]);
+        if (!ret) break;
+    }
+
     return ret;
 }
 
@@ -514,8 +593,11 @@ inline bool operator==(const zero_pad_desc_t &lhs, const zero_pad_desc_t &rhs) {
     return ret;
 }
 // clang-format on
+
 #undef COMPARE_DESC_MEMBERS
 #undef COMPARE_DESC_ARRAY_MEMBERS
+#undef COMPARE_FLOAT_DESC_MEMBERS
+#undef COMPARE_FLOAT_DESC_ARRAY_MEMBERS
 
 inline status_t memory_desc_init_by_strides(
         memory_desc_t &md, const dims_t strides) {
@@ -666,6 +748,40 @@ inline bool is_runtime_value(int val) {
     return val == DNNL_RUNTIME_S32_VAL;
 }
 
+/** returns true if dim_t value denotes DNNL_RUNTIME_DIM_VAL */
+inline bool is_runtime_value(dim_t val) {
+    return val == DNNL_RUNTIME_DIM_VAL;
+}
+
+inline bool memory_desc_sanity_check(int ndims, const dims_t dims,
+        data_type_t data_type, format_kind_t format_kind) {
+    using namespace data_type;
+
+    if (ndims == 0) return true;
+
+    bool ok = dims != nullptr && 0 < ndims && ndims <= DNNL_MAX_NDIMS
+            && utils::one_of(data_type, f16, bf16, f32, s32, s8, u8);
+    if (!ok) return false;
+
+    bool has_runtime_dims = false;
+    for (int d = 0; d < ndims; ++d) {
+        if (dims[d] != DNNL_RUNTIME_DIM_VAL && dims[d] < 0) return false;
+        if (dims[d] == DNNL_RUNTIME_DIM_VAL) has_runtime_dims = true;
+    }
+
+    if (has_runtime_dims) {
+        // format `any` is currently not supported for run-time dims
+        if (format_kind == format_kind::any) return false;
+    }
+
+    return true;
+}
+
+inline bool memory_desc_sanity_check(const memory_desc_t *md) {
+    if (md == nullptr) return false;
+    return memory_desc_sanity_check(
+            md->ndims, md->dims, md->data_type, format_kind::undef);
+}
 } // namespace impl
 } // namespace dnnl
 

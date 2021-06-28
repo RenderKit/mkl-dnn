@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -49,11 +49,34 @@ struct gemm_x8s8s32x_matmul_t : public primitive_t {
         gemm_based::params_t params_;
     };
 
-    gemm_x8s8s32x_matmul_t(const pd_t *apd) : primitive_t(apd) {
-        if (pd()->params().has_pp_kernel_)
-            pp_kernel_.reset(pp_kernel_t::create(pd()->N(), pd()->M(),
+    gemm_x8s8s32x_matmul_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
+        if (pd()->params().has_pp_kernel_) {
+            const bool has_runtime_dims
+                    = memory_desc_wrapper(pd()->dst_md()).has_runtime_dims();
+            const int nthr = dnnl_get_max_threads();
+            const dim_t batch = pd()->batch();
+            const dim_t M = pd()->M();
+
+            // mb value is calculated based on work-sharing using
+            // balance211 in execute()
+            dim_t mb = DNNL_RUNTIME_DIM_VAL;
+            if (!has_runtime_dims && ((batch * M) % nthr == 0)) {
+                const dim_t m_per_thr = nstl::max<dim_t>(1, (batch * M) / nthr);
+                if (m_per_thr >= M && m_per_thr % M == 0) {
+                    mb = M;
+                } else if (m_per_thr < M && M % m_per_thr == 0) {
+                    mb = m_per_thr;
+                }
+            }
+
+            pp_kernel_.reset(pp_kernel_t::create(pd()->N(), mb, pd()->ldc(),
                     &pd()->params().pp_attr_, pd()->desc()->bias_desc.data_type,
-                    false));
+                    pd()->dst_md(), false));
+            return pp_kernel_->create_kernel();
+        }
+        return status::success;
     }
 
     static constexpr data_type_t acc_type = data_type::s32;

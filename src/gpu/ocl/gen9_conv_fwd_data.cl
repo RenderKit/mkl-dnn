@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,6 +16,22 @@
 
 #include "gpu/ocl/ocl_post_ops.h"
 #include "gpu/ocl/ocl_types.h"
+#include "gpu/ocl/offsets.h"
+
+#define BASE_OC_TAIL (SUB_GROUP_SIZE - (OC - OC_WO_PADDING))
+
+#define _BLOCK_READ_DST(v, n_c, ptr) \
+    if (n_c == 8) \
+        (*(DATA8_T *)(v)) = CONVERT_DATA8_T( \
+                vload8(0, (const __global DST_DATA_T *)(ptr))); \
+    if (n_c == 4) \
+        (*(DATA4_T *)(v)) = CONVERT_DATA4_T( \
+                vload4(0, (const __global DST_DATA_T *)(ptr))); \
+    if (n_c == 2) \
+        (*(DATA2_T *)(v)) = CONVERT_DATA2_T( \
+                vload2(0, (const __global DST_DATA_T *)(ptr))); \
+    if (n_c == 1) \
+        (*(DATA_T *)(v)) = CONVERT_DATA_T(*(__global DST_DATA_T *)(ptr));
 
 #define _BLOCK_READ8(ptr) \
     AS_DATA8_T(BLOCK_READ8((const __global BLOCK_DATA_T *)(ptr)))
@@ -26,14 +42,37 @@
 #define _BLOCK_READ(ptr) \
     AS_DATA_T(BLOCK_READ((const __global BLOCK_DATA_T *)(ptr)))
 
+#ifdef DST_DT_S8
+#if DST_NCHW
 #define _BLOCK_WRITE8(ptr, v) \
-    BLOCK_WRITE8((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA8_T(v))
+    vstore8(CONVERT_DST_DATA8_T(v), 0, (__global DST_DATA_T *)(ptr));
 #define _BLOCK_WRITE4(ptr, v) \
-    BLOCK_WRITE4((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA4_T(v))
+    vstore4(CONVERT_DST_DATA4_T(v), 0, (__global DST_DATA_T *)(ptr));
 #define _BLOCK_WRITE2(ptr, v) \
-    BLOCK_WRITE2((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA2_T(v))
+    vstore2(CONVERT_DST_DATA2_T(v), 0, (__global DST_DATA_T *)(ptr));
 #define _BLOCK_WRITE(ptr, v) \
-    BLOCK_WRITE((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA_T(v))
+    *(__global DST_DATA_T *)(ptr) = CONVERT_DST_DATA_T(v);
+#else
+#define _BLOCK_WRITE8(ptr, v) \
+    BLOCK_WRITE_DST8((__global DST_DATA_T *)(ptr), CONVERT_DST_DATA8_T(v));
+#define _BLOCK_WRITE4(ptr, v) \
+    BLOCK_WRITE_DST4((__global DST_DATA_T *)(ptr), CONVERT_DST_DATA4_T(v));
+#define _BLOCK_WRITE2(ptr, v) \
+    BLOCK_WRITE_DST2((__global DST_DATA_T *)(ptr), CONVERT_DST_DATA2_T(v));
+#define _BLOCK_WRITE(ptr, v) \
+    BLOCK_WRITE_DST((__global DST_DATA_T *)(ptr), CONVERT_DST_DATA_T(v));
+
+#endif
+#else
+#define _BLOCK_WRITE8(ptr, v) \
+    BLOCK_WRITE8((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA8_T(v));
+#define _BLOCK_WRITE4(ptr, v) \
+    BLOCK_WRITE4((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA4_T(v));
+#define _BLOCK_WRITE2(ptr, v) \
+    BLOCK_WRITE2((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA2_T(v));
+#define _BLOCK_WRITE(ptr, v) \
+    BLOCK_WRITE((__global BLOCK_DATA_T *)(ptr), AS_BLOCK_DATA_T(v));
+#endif
 
 #define IS_3D (OD > 1)
 #define IS_1STCONV (IC == 3)
@@ -59,107 +98,11 @@
 #define OW_OUTER ((OW_BLOCK + OW_INNER - 1) / OW_INNER)
 #define IW_OUTER ((IW_BLOCK + IW_INNER - 1) / IW_INNER)
 
+#define C_SIZE (MB_BLOCK * OC_OUTER * OW_BLOCK)
+
 #if OW_BLOCK >= 32
 #error "Block is too big for unrolled_read and unrolled_write."
 #endif
-
-int off_ncdhw(int n, int c, int d, int h, int w, int C, int D, int H, int W) {
-    int off = 0;
-    off += n * C * D * H * W;
-    off += c * D * H * W;
-    off += d * H * W;
-    off += h * W;
-    off += w;
-    return off;
-}
-
-int off_nCdhw16c(
-        int n, int c, int d, int h, int w, int C, int D, int H, int W) {
-    int off = 0;
-    off += n * (C / 16) * D * H * W * 16;
-    off += (c / 16) * D * H * W * 16;
-    off += d * H * W * 16;
-    off += h * W * 16;
-    off += w * 16;
-    off += c % 16;
-    return off;
-}
-
-int off_NCdhw16n16c(
-        int n, int c, int d, int h, int w, int C, int D, int H, int W) {
-    int off = 0;
-    off += (n / 16) * (C / 16) * D * H * W * 16 * 16;
-    off += (c / 16) * D * H * W * 16 * 16;
-    off += d * H * W * 16 * 16;
-    off += h * W * 16 * 16;
-    off += w * 16 * 16;
-    off += (n % 16) * 16;
-    off += (c % 16);
-    return off;
-}
-
-int off_gOdhwi16o(int g, int o, int i, int d, int h, int w, int O, int I, int D,
-        int H, int W) {
-    int off = 0;
-    off += g * (O / 16) * D * H * W * I * 16;
-    off += (o / 16) * D * H * W * I * 16;
-    off += d * H * W * I * 16;
-    off += h * W * I * 16;
-    off += w * I * 16;
-    off += i * 16;
-    off += (o % 16);
-    return off;
-}
-
-int off_gOIdhw16i16o(int g, int o, int i, int d, int h, int w, int O, int I,
-        int D, int H, int W) {
-    int off = 0;
-    off += g * (O / 16) * (I / 16) * D * H * W * 16 * 16;
-    off += (o / 16) * (I / 16) * D * H * W * 16 * 16;
-    off += (i / 16) * D * H * W * 16 * 16;
-    off += d * H * W * 16 * 16;
-    off += h * W * 16 * 16;
-    off += w * 16 * 16;
-    off += (i % 16) * 16;
-    off += (o % 16);
-    return off;
-}
-
-int off_gIOdhw16i16o(int g, int o, int i, int d, int h, int w, int O, int I,
-        int D, int H, int W) {
-    int off = 0;
-    off += g * (I / 16) * (O / 16) * D * H * W * 16 * 16;
-    off += (i / 16) * (O / 16) * D * H * W * 16 * 16;
-    off += (o / 16) * D * H * W * 16 * 16;
-    off += d * H * W * 16 * 16;
-    off += h * W * 16 * 16;
-    off += w * 16 * 16;
-    off += (i % 16) * 16;
-    off += (o % 16);
-    return off;
-}
-
-int src_off(int n, int c, int d, int h, int w) {
-    if (SRC_NCHW) return off_ncdhw(n, c, d, h, w, G * IC, ID, IH, IW);
-    if (SRC_W16C) return off_nCdhw16c(n, c, d, h, w, G * IC, ID, IH, IW);
-    if (SRC_16N16C) return off_NCdhw16n16c(n, c, d, h, w, G * IC, ID, IH, IW);
-    return 0;
-}
-
-int wei_off(int g, int o, int i, int d, int h, int w) {
-    if (WEI_I16O) return off_gOdhwi16o(g, o, i, d, h, w, OC, IC, KD, KH, KW);
-    if (WEI_16I16O)
-        return off_gOIdhw16i16o(g, o, i, d, h, w, OC, IC, KD, KH, KW);
-    if (WEI_16I16O_FLIPPED)
-        return off_gIOdhw16i16o(g, o, i, d, h, w, OC, IC, KD, KH, KW);
-    return 0;
-}
-
-int dst_off(int n, int c, int d, int h, int w) {
-    if (DST_W16C) return off_nCdhw16c(n, c, d, h, w, G * OC, OD, OH, OW);
-    if (DST_16N16C) return off_NCdhw16n16c(n, c, d, h, w, G * OC, OD, OH, OW);
-    return 0;
-}
 
 // Layout is:
 // - cwn[16c] for NCdhw16n16c (16c is mapped to sub-group)
@@ -260,6 +203,25 @@ int dst_idx(int mb_block, int oc_outer, int ow_block) {
     } while (0)
 
 // ptr[i * 16 + j] = block[i].j, 0 <= i < n, 0 <= j < 16
+#if DST_NCHW
+#define unrolled_write(n, block, ptr) \
+    do { \
+        if ((n)&16) { \
+            _BLOCK_WRITE8((ptr), *(DATA8_T *)((block))); \
+            _BLOCK_WRITE8((ptr) + 8 * 16, *(DATA8_T *)((block) + 8)); \
+        } \
+        if ((n)&8) \
+            _BLOCK_WRITE8( \
+                    (ptr) + ((n) & ~15), *(DATA8_T *)((block) + ((n) & ~15))); \
+        if ((n)&4) \
+            _BLOCK_WRITE4( \
+                    (ptr) + ((n) & ~7), *(DATA4_T *)((block) + ((n) & ~7))); \
+        if ((n)&2) \
+            _BLOCK_WRITE2( \
+                    (ptr) + ((n) & ~3), *(DATA2_T *)((block) + ((n) & ~3))); \
+        if ((n)&1) _BLOCK_WRITE((ptr) + ((n) & ~1), *((block) + ((n) & ~1))); \
+    } while (0)
+#else
 #define unrolled_write(n, block, ptr) \
     do { \
         if ((n)&16) { \
@@ -278,7 +240,7 @@ int dst_idx(int mb_block, int oc_outer, int ow_block) {
         if ((n)&1) \
             _BLOCK_WRITE((ptr) + ((n) & ~1) * 16, *((block) + ((n) & ~1))); \
     } while (0)
-
+#endif
 // Supports C vectorization only.
 #define multiply_row(C, A, B, mb_block, oc_outer, ic_outer, ow_outer) \
     do { \
@@ -506,45 +468,125 @@ DATA_T shuffle_a_value(int mb_block, int ic_block, int ow_outer, int ow_inner,
 // Read MB_BLOCK x OC_BLOCK x OW_BLOCK block of dst.
 #define read_dst_block(block, ptr, ow) \
     do { \
-        int ow_bound \
-                = (OW % OW_BLOCK == 0) ? OW_BLOCK : min(OW_BLOCK, OW - (ow)); \
-        for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) \
-            for (int oc_outer = 0; oc_outer < OC_OUTER; oc_outer++) \
-                for (int ow_block = 0; ow_block < ow_bound; ow_block++) { \
+        if (DST_NCHW) { \
+            for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) { \
+                int n_channels = min(min(C_SIZE, OW - ow), OW_BLOCK); \
+                bool w_oc_tail = BASE_OC_TAIL > 0 \
+                        && OC_WO_PADDING - (ocb ? ocb : SUB_GROUP_SIZE) \
+                                < OC_BLOCK; \
+                int loc_oc_tail = w_oc_tail ? BASE_OC_TAIL : SUB_GROUP_SIZE; \
+                int oc_loop = (!w_oc_tail || sglid < loc_oc_tail) \
+                        ? C_SIZE \
+                        : n_channels; \
+                for (int oc_outer = 0; oc_outer < oc_loop; oc_outer += 1) { \
+                    int oc_tail_idx = ((sglid < loc_oc_tail \
+                                               && oc_outer >= n_channels) \
+                                    ? (sglid + (16 * (C_SIZE / OW_BLOCK - 1))) \
+                                    : sglid); \
                     int off = dst_off( \
-                            mb_block, oc_outer * 16, 0, 0, ow_block); \
-                    int idx = dst_idx(mb_block, oc_outer, ow_block); \
-                    (block)[idx] = _BLOCK_READ(&(ptr)[off]); \
+                            0, oc_tail_idx, 0, 0, (oc_outer % n_channels)); \
+                    int idx = oc_outer; \
+                    _BLOCK_READ_DST(&(block)[idx], 1, &(ptr)[off]); \
                 } \
+            } \
+        } else { \
+            int ow_bound = (OW % OW_BLOCK == 0) ? OW_BLOCK \
+                                                : min(OW_BLOCK, OW - (ow)); \
+            for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) \
+                for (int oc_outer = 0; oc_outer < OC_OUTER; oc_outer++) \
+                    for (int ow_block = 0; ow_block < ow_bound; ow_block++) { \
+                        int off = dst_off( \
+                                mb_block, oc_outer * 16, 0, 0, ow_block); \
+                        int idx = dst_idx(mb_block, oc_outer, ow_block); \
+                        if (DST_W32C) { \
+                            int off = dst_off( \
+                                    mb_block, oc_outer * 16, 0, 0, 0); \
+                            int idx = dst_idx(mb_block, oc_outer, 0); \
+                            for (int i = 0; i < OW_BLOCK && ow + i < OW; \
+                                    ++i) { \
+                                *((DATA_T *)&(block)[idx + i]) \
+                                        = CONVERT_DATA_T(BLOCK_READ_DST( \
+                                                &(ptr)[off + (32 * i)])); \
+                            } \
+                        } else if (DST_32N32C) { \
+                            int off = dst_off(mb_block, \
+                                    oc_outer * (DST_32N32C ? 32 : 16), 0, 0, \
+                                    ow_block); \
+                            int idx = dst_idx(mb_block, oc_outer, ow_block); \
+                            mb_block ? mb_block += 31 : mb_block; \
+                            for (int i = 0; i < 16; ++i) { \
+                                *((DATA_T *)&(block)[idx + i]) \
+                                        = CONVERT_DATA_T(BLOCK_READ_DST( \
+                                                &(ptr)[off + (32 * i)])); \
+                            } \
+                        } else { \
+                            (block)[idx] = _BLOCK_READ(&(ptr)[off]); \
+                        } \
+                    } \
+        } \
     } while (0)
 
 #define write_dst_block(block, ptr, ow) \
     do { \
-        if (DST_W16C) { \
+        if (DST_W16C || DST_W32C) { \
             for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) \
                 for (int oc_outer = 0; oc_outer < OC_OUTER; oc_outer++) { \
                     int off = dst_off(mb_block, oc_outer * 16, 0, 0, 0); \
                     int idx = dst_idx(mb_block, oc_outer, 0); \
-                    if (OW % OW_BLOCK == 0 || (ow) + OW_BLOCK <= OW) { \
+                    if (DST_W32C) { \
+                        for (int i = 0; i < OW_BLOCK && ow + i < OW; ++i) { \
+                            unrolled_write(1, &(block)[idx + i], \
+                                    &(ptr)[off + (32 * i)]); \
+                        } \
+                    } else if (OW % OW_BLOCK == 0 || (ow) + OW_BLOCK <= OW) { \
                         unrolled_write(OW_BLOCK, &(block)[idx], &(ptr)[off]); \
                     } else { \
                         unrolled_write( \
                                 OW % OW_BLOCK, &(block)[idx], &(ptr)[off]); \
                     } \
                 } \
-        } else if (DST_16N16C) { \
+        } else if (DST_16N16C || DST_32N32C) { \
             int ow_bound = (OW % OW_BLOCK == 0) ? OW_BLOCK \
                                                 : min(OW_BLOCK, OW - (ow)); \
             for (int ow_block = 0; ow_block < ow_bound; ow_block++) \
                 for (int oc_outer = 0; oc_outer < OC_OUTER; oc_outer++) \
                     for (int mb_block = 0; mb_block < MB_BLOCK; \
-                            mb_block += 16) { \
-                        int off = dst_off( \
-                                mb_block, oc_outer * 16, 0, 0, ow_block); \
+                            mb_block += (DST_32N32C ? 32 : 16)) { \
+                        int off = dst_off(mb_block, \
+                                oc_outer * (DST_32N32C ? 32 : 16), 0, 0, \
+                                ow_block); \
                         int idx = dst_idx(mb_block, oc_outer, ow_block); \
-                        unrolled_write(min(16, MB_BLOCK), &(block)[idx], \
-                                &(ptr)[off]); \
+                        if (DST_32N32C && MB > 8) { \
+                            for (int i = 0; i < C_SIZE; ++i) { \
+                                unrolled_write(1, &(block)[idx + i], \
+                                        &(ptr)[off + (32 * i)]); \
+                            } \
+                        } else { \
+                            unrolled_write(min(16, MB_BLOCK), &(block)[idx], \
+                                    &(ptr)[off]); \
+                        } \
                     } \
+        } else if (DST_NCHW && sglid < OC_WO_PADDING - oc) { \
+            for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) { \
+                int n_channels = min(min(C_SIZE, OW - ow), OW_BLOCK); \
+                bool w_oc_tail = BASE_OC_TAIL > 0 \
+                        && OC_WO_PADDING - (ocb ? ocb : SUB_GROUP_SIZE) \
+                                < OC_BLOCK; \
+                int loc_oc_tail = w_oc_tail ? BASE_OC_TAIL : SUB_GROUP_SIZE; \
+                int oc_loop = (!w_oc_tail || sglid < loc_oc_tail) \
+                        ? C_SIZE \
+                        : n_channels; \
+                for (int oc_outer = 0; oc_outer < oc_loop; oc_outer += 1) { \
+                    int oc_tail_idx = ((sglid < loc_oc_tail \
+                                               && oc_outer >= n_channels) \
+                                    ? (sglid + (16 * (C_SIZE / OW_BLOCK - 1))) \
+                                    : sglid); \
+                    int off = dst_off( \
+                            0, oc_tail_idx, 0, 0, (oc_outer % n_channels)); \
+                    int idx = oc_outer; \
+                    unrolled_write(1, &(block)[oc_outer], &(ptr)[off]); \
+                } \
+            } \
         } \
     } while (0)
 
@@ -626,9 +668,9 @@ DATA_T shuffle_a_value(int mb_block, int ic_block, int ow_outer, int ow_inner,
 __attribute__((reqd_work_group_size(LWS_0, LWS_1, LWS_2)))
 __attribute__((intel_reqd_sub_group_size(SUB_GROUP_SIZE))) __kernel void
 gen9_conv_fwd(const __global DATA_T *src, const __global DATA_T *wei,
-        const __global DATA_T *bia, __global DATA_T *dst POST_OP_ARGS) {
-
+        const __global DATA_T *bia, __global DST_DATA_T *dst POST_OP_ARGS) {
     int local_id = get_local_id(0);
+    int sglid = get_sub_group_local_id();
     int g_ocb = get_group_id(0);
     int g = g_ocb / (OCB / OC_BLOCK);
     int ocb = g_ocb % (OCB / OC_BLOCK) * OC_BLOCK;
@@ -650,27 +692,49 @@ gen9_conv_fwd(const __global DATA_T *src, const __global DATA_T *wei,
     int ih = oh * SH - PH;
     int iw = ow * SW - PW;
     int id = od * SD - PD;
+    // Vector type variables have less chance of being spilled for half data
+    // type.
+#if DT_F16 && C_SIZE == 8
+    DATA8_T C = 0;
+#elif DT_F16 && C_SIZE == 16
+    DATA16_T C = 0;
+#else
+    DATA_T C[C_SIZE] = {0};
+#endif
 
-    DATA_T C[MB_BLOCK * OC_OUTER * OW_BLOCK] = {0};
     if (WITH_BIAS) {
         for (int mb_block = 0; mb_block < MB_BLOCK; mb_block++) {
             for (int oc_outer = 0; oc_outer < OC_OUTER; oc_outer++) {
+                const int bg_off = g * OC;
+                const int bc_off = oc + oc_outer * 16 + local_id;
+#if DT_F16
+                if (OC_WO_PADDING % OC_BLOCK == 0 || bc_off < OC_WO_PADDING) {
+                    for (int ow_block = 0; ow_block < OW_BLOCK; ow_block++) {
+                        const int c_off = dst_idx(mb_block, oc_outer, ow_block);
+                        C[c_off] = bia[bg_off + bc_off];
+                    } // ow_block
+                } // copy-bias
+#else
+
                 for (int ow_block = 0; ow_block < OW_BLOCK; ow_block++) {
                     const int c_off = dst_idx(mb_block, oc_outer, ow_block);
-                    const int bg_off = g * OC;
-                    const int bc_off = oc + oc_outer * 16 + local_id;
                     C[c_off] = (OC_WO_PADDING % OC_BLOCK == 0
                                        || bc_off < OC_WO_PADDING)
                             ? bia[bg_off + bc_off]
                             : DATA_ZERO;
                 }
-            }
-        }
-    }
+#endif
+            } // oc_outer
+        } // mb_block
+    } // if-bias
 
     src += src_off(mb, g * IC, id, ih, iw);
     wei += wei_off(g, oc, 0, 0, 0, 0);
+#ifdef DST_DT_S8
     dst += dst_off(mb, g * OC + oc, od, oh, ow);
+#else
+    dst += dst_off(mb, g * OC + oc, od, oh, ow);
+#endif
 
     if (OW_BLOCK == 1) {
         loop_kdhw_outermost(src, wei, C, id, ih, iw);
@@ -682,7 +746,37 @@ gen9_conv_fwd(const __global DATA_T *src, const __global DATA_T *wei,
 
     if (WITH_SUM) { read_dst_block(S, dst, ow); }
 
-    APPLY_POST_OPS(C, DATA_T, S, DATA_T);
+#if WITH_POST_OP
+    if (OW_BLOCK == 1) {
+        const int po_mb = mb;
+        const int po_oc = (g * OC + oc) % (OC * G);
+        APPLY_POST_OPS_TRY_BURST(C, DATA_T, S, DATA_T, po_mb, MB_BLOCK, po_oc,
+                OC_OUTER * SUB_GROUP_SIZE, sglid);
+    } else {
+        unroll_for(int mb_idx = 0; mb_idx < MB_BLOCK; ++mb_idx) {
+            unroll_for(int oc_idx = 0; oc_idx < OC_OUTER; ++oc_idx) {
+                const int po_mb = (mb + mb_idx) % MB;
+                const int po_oc = (g * OC + oc + (oc_idx * 16)) % (OC * G);
+                float acc_ow[OW_BLOCK];
+                float sum_ow[OW_BLOCK];
+                unroll_for(int ow_idx = 0; ow_idx < OW_BLOCK; ++ow_idx) {
+                    acc_ow[ow_idx]
+                            = CONVERT_FLOAT_T(C[mb_idx * OC_OUTER * OW_BLOCK
+                                    + oc_idx * OW_BLOCK + ow_idx]);
+                    sum_ow[ow_idx]
+                            = CONVERT_FLOAT_T(S[mb_idx * OC_OUTER * OW_BLOCK
+                                    + oc_idx * OW_BLOCK + ow_idx]);
+                }
+                APPLY_POST_OPS_TRY_BURST(acc_ow, float, sum_ow, float, po_mb, 1,
+                        po_oc, SUB_GROUP_SIZE, sglid);
+                unroll_for(int ow_idx = 0; ow_idx < OW_BLOCK; ++ow_idx) {
+                    C[mb_idx * OC_OUTER * OW_BLOCK + oc_idx * OW_BLOCK + ow_idx]
+                            = acc_ow[ow_idx];
+                }
+            }
+        }
+    }
+#endif // #if WITH_POST_OP
 
-    write_dst_block(C, dst, ow);
+    write_dst_block((DATA_T *)(&C), dst, ow);
 }

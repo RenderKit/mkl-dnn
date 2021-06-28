@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <atomic>
 #include <mutex>
 
 #include "common/dnnl_thread.hpp"
@@ -38,13 +39,15 @@ static inline Xbyak::Ymm make_ymm(const Xbyak::Zmm &v) {
 
 namespace avx512_core_gemm_smalln_tn_f32 {
 
-struct xbyak_gemm_smalln_tn : public jit_generator {
+struct xbyak_gemm_smalln_tn_t : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_gemm_smalln_tn_xbyak_gemm)
 
-    xbyak_gemm_smalln_tn(int N, float beta, float alpha,
+    xbyak_gemm_smalln_tn_t(int N, float beta, float alpha,
             void *code_ptr = nullptr,
             size_t code_size = 80 * Xbyak::DEFAULT_MAX_CODE_SIZE)
-        : jit_generator(code_ptr, code_size) {
+        : jit_generator(code_ptr, code_size), N(N), beta(beta), alpha(alpha) {}
+
+    void generate() override ATTRIBUTE_OPTIMIZE {
         using namespace Xbyak;
         /**
          * numN = 1 : 16 rows of A, 1x16 accumulators
@@ -303,7 +306,6 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
 
         add(rsp, STACKSIZE);
         postamble();
-        ker_ = this->getCode<ker_t>();
     }
 
     void zero_accumulators() {
@@ -589,7 +591,7 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
             int endval = (MROW < 5) ? MROW : 5;
             for (int ii = 8; ii < 8 + endval; ii++) {
                 // Storing A values in zmm_reg[8-12]
-                vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+                vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                 add(AO2, LDA);
             }
             for (int ii = 0; ii < endval; ii++) {
@@ -614,7 +616,7 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
                     ? 8
                     : MROW; // Do not process more than 8 rows here.
             for (int ii = 0; ii < MROW2; ii++) {
-                vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+                vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                 add(AO2, LDA);
             }
             for (int ii = 0; ii < MROW2; ii++) {
@@ -627,7 +629,7 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
             if (MROW > 8) {
                 vmovaps(zmm_reg[0], zmm_reg[15]);
                 for (int ii = 8; ii < MROW; ii++) {
-                    vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+                    vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                     add(AO2, LDA);
                 }
                 for (int ii = 8; ii < MROW; ii++)
@@ -643,38 +645,30 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
         }
     }
 
-    typedef int (*ker_t)(dim_t m, dim_t k, const float *alpha,
-            const float *beta, const float *a, dim_t lda, const float *b,
-            dim_t ldb, float *c, dim_t ldc);
-
-    int operator()(dim_t m, dim_t k, const float *alpha, const float *beta,
-            const float *a, dim_t lda, const float *b, dim_t ldb, float *c,
-            dim_t ldc) const {
-        return ker_(m, k, alpha, beta, a, lda, b, ldb, c, ldc);
-    }
-
 private:
-    ker_t ker_;
-    uint32_t numN;
-    bool isBeta0, isBetaN, isAlpha0, isAlphaN;
-    Xbyak::Zmm *zmm_reg;
+    uint32_t numN = 0;
+    const int N = 0;
+    const float beta = 0.0f;
+    const float alpha = 0.0f;
+    bool isBeta0 = false, isBetaN = false, isAlpha0 = false, isAlphaN = false;
+    Xbyak::Zmm *zmm_reg = nullptr;
     Xbyak::Reg64 A, AO1, AO2, B, BO1, BO2, CO1, CO2;
     Xbyak::Reg64 LDA, LDB, LDC, II, JJ;
     Xbyak::Reg64 TEMP_REG, TEMP_REG2;
-    Xbyak::Address *TEMPZMM, *perm;
+    Xbyak::Address *TEMPZMM = nullptr, *perm = nullptr;
     Xbyak::Opmask k_rem, m_rem;
     Xbyak::Label label_m_loop, label_k_loop, label_no_k_rem, label_krem,
             label_mrem;
     static uint32_t permute_ab[], permute_ba[], permute_ab1[], permute_ba1[];
 };
 
-uint32_t xbyak_gemm_smalln_tn::permute_ab[] = {0x00, 0x01, 0x02, 0x03, 0x10,
+uint32_t xbyak_gemm_smalln_tn_t::permute_ab[] = {0x00, 0x01, 0x02, 0x03, 0x10,
         0x11, 0x12, 0x13, 0x08, 0x09, 0x0A, 0x0B, 0x18, 0x19, 0x1A, 0x1B};
-uint32_t xbyak_gemm_smalln_tn::permute_ba[] = {0x04, 0x05, 0x06, 0x07, 0x14,
+uint32_t xbyak_gemm_smalln_tn_t::permute_ba[] = {0x04, 0x05, 0x06, 0x07, 0x14,
         0x15, 0x16, 0x17, 0x0C, 0x0D, 0x0E, 0x0F, 0x1C, 0x1D, 0x1E, 0x1F};
-uint32_t xbyak_gemm_smalln_tn::permute_ab1[] = {0x00, 0x10, 0x02, 0x12, 0x04,
+uint32_t xbyak_gemm_smalln_tn_t::permute_ab1[] = {0x00, 0x10, 0x02, 0x12, 0x04,
         0x14, 0x06, 0x16, 0x08, 0x18, 0x0A, 0x1A, 0x0C, 0x1C, 0x0E, 0x1E};
-uint32_t xbyak_gemm_smalln_tn::permute_ba1[] = {0x01, 0x11, 0x03, 0x13, 0x05,
+uint32_t xbyak_gemm_smalln_tn_t::permute_ba1[] = {0x01, 0x11, 0x03, 0x13, 0x05,
         0x15, 0x07, 0x17, 0x09, 0x19, 0x0B, 0x1B, 0x0D, 0x1D, 0x0F, 0x1F};
 
 /**
@@ -724,24 +718,29 @@ dnnl_status_t jump_to_gemm_smalln_tn(
     return dnnl_unimplemented;
 }
 
-void sgemm_smalln_tn(const dim_t m, const dim_t n, const dim_t k,
+dnnl_status_t sgemm_smalln_tn(const dim_t m, const dim_t n, const dim_t k,
         const float alpha, const float *A, const dim_t lda, const float *B,
         const dim_t ldb, const float beta, float *C, const dim_t ldc) {
     using namespace avx512_core_gemm_smalln_tn_f32;
 
-    static xbyak_gemm_smalln_tn *kernels[4][3][3];
+    static xbyak_gemm_smalln_tn_t *kernels[4][3][3];
     static std::once_flag initialized;
 
-    std::call_once(initialized, [=] {
+    dnnl_status_t st = dnnl_success;
+    std::call_once(initialized, [&] {
         for (dim_t N : {1, 2, 3, 4}) {
             for (float al : {0.0f, 1.0f, 2.0f}) {
                 for (float be : {0.0f, 1.0f, 2.0f}) {
-                    kernels[N - 1][(dim_t)al][(dim_t)be]
-                            = new xbyak_gemm_smalln_tn(N, be, al);
+                    auto &kern = kernels[N - 1][(dim_t)al][(dim_t)be];
+                    kern = new xbyak_gemm_smalln_tn_t(N, be, al);
+                    st = kern->create_kernel();
+                    if (st != dnnl_success) return;
                 }
             }
         }
     });
+
+    if (st != dnnl_success) return st;
 
     for (dim_t ii = 1; ii < 6; ii++) {
         dim_t nnval = partitions[n - 1][ii] - partitions[n - 1][ii - 1];
@@ -752,6 +751,8 @@ void sgemm_smalln_tn(const dim_t m, const dim_t n, const dim_t k,
         (*kernels[nnval - 1][al_ind][be_ind])(m, k, &alpha, &beta, A, lda,
                 &B[nind * ldb], ldb, &C[nind * ldc], ldc);
     }
+
+    return dnnl_success;
 }
 
 #define MROW_ALIGN 1
@@ -799,7 +800,7 @@ dnnl_status_t jit_avx512_core_gemm_smalln_tn_f32(const char *transa,
         const float *p_beta, float *C, const dim_t *p_ldc) {
     using namespace avx512_core_gemm_smalln_tn_f32;
 
-    int max_num_threads = (dnnl_in_parallel()) ? 1 : dnnl_get_max_threads();
+    int max_num_threads = dnnl_get_current_num_threads();
 
     dim_t m = *p_m;
     dim_t n = *p_n;
@@ -815,17 +816,18 @@ dnnl_status_t jit_avx512_core_gemm_smalln_tn_f32(const char *transa,
     max_num_threads = smalln_set_num_threads(m, k, max_num_threads);
 
     if (max_num_threads == 1) {
-        sgemm_smalln_tn(m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
-        return dnnl_success;
+        return sgemm_smalln_tn(m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
     }
 
+    std::atomic<dnnl_status_t> st(dnnl_success);
     parallel(max_num_threads, [&](int ithr, int nthr) {
         dim_t mid = (m / nthr) & (~(MROW_ALIGN - 1));
         dim_t mpart = (ithr < nthr - 1) ? mid : m - mid * (nthr - 1);
-        sgemm_smalln_tn(mpart, n, k, alpha, &A[ithr * lda * mid], lda, B, ldb,
-                beta, &C[ithr * mid], ldc);
+        auto st_thr = sgemm_smalln_tn(mpart, n, k, alpha, &A[ithr * lda * mid],
+                lda, B, ldb, beta, &C[ithr * mid], ldc);
+        if (st_thr != dnnl_success) st = st_thr;
     });
-    return dnnl_success;
+    return st;
 }
 
 } // namespace x64

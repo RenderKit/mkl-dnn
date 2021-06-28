@@ -16,7 +16,7 @@
 
 #include <assert.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
@@ -38,7 +38,8 @@ status_t dnnl_primitive_desc_iterator_create(
     bool known_primitive_kind = utils::one_of(op_desc->kind,
             batch_normalization, binary, convolution, deconvolution, eltwise,
             gemm, inner_product, layer_normalization, lrn, logsoftmax, matmul,
-            pooling, resampling, rnn, shuffle, softmax);
+            pooling, pooling_v2, prelu, reduction, resampling, rnn, shuffle,
+            softmax);
     if (!known_primitive_kind) return invalid_arguments;
 
     auto it = new primitive_desc_iterator_t(engine, op_desc, attr,
@@ -84,7 +85,7 @@ status_t dnnl_primitive_desc_clone(
     if (utils::any_null(primitive_desc_iface, existing_primitive_desc_iface))
         return invalid_arguments;
 
-    return safe_ptr_assign<primitive_desc_iface_t>(*primitive_desc_iface,
+    return safe_ptr_assign(*primitive_desc_iface,
             new primitive_desc_iface_t(
                     existing_primitive_desc_iface->impl()->clone(),
                     existing_primitive_desc_iface->engine()));
@@ -92,7 +93,7 @@ status_t dnnl_primitive_desc_clone(
 
 status_t dnnl_primitive_desc_iterator_destroy(
         primitive_desc_iterator_t *iterator) {
-    if (iterator != nullptr) delete iterator;
+    delete iterator;
     return success;
 }
 

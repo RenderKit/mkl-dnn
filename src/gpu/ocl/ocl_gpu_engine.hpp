@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #ifndef GPU_OCL_OCL_GPU_ENGINE_HPP
 #define GPU_OCL_OCL_GPU_ENGINE_HPP
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common/c_types_map.hpp"
 #include "common/engine.hpp"
@@ -25,7 +25,6 @@
 #include "common/utils.hpp"
 #include "gpu/compute/compute.hpp"
 #include "gpu/gpu_impl_list.hpp"
-#include "gpu/ocl/ocl_gpu_device_info.hpp"
 #include "gpu/ocl/ocl_gpu_kernel.hpp"
 #include "gpu/ocl/ocl_utils.hpp"
 
@@ -36,39 +35,26 @@ namespace ocl {
 
 class ocl_gpu_engine_t : public compute::compute_engine_t {
 public:
-    static status_t get_ocl_devices(std::vector<cl_device_id> *devices);
-
-    ocl_gpu_engine_t(cl_device_id adevice)
-        : compute::compute_engine_t(engine_kind::gpu, runtime_kind::ocl,
-                new ocl_gpu_device_info_t(adevice))
-        , device_(adevice)
-        , context_(nullptr)
-        , is_user_context_(false)
-        , enable_ngen_kernels_(false)
-        , checked_ngen_kernels_(false) {}
-    ocl_gpu_engine_t(cl_device_id adevice, cl_context acontext)
-        : compute::compute_engine_t(engine_kind::gpu, runtime_kind::ocl,
-                new ocl_gpu_device_info_t(adevice))
+    ocl_gpu_engine_t(cl_device_id adevice, cl_context acontext, size_t index)
+        : compute::compute_engine_t(engine_kind::gpu, runtime_kind::ocl, index)
         , device_(adevice)
         , context_(acontext)
-        , is_user_context_(true)
-        , enable_ngen_kernels_(false)
-        , checked_ngen_kernels_(false) {}
+        , is_user_context_(acontext) {}
     ~ocl_gpu_engine_t() override {
+        if (device_) { clReleaseDevice(device_); }
         if (context_) { clReleaseContext(context_); }
     }
 
-    status_t init();
+    status_t init() override;
 
     status_t create_memory_storage(memory_storage_t **storage, unsigned flags,
             size_t size, void *handle) override;
 
-    status_t create_stream(stream_t **stream, unsigned flags,
-            const stream_attr_t *attr) override;
+    status_t create_stream(stream_t **stream, unsigned flags) override;
     status_t create_stream(stream_t **stream, cl_command_queue queue);
 
-    status_t create_kernel(compute::kernel_t *kernel, const char *kernel_name,
-            const std::vector<unsigned char> &binary) const override;
+    status_t create_kernel(compute::kernel_t *kernel,
+            jit::jit_generator_base &jitter) const override;
 
     status_t create_kernels(std::vector<compute::kernel_t> *kernels,
             const std::vector<const char *> &kernel_names,
@@ -79,6 +65,8 @@ public:
             const std::vector<const char *> &kernel_names,
             const char **source_strings,
             const compute::kernel_ctx_t &kernel_ctx) const override;
+
+    std::function<void(void *)> get_program_list_deleter() const override;
 
     const concat_primitive_desc_create_f *
     get_concat_implementation_list() const override {
@@ -105,27 +93,17 @@ public:
     virtual cl_device_id device() const { return device_; }
     virtual cl_context context() const { return context_; }
 
-    intptr_t device_id() const override {
-        return reinterpret_cast<intptr_t>(device());
+    device_id_t device_id() const override {
+        return std::make_tuple(0, reinterpret_cast<uint64_t>(device()), 0);
     }
 
-    virtual bool mayiuse_ngen_kernels() override {
-        check_mayiuse_ngen_kernels();
-        return enable_ngen_kernels_;
-    }
-
-    stream_t *service_stream() const override { return service_stream_.get(); }
+protected:
+    status_t init_device_info() override;
 
 private:
     cl_device_id device_;
     cl_context context_;
     bool is_user_context_;
-    bool enable_ngen_kernels_;
-    bool checked_ngen_kernels_;
-
-    std::unique_ptr<stream_t> service_stream_;
-
-    void check_mayiuse_ngen_kernels();
 };
 
 } // namespace ocl

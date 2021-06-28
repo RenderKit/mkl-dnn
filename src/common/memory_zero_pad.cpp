@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 #include "utils.hpp"
 
 #include "memory.hpp"
+#include "primitive_exec_types.hpp"
 
 using namespace dnnl::impl;
 using namespace dnnl::impl::data_type;
@@ -186,19 +187,21 @@ void typed_zero_pad_generic_blocked(
 }
 
 template <data_type_t dt>
-status_t typed_zero_pad(const memory_t *memory, stream_t *stream) {
-    memory_storage_t *memory_storage = memory->memory_storage();
+status_t typed_zero_pad(const memory_t *memory, const exec_ctx_t &ctx) {
     const memory_desc_wrapper mdw(memory->md());
+    memory_storage_t *memory_storage = memory->memory_storage();
 
     if (mdw.format_kind() != format_kind::blocked) return unimplemented;
 
     if (mdw.nelems(false) == mdw.nelems(true)) return success;
 
-    void *mapped_ptr = nullptr;
-    status_t status = memory_storage->map_data(&mapped_ptr, stream);
-    assert(status == status::success);
+    const size_t map_size = mdw.size();
+    assert(map_size != DNNL_RUNTIME_SIZE_VAL);
 
-    auto *data = (typename prec_traits<dt>::type *)mapped_ptr;
+    void *mapped_ptr
+            = ctx.map_memory_storage(memory_storage, ctx.stream(), map_size);
+
+    auto *data = static_cast<typename prec_traits<dt>::type *>(mapped_ptr);
     auto blk = mdw.blocking_desc();
 
     auto get_blksize = [&](int ind) {
@@ -212,10 +215,10 @@ status_t typed_zero_pad(const memory_t *memory, stream_t *stream) {
 
 #define CASE(blksize_, blk_kind) \
     do { \
-        if (blksize == blksize_) { \
+        if (blksize == (blksize_)) { \
             typed_zero_pad_blk<dt, blk_kind, blksize_>(mdw, data); \
-            status = memory_storage->unmap_data(mapped_ptr, stream); \
-            assert(status == status::success); \
+            ctx.unmap_memory_storage( \
+                    memory_storage, mapped_ptr, ctx.stream()); \
             return success; \
         } \
     } while (0)
@@ -265,48 +268,55 @@ status_t typed_zero_pad(const memory_t *memory, stream_t *stream) {
     // the last line of defence
     typed_zero_pad_generic_blocked<dt>(mdw, data);
 
-    status = memory_storage->unmap_data(mapped_ptr, stream);
-    assert(status == status::success);
-
-    MAYBE_UNUSED(status);
+    ctx.unmap_memory_storage(memory_storage, mapped_ptr, ctx.stream());
     return success;
 }
 
-static status_t zero_pad(const memory_t *memory, stream_t *stream) {
+static status_t zero_pad(const memory_t *memory, const exec_ctx_t &ctx) {
     memory_desc_wrapper mdw(memory->md());
     switch (mdw.data_type()) {
-        case f16: return typed_zero_pad<f16>(memory, stream);
-        case bf16: return typed_zero_pad<bf16>(memory, stream);
-        case f32: return typed_zero_pad<f32>(memory, stream);
-        case s32: return typed_zero_pad<s32>(memory, stream);
-        case s8: return typed_zero_pad<s8>(memory, stream);
-        case u8: return typed_zero_pad<u8>(memory, stream);
+        case f16: return typed_zero_pad<f16>(memory, ctx);
+        case bf16: return typed_zero_pad<bf16>(memory, ctx);
+        case f32: return typed_zero_pad<f32>(memory, ctx);
+        case s32: return typed_zero_pad<s32>(memory, ctx);
+        case s8: return typed_zero_pad<s8>(memory, ctx);
+        case u8: return typed_zero_pad<u8>(memory, ctx);
         default: assert(!"memory is undefined"); return unimplemented;
     }
     return unimplemented;
 }
 
-status_t stream_t::zero_pad(const memory_t *memory) {
-    return ::zero_pad(memory, this);
+status_t stream_t::zero_pad(const memory_t *memory, const exec_ctx_t &ctx) {
+    return ::zero_pad(memory, ctx);
 }
 
-status_t memory_t::zero_pad(stream_t *stream) const {
+status_t memory_t::zero_pad(const exec_ctx_t &ctx) const {
     memory_desc_wrapper mdw(md());
     const bool skip_zeroing = false || memory_storage()->is_null()
             || mdw.is_zero() || !mdw.is_blocking_desc();
     if (skip_zeroing) return success;
 
+    stream_t *stream = ctx.stream();
     status_t status;
     if (stream == nullptr) {
         engine_t *engine;
         engine = memory_storage()->engine();
-        stream = engine->service_stream();
+        CHECK(engine->get_service_stream(stream));
     }
 
     if (stream != nullptr)
-        status = stream->zero_pad(this);
+        status = stream->zero_pad(this, ctx);
     else
-        status = ::zero_pad(this, stream);
+        status = ::zero_pad(this, ctx);
 
     return status;
+}
+
+extern "C" dnnl_status_t DNNL_API dnnl_impl_zero_pad(
+        const memory_t *memory, stream_t *stream) {
+    if (memory == nullptr || stream == nullptr)
+        return status::invalid_arguments;
+    memory_arg_t mem_arg = {const_cast<memory_t *>(memory), true};
+    exec_args_t args = {{0, mem_arg}};
+    return memory->zero_pad(exec_ctx_t(stream, std::move(args)));
 }

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -62,7 +62,9 @@ struct ref_softmax_fwd_t : public primitive_t {
         }
     };
 
-    ref_softmax_fwd_t(const pd_t *apd) : primitive_t(apd) {
+    ref_softmax_fwd_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
         outer_size_ = pd()->outer_size();
         channels_ = pd()->axis_size();
         inner_size_ = pd()->inner_size();
@@ -79,21 +81,21 @@ struct ref_softmax_fwd_t : public primitive_t {
         use_dense_ = true && inner_size_ == 1 && data_d.is_dense(true)
                 && data_d.only_padded_dim(axis)
                 && bd.strides[axis] == axis_blk_size;
+        return status::success;
     }
 
     typedef typename prec_traits<data_type>::type data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         if (use_dense_)
-            execute_forward_dense(ctx);
+            return execute_forward_dense(ctx);
         else
-            execute_forward_generic(ctx);
-        return status::success;
+            return execute_forward_generic(ctx);
     }
 
 private:
-    void execute_forward_dense(const exec_ctx_t &ctx) const;
-    void execute_forward_generic(const exec_ctx_t &ctx) const;
+    status_t execute_forward_dense(const exec_ctx_t &ctx) const;
+    status_t execute_forward_generic(const exec_ctx_t &ctx) const;
 
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 
@@ -120,7 +122,9 @@ struct ref_softmax_bwd_t : public primitive_t {
         }
     };
 
-    ref_softmax_bwd_t(const pd_t *apd) : primitive_t(apd) {
+    ref_softmax_bwd_t(const pd_t *apd) : primitive_t(apd) {}
+
+    status_t init(engine_t *engine) override {
         outer_size_ = pd()->outer_size();
         channels_ = pd()->axis_size();
         inner_size_ = pd()->inner_size();
@@ -137,21 +141,21 @@ struct ref_softmax_bwd_t : public primitive_t {
 
         use_dense_ = true && inner_size_ == 1 && diff_d == data_d
                 && diff_d.is_dense() && bd.strides[axis] == axis_blk_size;
+        return status::success;
     }
 
     typedef typename prec_traits<data_type>::type data_t;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         if (use_dense_)
-            execute_backward_dense(ctx);
+            return execute_backward_dense(ctx);
         else
-            execute_backward_generic(ctx);
-        return status::success;
+            return execute_backward_generic(ctx);
     }
 
 private:
-    void execute_backward_dense(const exec_ctx_t &ctx) const;
-    void execute_backward_generic(const exec_ctx_t &ctx) const;
+    status_t execute_backward_dense(const exec_ctx_t &ctx) const;
+    status_t execute_backward_generic(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 
     bool use_dense_;

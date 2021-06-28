@@ -31,6 +31,7 @@ namespace impl {
 namespace cpu {
 
 using namespace memory_tracking::names;
+using namespace data_type;
 
 namespace {
 /* Stats and src here are compatible if
@@ -39,6 +40,7 @@ namespace {
 status_t fill_compatible_stats_md(
         const memory_desc_t &src_md, memory_desc_t &stat_md) {
     stat_md = src_md;
+    stat_md.data_type = dnnl_f32;
     stat_md.ndims -= 1;
     return memory_desc_init_by_blocking_desc(
             stat_md, src_md.format_desc.blocking);
@@ -62,15 +64,18 @@ status_t create_reorder_pd(engine_t *engine, const memory_desc_t *from_md,
 }
 } // namespace
 
-status_t simple_layer_normalization_fwd_t::pd_t::init(engine_t *engine) {
+template <data_type_t data_type>
+status_t simple_layer_normalization_fwd_t<data_type>::pd_t::init(
+        engine_t *engine) {
     using namespace data_type;
     const memory_desc_wrapper src_d(src_md());
-    const memory_desc_wrapper stat_d(stat_md());
 
-    bool ok = is_fwd() && !has_zero_dim_memory()
-            && utils::everyone_is(f32, src_md()->data_type,
-                    stat_md()->data_type, dst_md()->data_type)
-            && check_scale_shift_data_type() && src_d.is_blocking_desc()
+    const bool ok = is_fwd() && !has_zero_dim_memory()
+            && platform::has_data_type_support(data_type)
+            && utils::everyone_is(
+                    data_type, src_md()->data_type, dst_md()->data_type)
+            && (f32 == stat_md()->data_type) && check_scale_shift_data_type()
+            && src_d.is_blocking_desc()
             && src_d.blocking_desc().strides[ndims() - 1]
                     == 1 // plain format, last logical dim is last physical
             && attr()->has_default_values() && set_default_formats_common();
@@ -89,15 +94,16 @@ status_t simple_layer_normalization_fwd_t::pd_t::init(engine_t *engine) {
     return status::success;
 }
 
-void simple_layer_normalization_fwd_t::execute_forward(
+template <data_type_t data_type>
+void simple_layer_normalization_fwd_t<data_type>::execute_forward(
         const exec_ctx_t &ctx) const {
-    auto src = CTX_IN_MEM(const float *, DNNL_ARG_SRC);
-    auto dst = CTX_OUT_MEM(float *, DNNL_ARG_DST);
+    auto scratchpad = ctx.get_scratchpad_grantor();
+    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
     auto scaleshift = CTX_IN_MEM(const float *, DNNL_ARG_SCALE_SHIFT);
 
     float *mean, *variance;
     if (pd()->use_tmp_stats()) {
-        auto scratchpad = ctx.get_scratchpad_grantor();
         mean = scratchpad.template get<float>(key_lnorm_tmp_mean);
         variance = scratchpad.template get<float>(key_lnorm_tmp_var);
     } else {
@@ -115,37 +121,29 @@ void simple_layer_normalization_fwd_t::execute_forward(
     const dim_t N = pd()->across_axis();
     const dim_t C_padded = src_d.padded_dims()[pd()->ndims() - 1];
 
-    const bool save_stats = pd()->is_training();
-    const bool calculate_stats = !pd()->stats_are_src();
-
-    parallel_nd(N, [&](dim_t n) {
-        auto v_mean = calculate_stats ? 0 : mean[n];
-        auto v_variance = calculate_stats ? 0 : variance[n];
-
-        if (calculate_stats)
-            (*stat_kernel_)(&src[n * C_padded], &v_mean, &v_variance);
-
-        (*data_kernel_)(&src[n * C_padded], &dst[n * C_padded], scaleshift,
-                &v_mean, &v_variance);
-
-        if (calculate_stats) {
-            if (save_stats) {
-                mean[n] = v_mean;
-                variance[n] = v_variance;
-            }
-        }
+    parallel(0, [&](const int ithr, const int nthr) {
+        dim_t N_start = 0, N_end = 0;
+        balance211(N, nthr, ithr, N_start, N_end);
+        const int block_size = N_end - N_start;
+        (*stat_and_data_kernel_)(&src[N_start * C_padded],
+                &dst[N_start * C_padded], scaleshift, &mean[N_start],
+                &variance[N_start], block_size);
     });
 }
 
-status_t simple_layer_normalization_bwd_t::pd_t::init(engine_t *engine) {
+template <data_type_t data_type>
+status_t simple_layer_normalization_bwd_t<data_type>::pd_t::init(
+        engine_t *engine) {
     using namespace data_type;
     const memory_desc_wrapper src_d(src_md());
-    const memory_desc_wrapper stat_d(stat_md());
 
-    bool ok = is_bwd() && !has_zero_dim_memory() && set_default_formats_common()
-            && utils::everyone_is(f32, src_md()->data_type,
-                    diff_src_md()->data_type, stat_md()->data_type)
-            && check_scale_shift_data_type() && src_d.is_blocking_desc()
+    const bool ok = is_bwd() && !has_zero_dim_memory()
+            && set_default_formats_common()
+            && platform::has_data_type_support(data_type)
+            && utils::everyone_is(
+                    data_type, src_md()->data_type, dst_md()->data_type)
+            && (f32 == stat_md()->data_type) && check_scale_shift_data_type()
+            && src_d.is_blocking_desc()
             && src_d.blocking_desc().strides[ndims() - 1]
                     == 1 //plain format, last logical dim is last physical
             && attr()->has_default_values();
@@ -162,13 +160,14 @@ status_t simple_layer_normalization_bwd_t::pd_t::init(engine_t *engine) {
     return status::success;
 }
 
-void simple_layer_normalization_bwd_t::execute_backward(
+template <data_type_t data_type>
+void simple_layer_normalization_bwd_t<data_type>::execute_backward(
         const exec_ctx_t &ctx) const {
     auto scratchpad = ctx.get_scratchpad_grantor();
-    auto src = CTX_IN_MEM(const float *, DNNL_ARG_SRC);
-    auto diff_dst = CTX_IN_MEM(const float *, DNNL_ARG_DIFF_DST);
+    auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
+    auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
     auto scaleshift = CTX_IN_MEM(const float *, DNNL_ARG_SCALE_SHIFT);
-    auto diff_src = CTX_OUT_MEM(float *, DNNL_ARG_DIFF_SRC);
+    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
     auto diff_scaleshift = CTX_OUT_MEM(float *, DNNL_ARG_DIFF_SCALE_SHIFT);
 
     const float *mean, *variance;
@@ -180,6 +179,9 @@ void simple_layer_normalization_bwd_t::execute_backward(
         variance = CTX_IN_MEM(const float *, DNNL_ARG_VARIANCE);
     }
 
+    float *const inv_sqrtvar
+            = scratchpad.template get<float>(key_lnorm_inv_sqrtvar);
+
     const memory_desc_wrapper src_d(pd()->src_md());
 
     const dim_t N = pd()->across_axis();
@@ -190,11 +192,12 @@ void simple_layer_normalization_bwd_t::execute_backward(
     if (diff_scaleshift == nullptr)
         diff_scaleshift = scratchpad.template get<float>(key_lnorm_tmp_diff_ss);
 
-    int max_nthr = dnnl_get_max_threads();
+    const int max_nthr = dnnl_get_max_threads();
+
     parallel(max_nthr, [&](int ithr, int nthr) {
-        assert(nthr == max_nthr);
-        dim_t N_s = 0, N_e = 0;
-        balance211(N, nthr, ithr, N_s, N_e);
+        dim_t N_start = 0, N_end = 0;
+        balance211(N, nthr, ithr, N_start, N_end);
+        const int block_size = N_end - N_start;
 
         float *my_diff_gamma = reduce + C * ithr;
         float *my_diff_beta = reduce + C * nthr + C * ithr;
@@ -202,10 +205,10 @@ void simple_layer_normalization_bwd_t::execute_backward(
             my_diff_gamma[c] = 0.;
             my_diff_beta[c] = 0.;
         }
-        for (dim_t n = N_s; n < N_e; n++) {
-            (*diff_ss_kernel_)(&src[n * C_padded], &diff_dst[n * C_padded],
-                    my_diff_gamma, my_diff_beta, &mean[n], &variance[n]);
-        }
+        (*diff_ss_kernel_)(&src[N_start * C_padded],
+                &diff_dst[N_start * C_padded], my_diff_gamma, my_diff_beta,
+                &mean[N_start], &variance[N_start], &inv_sqrtvar[N_start],
+                block_size);
     });
 
     parallel_nd(C, [&](dim_t c) {
@@ -219,17 +222,20 @@ void simple_layer_normalization_bwd_t::execute_backward(
     });
 
     parallel(max_nthr, [&](int ithr, int nthr) {
-        assert(nthr == max_nthr);
-        dim_t N_s = 0, N_e = 0;
-        balance211(N, nthr, ithr, N_s, N_e);
+        dim_t N_start = 0, N_end = 0;
+        balance211(N, nthr, ithr, N_start, N_end);
+        const int block_size = N_end - N_start;
 
-        for (dim_t n = N_s; n < N_e; n++) {
-            (*diff_data_kernel_)(&src[n * C_padded], &diff_dst[n * C_padded],
-                    &diff_src[n * C_padded], scaleshift, &mean[n],
-                    &variance[n]);
-        }
+        (*diff_data_kernel_)(&src[N_start * C_padded],
+                &diff_dst[N_start * C_padded], &diff_src[N_start * C_padded],
+                scaleshift, &mean[N_start], &inv_sqrtvar[N_start], block_size);
     });
 }
+
+template struct simple_layer_normalization_fwd_t<bf16>;
+template struct simple_layer_normalization_fwd_t<f32>;
+template struct simple_layer_normalization_bwd_t<bf16>;
+template struct simple_layer_normalization_bwd_t<f32>;
 
 } // namespace cpu
 } // namespace impl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -55,8 +55,9 @@ struct ref_matmul_t : public gpu_primitive_t {
                             attr()->zero_points_.has_default_values())
                     && attr()->has_default_values(smask_t::oscale_runtime
                             | smask_t::zero_points_runtime | smask_t::post_ops)
-                    && attr_oscale_ok() && attr_post_ops_ok()
-                    && set_default_formats()
+                    && attr_oscale_ok()
+                    && post_ops_with_binary_ok(attr(), dst_dt_, 6)
+                    && set_default_formats() && !has_blocks()
                     && ((utils::one_of(src_dt_, u8, s8)
                                 && utils::one_of(wei_dt_, u8, s8)
                                 && utils::one_of(dst_dt_, f32, s8, u8, s32)
@@ -126,17 +127,6 @@ struct ref_matmul_t : public gpu_primitive_t {
             return oscale.mask_ == 0 || oscale.mask_ == (1 << (batched() + 1));
         }
 
-        bool attr_post_ops_ok() const {
-            using namespace primitive_kind;
-            const auto &p = attr()->post_ops_;
-            switch (p.len_) {
-                case 0: return true;
-                case 1: return p.contain(sum, 0) || p.contain(eltwise, 0);
-                case 2: return p.contain(sum, 0) && p.contain(eltwise, 1);
-                default: return false;
-            }
-        }
-
         status_t init_scales_md() {
             scales_md_.data_type = data_type::f32;
             scales_md_.ndims = 1;
@@ -164,6 +154,7 @@ struct ref_matmul_t : public gpu_primitive_t {
     status_t init(engine_t *engine) override {
         compute::kernel_ctx_t kernel_ctx;
 
+        kernel_ctx.define_int("DST_NDIMS", pd()->dst_md()->ndims);
         kernel_ctx.define_int("WITH_BIAS", pd()->with_bias());
         kernel_ctx.define_int("NON_DEFAULT_ATTRS", pd()->non_default_attrs_);
 
@@ -199,7 +190,9 @@ struct ref_matmul_t : public gpu_primitive_t {
             return status;
         }
         mem_storage.reset(mem_s_ptr);
-        status = mem_storage->map_data(&p, nullptr);
+        assert(sizeof(float) == sizeof(int));
+        status = mem_storage->map_data(
+                &p, nullptr, sizeof(float) * mdw.nelems());
         if (status != status::success) return status;
         if (!pd()->is_defined_[idx]) {
             if (idx == SCALES_) {

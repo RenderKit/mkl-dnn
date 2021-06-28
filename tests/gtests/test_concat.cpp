@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
-struct concat_test_params {
+struct concat_test_params_t {
     size_t concat_dimension;
     std::vector<memory::format_tag> srcs_format;
     memory::format_tag dst_format;
@@ -32,7 +32,7 @@ struct concat_test_params {
 };
 
 template <typename data_t>
-class concat_test : public ::testing::TestWithParam<concat_test_params> {
+class concat_test_t : public ::testing::TestWithParam<concat_test_params_t> {
     void check_data(const std::vector<memory> &srcs, const memory &dst,
             int concat_dim) {
         auto dst_data = map_memory<const data_t>(dst);
@@ -90,19 +90,35 @@ class concat_test : public ::testing::TestWithParam<concat_test_params> {
     }
 
 protected:
-    virtual void SetUp() {
+    bool cuda_supported_format_tag(memory::format_tag tag) {
+        return impl::utils::one_of(tag, dnnl_a, dnnl_ab, dnnl_abc, dnnl_abcd,
+                dnnl_abcde, dnnl_abcdef, dnnl_abdec, dnnl_acb, dnnl_acbde,
+                dnnl_acbdef, dnnl_acdb, dnnl_acdeb, dnnl_ba, dnnl_bac,
+                dnnl_bacd, dnnl_bca, dnnl_bcda, dnnl_bcdea, dnnl_cba, dnnl_cdba,
+                dnnl_cdeba, dnnl_decab, dnnl_defcab, dnnl_aBc4b, dnnl_aBcd4b,
+                dnnl_aBcde4b);
+    }
+
+    void SetUp() override {
         auto data_type = data_traits<data_t>::data_type;
         SKIP_IF(unsupported_data_type(data_type),
                 "Engine does not support this data type.");
-        concat_test_params p
+        concat_test_params_t p
                 = ::testing::TestWithParam<decltype(p)>::GetParam();
+        for (size_t i = 0; i < p.srcs_cds.size(); i++) {
+            SKIP_IF_CUDA(!cuda_supported_format_tag(p.srcs_format[i]),
+                    "Unsupported format tag");
+        }
+
+        SKIP_IF_CUDA(!cuda_supported_format_tag(p.dst_format),
+                "Unsupported format tag");
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status, false);
     }
 
     virtual void Test() {
-        concat_test_params p
-                = ::testing::TestWithParam<concat_test_params>::GetParam();
+        concat_test_params_t p
+                = ::testing::TestWithParam<concat_test_params_t>::GetParam();
 
         int src_dim_sum = 0;
         for (size_t i = 0; i < p.srcs_cds.size(); i++) {
@@ -127,7 +143,7 @@ protected:
         std::vector<memory> srcs;
         for (size_t i = 0; i < p.srcs_cds.size(); i++) {
             auto md = memory::desc(p.srcs_cds[i], data_type, p.srcs_format[i]);
-            auto src_memory = memory(md, eng);
+            auto src_memory = test::make_memory(md, eng);
             const size_t sz = src_memory.get_desc().get_size() / sizeof(data_t);
             fill_data<data_t>(sz, src_memory);
             check_zero_tail<data_t>(1, src_memory);
@@ -148,7 +164,7 @@ protected:
                                 query::exec_arg_md, DNNL_ARG_MULTIPLE_SRC + i)
                     == concat_pd.src_desc(i));
 
-        auto dst = memory(concat_pd.dst_desc(), eng);
+        auto dst = test::make_memory(concat_pd.dst_desc(), eng);
         fill_data<data_t>(dst.get_desc().get_size() / sizeof(data_t), dst);
         check_zero_tail<data_t>(1, dst);
 
@@ -167,10 +183,10 @@ protected:
     }
 };
 
-using concat_test_float = concat_test<float>;
-using concat_test_float16 = concat_test<float16_t>;
-using concat_test_s8 = concat_test<int8_t>;
-using concat_test_bf16 = concat_test<bfloat16_t>;
+using concat_test_float = concat_test_t<float>;
+using concat_test_float16 = concat_test_t<float16_t>;
+using concat_test_s8 = concat_test_t<int8_t>;
+using concat_test_bf16 = concat_test_t<bfloat16_t>;
 
 TEST_P(concat_test_float, TestsConcat) {}
 TEST_P(concat_test_s8, TestsConcat) {}
@@ -180,25 +196,25 @@ using fmt = memory::format_tag;
 
 static auto case_ZeroDim = []() {
     return ::testing::Values(
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 0, 5, 5}, {4, 5, 5, 5}}, {4, 5, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 4, 5, 5}, {4, 0, 5, 5}}, {4, 4, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{4, 0, 5, 5}, {4, 5, 5, 5}}, {4, 5, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{4, 4, 5, 5}, {4, 0, 5, 5}}, {4, 4, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{0, 4, 5, 5}, {0, 2, 5, 5}}, {0, 6, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{2, 4, 0, 5}, {2, 2, 0, 5}}, {2, 6, 0, 5}},
-            concat_test_params {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
+            concat_test_params_t {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
                     {{0, 4, 5, 5}, {0, 2, 5, 5}}, {0, 6, 5, 5}},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{0, 4, 5, 5}, {0, 2, 5, 5}}, {0, 6, 5, 5}},
-            concat_test_params {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
+            concat_test_params_t {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
                     {{2, 4, 0, 5}, {2, 2, 0, 5}}, {2, 6, 0, 5}},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{2, 4, 0, 5}, {2, 2, 0, 5}}, {2, 6, 0, 5}});
 };
 INSTANTIATE_TEST_SUITE_P(TestConcat_ZeroDim, concat_test_float, case_ZeroDim());
@@ -207,31 +223,31 @@ CPU_INSTANTIATE_TEST_SUITE_P(
 
 static auto cases_EF = []() {
     return ::testing::Values(
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 2, 5, 5}, {4, 5, 5, 5}}, {4, 5, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {2, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {2, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 2, 5, 5}, {4, 3, 5, 5}}, {4, 5, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {5, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {5, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 4, 5, 5}, {4, 0, 5, 5}}, {4, 4, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{4, -1, 5, 5}, {4, 5, 5, 5}}, {4, 5, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{4, 4, 5, 5}, {4, 4, 5, 5}}, {4, 4, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{0, 4, 5, 5}, {0, 4, 5, 5}}, {0, 6, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{2, 4, 2, 5}, {2, 2, 1, 5}}, {2, 6, 2, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
+            concat_test_params_t {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
                     {{1, 4, 5, 5}, {1, 2, 5, 5}}, {1, 7, 5, 5}, true,
                     dnnl_invalid_arguments},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{1, 4, 5, 5}, {1, 2, 5, 5}}, {1, 6, 6, 5}, true,
                     dnnl_invalid_arguments});
 };
@@ -240,41 +256,41 @@ CPU_INSTANTIATE_TEST_SUITE_P(TestConcat_EF_bf16, concat_test_bf16, cases_EF());
 
 static auto cases_padded = []() {
     return ::testing::Values(
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
                     {{1, 12, 28, 28}, {1, 12, 28, 28}}, {1, 24, 28, 28}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw8c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw8c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 4, 5, 5}, {4, 6, 5, 5}}, {4, 10, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
                     {{4, 4, 5, 5}, {4, 6, 5, 5}}, {4, 10, 5, 5}},
-            concat_test_params {1, {fmt::nchw, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nchw, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
-            concat_test_params {1, {fmt::nchw, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nChw16c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 45, 5, 5}}, {4, 70, 5, 5}},
             // right border
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 16, 5, 5}, {4, 3, 5, 5}}, {4, 19, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw8c,
                     {{4, 16, 5, 5}, {4, 3, 5, 5}}, {4, 19, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{4, 8, 5, 5}, {4, 3, 5, 5}}, {4, 11, 5, 5}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 8, 5, 5}, {4, 3, 5, 5}}, {4, 11, 5, 5}},
             // not over channels
-            concat_test_params {2, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {2, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 25, 5, 5}}, {4, 25, 10, 5}},
-            concat_test_params {2, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
+            concat_test_params_t {2, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 25, 5, 5}}, {4, 25, 10, 5}},
-            concat_test_params {2, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {2, {fmt::nChw8c, fmt::nChw16c}, fmt::nchw,
                     {{4, 25, 5, 5}, {4, 25, 5, 5}}, {4, 25, 10, 5}});
 };
 INSTANTIATE_TEST_SUITE_P(TestConcat_padded, concat_test_float, cases_padded());
@@ -283,29 +299,29 @@ CPU_INSTANTIATE_TEST_SUITE_P(
 
 static auto cases_3D = []() {
     return ::testing::Values(
-            concat_test_params {0, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
+            concat_test_params_t {0, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {4, 8, 3, 4, 5}},
-            concat_test_params {1, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
+            concat_test_params_t {1, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 16, 3, 4, 5}},
-            concat_test_params {2, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
+            concat_test_params_t {2, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 6, 4, 5}},
-            concat_test_params {3, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
+            concat_test_params_t {3, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 3, 8, 5}},
-            concat_test_params {4, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
+            concat_test_params_t {4, {fmt::ncdhw, fmt::ncdhw}, fmt::ncdhw,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 3, 4, 10}},
-            concat_test_params {0, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
+            concat_test_params_t {0, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {4, 8, 3, 4, 5}},
-            concat_test_params {1, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
+            concat_test_params_t {1, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 16, 3, 4, 5}},
-            concat_test_params {1, {fmt::nCdhw8c, fmt::ncdhw}, fmt::nCdhw8c,
+            concat_test_params_t {1, {fmt::nCdhw8c, fmt::ncdhw}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 16, 3, 4, 5}},
-            concat_test_params {1, {fmt::ncdhw, fmt::ncdhw}, fmt::nCdhw8c,
+            concat_test_params_t {1, {fmt::ncdhw, fmt::ncdhw}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 16, 3, 4, 5}},
-            concat_test_params {2, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
+            concat_test_params_t {2, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 6, 4, 5}},
-            concat_test_params {3, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
+            concat_test_params_t {3, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 3, 8, 5}},
-            concat_test_params {4, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
+            concat_test_params_t {4, {fmt::nCdhw8c, fmt::nCdhw8c}, fmt::nCdhw8c,
                     {{2, 8, 3, 4, 5}, {2, 8, 3, 4, 5}}, {2, 8, 3, 4, 10}});
 };
 INSTANTIATE_TEST_SUITE_P(TestConcat3D, concat_test_float, cases_3D());
@@ -313,30 +329,30 @@ CPU_INSTANTIATE_TEST_SUITE_P(TestConcat3D_bf16, concat_test_bf16, cases_3D());
 
 static auto cases_concat = []() {
     return ::testing::Values(
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nChw8c,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
-            concat_test_params {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
+            concat_test_params_t {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {2, 32, 1, 1}},
 
-            concat_test_params {0, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {0, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{2, 8, 3, 4}, {2, 8, 3, 4}}, {4, 8, 3, 4}},
-            concat_test_params {0, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {0, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {4, 16, 1, 1}},
-            concat_test_params {0, {fmt::nchw, fmt::nchw}, fmt::nChw8c,
+            concat_test_params_t {0, {fmt::nchw, fmt::nchw}, fmt::nChw8c,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {4, 16, 1, 1}},
-            concat_test_params {0, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
+            concat_test_params_t {0, {fmt::nChw8c, fmt::nChw8c}, fmt::nchw,
                     {{2, 16, 1, 1}, {2, 16, 1, 1}}, {4, 16, 1, 1}},
 
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw8c}, fmt::nChw8c,
                     {{2, 8, 1, 1}, {2, 8, 1, 1}}, {2, 16, 1, 1}},
 
-            concat_test_params {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nChw8c,
+            concat_test_params_t {1, {fmt::nChw8c, fmt::nChw16c}, fmt::nChw8c,
                     {{2, 8, 1, 1}, {2, 16, 1, 1}}, {2, 24, 1, 1}});
 };
 INSTANTIATE_TEST_SUITE_P(TestConcat, concat_test_float, cases_concat());
@@ -344,45 +360,45 @@ CPU_INSTANTIATE_TEST_SUITE_P(TestConcat_bf16, concat_test_bf16, cases_concat());
 
 INSTANTIATE_TEST_SUITE_P(TestConcat, concat_test_s8,
         ::testing::Values(
-                concat_test_params {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
+                concat_test_params_t {1, {fmt::nhwc, fmt::nhwc}, fmt::nhwc,
                         {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}},
-                concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+                concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                         {{2, 8, 3, 4}, {2, 8, 3, 4}}, {2, 16, 3, 4}}));
 
 static auto cases_concat_gpu = []() {
-    return ::testing::Values(concat_test_params {1, {fmt::nchw}, fmt::nchw,
+    return ::testing::Values(concat_test_params_t {1, {fmt::nchw}, fmt::nchw,
                                      {{1, 1, 1, 1}}, {1, 1, 1, 1}},
-            concat_test_params {
+            concat_test_params_t {
                     1, {fmt::nchw}, fmt::nhwc, {{1, 1, 1, 1}}, {1, 1, 1, 1}},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{1, 1, 1, 1}, {1, 1, 1, 1}}, {1, 2, 1, 1}},
-            concat_test_params {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
+            concat_test_params_t {1, {fmt::nchw, fmt::nchw}, fmt::nchw,
                     {{4, 5, 5, 5}, {4, 5, 5, 5}}, {4, 10, 5, 5}},
-            concat_test_params {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
+            concat_test_params_t {1, {fmt::nChw16c, fmt::nChw16c}, fmt::nChw16c,
                     {{4, 16, 5, 5}, {4, 32, 5, 5}}, {4, 48, 5, 5}},
-            concat_test_params {0, {fmt::NChw16n16c}, fmt::NChw16n16c,
+            concat_test_params_t {0, {fmt::NChw16n16c}, fmt::NChw16n16c,
                     {{16, 16, 1, 1}}, {16, 16, 1, 1}},
-            concat_test_params {0, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {0, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::NChw16n16c, {{16, 16, 1, 1}, {16, 16, 1, 1}},
                     {32, 16, 1, 1}},
-            concat_test_params {1, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {1, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::NChw16n16c, {{16, 16, 1, 1}, {16, 16, 1, 1}},
                     {16, 32, 1, 1}},
-            concat_test_params {2, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {2, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::NChw16n16c, {{16, 16, 1, 1}, {16, 16, 1, 1}},
                     {16, 16, 2, 1}},
-            concat_test_params {3, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {3, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::NChw16n16c, {{16, 16, 1, 1}, {16, 16, 1, 1}},
                     {16, 16, 1, 2}},
-            concat_test_params {1, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {1, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::NChw16n16c, {{16, 16, 5, 5}, {16, 32, 5, 5}},
                     {16, 48, 5, 5}},
-            concat_test_params {1, {fmt::NCdhw16n16c, fmt::NCdhw16n16c},
+            concat_test_params_t {1, {fmt::NCdhw16n16c, fmt::NCdhw16n16c},
                     fmt::NCdhw16n16c, {{16, 16, 5, 5, 5}, {16, 32, 5, 5, 5}},
                     {16, 48, 5, 5, 5}},
-            concat_test_params {2, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
+            concat_test_params_t {2, {fmt::nChw16c, fmt::nChw16c}, fmt::nchw,
                     {{4, 16, 5, 5}, {4, 16, 5, 5}}, {4, 16, 10, 5}},
-            concat_test_params {2, {fmt::NChw16n16c, fmt::NChw16n16c},
+            concat_test_params_t {2, {fmt::NChw16n16c, fmt::NChw16n16c},
                     fmt::nchw, {{16, 16, 5, 5}, {16, 16, 5, 5}},
                     {16, 16, 10, 5}});
 };

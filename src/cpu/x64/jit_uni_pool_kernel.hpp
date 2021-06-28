@@ -19,13 +19,13 @@
 #define CPU_X64_JIT_UNI_POOL_KERNEL_HPP
 
 #include <cfloat>
+#include <functional>
+#include <memory>
 
-#include "common/c_types_map.hpp"
-#include "common/type_helpers.hpp"
-#include "common/utils.hpp"
+#include "common/memory_tracking.hpp"
+
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_generator.hpp"
-
-#include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
 
 namespace dnnl {
@@ -33,25 +33,18 @@ namespace impl {
 namespace cpu {
 namespace x64 {
 
+struct bf16_emulation_t;
+
 template <cpu_isa_t isa>
 struct jit_uni_pool_kernel : public jit_generator {
-    jit_uni_pool_kernel(jit_pool_conf_t ajpp) : jpp(ajpp), bf16_emu_(nullptr) {
-        if (jpp.is_bf16 && !isa_has_bf16(jpp.isa))
-            bf16_emu_ = new bf16_emulation_t(this, bf16_emu_reserv_1,
-                    bf16_emu_reserv_2, bf16_emu_reserv_3, bf16_emu_reserv_4,
-                    bf16_emu_reserv_5);
 
-        this->generate();
-        jit_ker = (decltype(jit_ker))this->getCode();
-    }
-
-    ~jit_uni_pool_kernel() { delete bf16_emu_; }
-
+    jit_uni_pool_kernel(
+            const jit_pool_conf_t &ajpp, const memory_desc_t *dst_md);
     jit_pool_conf_t jpp;
+    ~jit_uni_pool_kernel();
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_pool_kernel)
 
-    void operator()(jit_pool_call_s *arg) { jit_ker(arg); }
     static status_t init_conf(jit_pool_conf_t &jbp,
             memory_tracking::registrar_t &scratchpad, const pooling_pd_t *ppd,
             int nthreads);
@@ -64,25 +57,29 @@ private:
     using Reg32 = Xbyak::Reg32;
     using Reg64 = Xbyak::Reg64;
 
-    using Vmm = typename utils::conditional3<isa == sse41, Xmm, isa == avx, Ymm,
-            Zmm>::type;
-    Xmm xreg(int idx) {
-        return Xmm((utils::one_of(isa, avx512_common, avx512_core) ? 31 : 15)
-                - idx);
-    }
-    Ymm yreg(int idx) { return Ymm(xreg(idx).getIdx()); }
-    Zmm zreg(int idx) { return Zmm(xreg(idx).getIdx()); }
-    Vmm vreg(int idx) { return Vmm(xreg(idx).getIdx()); }
+    using Vmm = typename cpu_isa_traits<isa>::Vmm;
 
-    const Xbyak::AddressFrame &vmmword
-            = (isa == sse41) ? xword : (isa == avx) ? yword : zword;
+    int vmm_idx_upper_bound() const noexcept {
+        return utils::one_of(isa, avx512_common, avx512_core) ? 31 : 15;
+    }
+
+    int reg_idx(int idx) const noexcept { return vmm_idx_upper_bound() - idx; }
+
+    Xmm xreg(int idx) const noexcept { return Xmm(reg_idx(idx)); }
+    Ymm yreg(int idx) const noexcept { return Ymm(reg_idx(idx)); }
+    Zmm zreg(int idx) const noexcept { return Zmm(reg_idx(idx)); }
+    Vmm vreg(int idx) const noexcept { return Vmm(reg_idx(idx)); }
+
+    const Xbyak::AddressFrame &vmmword = (isa == sse41)
+            ? xword
+            : (isa == avx || isa == avx2) ? yword : zword;
 
     Xmm vmm_mask = Xmm(0);
     Ymm ymm_tmp_1 = Ymm(0);
     Vmm vmm_tmp_1 = Vmm(0);
 
-    Xmm x_padd_mask = Xmm(1);
-    Xmm x_padd_mask_avx_high = Xmm(4);
+    // Used only for avx and if c tail is present
+    Vmm vmm_c_tail_mask = Vmm(2);
 
     Xmm xmm_ker_area_h = Xmm(2);
     Xmm xmm_one = Xmm(2);
@@ -95,6 +92,7 @@ private:
 
     Vmm vmm_k_offset = Vmm(1);
 
+    // Used only for avx512 when bf16 is present
     inline Vmm vmm_idx() {
         if (!jpp.is_backward) {
             return (jpp.is_training) ? Vmm(4) : Vmm(1);
@@ -108,10 +106,9 @@ private:
     Reg64 bf16_emu_reserv_4 = r11;
     Zmm bf16_emu_reserv_5 = Zmm(8);
 
-    Opmask k_index_mask = Opmask(6);
-    Opmask k_store_mask = Opmask(7);
+    Opmask k_c_tail_mask = Opmask(4);
     Opmask k_mask_cvt = Opmask(5);
-    Opmask k_padd_mask = Opmask(4);
+    Opmask k_store_mask = Opmask(6);
 
     // Here be some (tame) dragons. This kernel does not follow the regular
     // OS-agnostic ABI pattern because when isa is sse41 it uses maskmovdqu
@@ -149,50 +146,56 @@ private:
     Reg32 reg_shuf_mask = esi;
 
     bool sse_high_half = false;
+    bool disable_postops_when_sse_high_half_processed_ = false;
 
     int prev_kw;
-    void (*jit_ker)(jit_pool_call_s *);
 
     void prepare_tail_mask();
-    void maybe_recalculate_divisor(int jj, int ur_w, int pad_l, int pad_r);
-    void avg_step(int ur_w, int ur_bc, int pad_l, int pad_r);
-    void max_step_fwd(int ur_w, int ur_bc, int pad_l, int pad_r);
-    void max_step_bwd(int ur_w, int ur_bc, int pad_l, int pad_r);
+    void put_one_in_vmm();
+    void uni_broadcast_reg_val(const int reg_idx, const int vmm_idx);
+    void push_vmm_val(const int idx);
+    void pop_vmm_val(const int idx);
+    void load(const int idx, const reg64_t &reg_ptr, const int offset,
+            const bool is_c_tail_proccessing);
+    void store(const int idx, const reg64_t &reg_ptr, const int offset,
+            const bool is_c_tail_proccessing);
 
-    void zero_diff_src(int ur_bc);
+    void maybe_recalculate_divisor(int jj, int ur_w, int pad_l, int pad_r,
+            bool with_c_tail_proccessing);
+    void avg_step(int ur_w, int ur_bc, int pad_l, int pad_r,
+            bool with_c_tail_proccessing);
+    void max_step_fwd(int ur_w, int ur_bc, int pad_l, int pad_r,
+            bool with_c_tail_proccessing);
+    void max_step_bwd(int ur_w, int ur_bc, int pad_l, int pad_r,
+            bool with_c_tail_proccessing);
 
-    void load(int idx, reg64_t reg_ptr, int offset) {
-        if (jpp.is_bf16) {
-            /*TODO: maybe use vpmovzxwd + vpslld,
-             * in order to free up vmm_idx() register */
-            vmovups(yreg(idx), ptr[reg_ptr + offset]);
-            vpermw(vreg(idx) | k_mask_cvt | T_z, vmm_idx(), vreg(idx));
-        } else {
-            uni_vmovups(vreg(idx), ptr[reg_ptr + offset]);
-        }
-    };
+    void zero_diff_src(int ur_bc, bool with_c_tail_proccessing);
 
-    void step(int ur_w, int ur_bc, int pad_l, int pad_r) {
+    void step(int ur_w, int ur_bc, int pad_l, int pad_r,
+            bool with_c_tail_proccessing) {
         if (jpp.alg == alg_kind::pooling_max) {
             if (jpp.is_backward)
-                max_step_bwd(ur_w, ur_bc, pad_l, pad_r);
+                max_step_bwd(
+                        ur_w, ur_bc, pad_l, pad_r, with_c_tail_proccessing);
             else
-                max_step_fwd(ur_w, ur_bc, pad_l, pad_r);
+                max_step_fwd(
+                        ur_w, ur_bc, pad_l, pad_r, with_c_tail_proccessing);
         } else
-            avg_step(ur_w, ur_bc, pad_l, pad_r);
+            avg_step(ur_w, ur_bc, pad_l, pad_r, with_c_tail_proccessing);
     }
 
-    void step_high_half(int ur_w, int ur_bc, int pad_l, int pad_r) {
+    void step_high_half(int ur_w, int ur_bc, int pad_l, int pad_r,
+            bool with_c_tail_processing) {
         add(reg_input, sizeof(float) * 4);
         add(reg_output, sizeof(float) * 4);
         if (jpp.alg == alg_kind::pooling_max
                 && (jpp.is_training || jpp.is_backward))
             add(reg_index, types::data_type_size(jpp.ind_dt) * 4);
 
-        step(ur_w, ur_bc, pad_l, pad_r);
+        step(ur_w, ur_bc, pad_l, pad_r, with_c_tail_processing);
     }
 
-    void generate();
+    void generate() override;
 
     void avx_vpadd1(const Ymm &y0, const Xmm &x1, const Xmm &xtmp) {
         assert(y0.getIdx() != x1.getIdx());
@@ -241,7 +244,15 @@ private:
         pcmpeqd(x0, x1);
     }
 
-    bf16_emulation_t *bf16_emu_;
+    void apply_postops(int ur_bc, int ur_w, int c_block,
+            const std::function<bool(int, bool)> &is_tail_predicate);
+
+    static bool post_ops_ok(jit_pool_conf_t &jpp, const primitive_attr_t &attr,
+            const memory_desc_wrapper &dst_d);
+
+    std::unique_ptr<bf16_emulation_t> bf16_emu_;
+    std::unique_ptr<injector::jit_uni_postops_injector_t<isa>>
+            postops_injector_;
 };
 
 } // namespace x64

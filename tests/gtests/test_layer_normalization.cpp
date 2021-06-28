@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
 *******************************************************************************/
 
 #include <cmath>
+#include <memory>
 
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 #define CPU_INST_TEST_CASE(str, ...) \
     CPU_INSTANTIATE_TEST_SUITE_P( \
-            str, lnorm_test, ::testing::Values(__VA_ARGS__));
+            str, lnorm_test_t, ::testing::Values(__VA_ARGS__));
 
 namespace dnnl {
 
@@ -43,7 +44,7 @@ void fill(const memory &m) {
     fill_data<T>(numElements, m);
 }
 
-class lnorm_test : public ::testing::TestWithParam<test_lnorm_params_t> {
+class lnorm_test_t : public ::testing::TestWithParam<test_lnorm_params_t> {
 private:
     std::shared_ptr<test_memory> src, dst, diff_src, diff_dst;
     memory weights, diff_weights, mean, variance;
@@ -60,7 +61,8 @@ private:
     stream strm;
 
 protected:
-    virtual void SetUp() {
+    void SetUp() override {
+        SKIP_IF_CUDA(true, "Layer normalization not supported by CUDA.");
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
@@ -70,18 +72,18 @@ protected:
         eng = get_test_engine();
         strm = make_stream(eng);
 
-        data_d.reset(
-                new memory::desc(p.dims, memory::data_type::f32, p.data_tag));
+        data_d = std::make_shared<memory::desc>(
+                p.dims, memory::data_type::f32, p.data_tag);
         memory::dims stat_dims(p.dims.begin(), p.dims.end() - 1);
-        stat_d.reset(new memory::desc(
-                stat_dims, memory::data_type::f32, p.stat_tag));
-        diff_d.reset(
-                new memory::desc(p.dims, memory::data_type::f32, p.diff_tag));
+        stat_d = std::make_shared<memory::desc>(
+                stat_dims, memory::data_type::f32, p.stat_tag);
+        diff_d = std::make_shared<memory::desc>(
+                p.dims, memory::data_type::f32, p.diff_tag);
 
-        src.reset(new test_memory(*data_d, eng));
-        dst.reset(new test_memory(*data_d, eng));
-        diff_src.reset(new test_memory(*diff_d, eng));
-        diff_dst.reset(new test_memory(*diff_d, eng));
+        src = std::make_shared<test_memory>(*data_d, eng);
+        dst = std::make_shared<test_memory>(*data_d, eng);
+        diff_src = std::make_shared<test_memory>(*diff_d, eng);
+        diff_dst = std::make_shared<test_memory>(*diff_d, eng);
 
         auto training = prop_kind::forward_training;
         auto inference = prop_kind::forward_inference;
@@ -132,10 +134,10 @@ protected:
                 lnorm_fwd_pd.query_md(query::exec_arg_md, DNNL_ARG_SCALE_SHIFT)
                 == lnorm_fwd_pd.weights_desc());
 
-        weights = memory(lnorm_fwd_pd.weights_desc(), eng);
+        weights = test::make_memory(lnorm_fwd_pd.weights_desc(), eng);
         if (isTraining || useGlobalStats) {
-            mean = memory(*stat_d, eng);
-            variance = memory(*stat_d, eng);
+            mean = test::make_memory(*stat_d, eng);
+            variance = test::make_memory(*stat_d, eng);
         }
 
         fill<float>(src->get());
@@ -188,10 +190,11 @@ protected:
                             query::exec_arg_md, DNNL_ARG_DIFF_SCALE_SHIFT)
                 == lnorm_bwd_pd.diff_weights_desc());
 
-        if (useScaleShift) weights = memory(lnorm_bwd_pd.weights_desc(), eng);
-        diff_weights = memory(lnorm_bwd_pd.diff_weights_desc(), eng);
-        mean = memory(*stat_d, eng);
-        variance = memory(*stat_d, eng);
+        if (useScaleShift)
+            weights = test::make_memory(lnorm_bwd_pd.weights_desc(), eng);
+        diff_weights = test::make_memory(lnorm_bwd_pd.diff_weights_desc(), eng);
+        mean = test::make_memory(*stat_d, eng);
+        variance = test::make_memory(*stat_d, eng);
 
         if (useScaleShift) fill<float>(weights);
         fill<float>(diff_src->get());
@@ -255,15 +258,22 @@ protected:
         const bool is_training = pk == prop_kind::forward_training;
 
         auto src_data = map_memory<const float>(src);
+        GTEST_EXPECT_NE(src_data, nullptr);
         auto dst_data = map_memory<const float>(dst);
+        GTEST_EXPECT_NE(dst_data, nullptr);
         auto weights_data
                 = use_weights ? map_memory<const float>(weights) : nullptr;
+        if (use_weights) GTEST_EXPECT_NE(weights_data, nullptr);
         auto mean_data = (!calculate_stats || is_training)
                 ? map_memory<const float>(mean)
                 : nullptr;
+        if (!calculate_stats || is_training)
+            GTEST_EXPECT_NE(mean_data, nullptr);
         auto variance_data = (!calculate_stats || is_training)
                 ? map_memory<const float>(variance)
                 : nullptr;
+        if (!calculate_stats || is_training)
+            GTEST_EXPECT_NE(variance_data, nullptr);
 
         const memory::desc src_d = src.get_desc();
         const memory::desc dst_d = dst.get_desc();
@@ -355,6 +365,7 @@ protected:
             prop_kind pk) {
         const ptrdiff_t nelems = std::accumulate(p.dims.begin(), p.dims.end(),
                 size_t(1), std::multiplies<size_t>());
+        if (!nelems) return;
 
         const bool use_weights
                 = (bool)(flags & normalization_flags::use_scale_shift);
@@ -362,15 +373,23 @@ protected:
                 = !(bool)(flags & normalization_flags::use_global_stats);
 
         auto src_data = map_memory<const float>(src);
+        GTEST_EXPECT_NE(src_data, nullptr);
         auto weights_data
                 = use_weights ? map_memory<const float>(weights) : nullptr;
+        if (use_weights) GTEST_EXPECT_NE(weights_data, nullptr);
         auto diff_dst_data = map_memory<const float>(diff_dst);
+        GTEST_EXPECT_NE(diff_dst_data, nullptr);
         auto mean_data = map_memory<const float>(mean);
+        GTEST_EXPECT_NE(mean_data, nullptr);
         auto variance_data = map_memory<const float>(variance);
+        GTEST_EXPECT_NE(variance_data, nullptr);
         const auto diff_src_data = map_memory<float>(diff_src);
+        GTEST_EXPECT_NE(diff_src_data, nullptr);
         const auto diff_weights_data = (pk == prop_kind::backward)
                 ? map_memory<float>(diff_weights)
                 : nullptr;
+        if (pk == prop_kind::backward)
+            GTEST_EXPECT_NE(diff_weights_data, nullptr);
 
         const memory::desc src_d = src.get_desc();
         const memory::desc diff_dst_d = diff_dst.get_desc();
@@ -573,7 +592,7 @@ private:
     }
 };
 
-TEST_P(lnorm_test, TestsLnormF32) {}
+TEST_P(lnorm_test_t, TestsLnormF32) {}
 
 #include "layer_normalization.h"
 } // namespace dnnl

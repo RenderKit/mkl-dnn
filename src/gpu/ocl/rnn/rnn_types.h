@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -96,6 +96,8 @@
 #define CELL_WS_GRID_COMP(i3, i4) OFF_WS_GRID_OFFSET(0, 0, 0, i3, i4)
 
 #define OFF_KER_BIAS(i0, i1) OFF2((i0), N_GATES, (i1), DHC)
+#define OFF_WS_DHG1(i0, i1) OFF2((i0), BATCH, (i1), DIFF_STATES_WS_LD)
+#define OFF_SCRATCHCELL(i0, i1) OFF2((i0), BATCH, (i1), STATES_WS_LD)
 
 #define SRC_L_OFF(x0, x1, x2) \
     (((x0) % SRC_L_B0) * SRC_L_SB0 + ((x0) / SRC_L_B0) * SRC_L_S0 \

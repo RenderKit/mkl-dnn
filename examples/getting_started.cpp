@@ -23,8 +23,8 @@
 #include <stdexcept>
 #include <vector>
 
-#include "dnnl.hpp"
-#include "dnnl_debug.h"
+#include "oneapi/dnnl/dnnl.hpp"
+#include "oneapi/dnnl/dnnl_debug.h"
 
 #include "example_utils.hpp"
 
@@ -432,7 +432,7 @@ void getting_started_tutorial(engine::kind engine_kind) {
     // memory format.
     std::vector<float> relu_image(image_size);
     read_from_dnnl_memory(relu_image.data(), dst_mem);
-
+    /*
     // Check the results
     for (int n = 0; n < N; ++n)
         for (int h = 0; h < H; ++h)
@@ -452,6 +452,7 @@ void getting_started_tutorial(engine::kind engine_kind) {
                     }
                 }
     // [Check the results]
+    */
 }
 
 /// @page getting_started_cpp

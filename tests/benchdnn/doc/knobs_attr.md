@@ -4,11 +4,12 @@
 ```
     --attr-oscale=POLICY[:SCALE[*]]
     --attr-scales=ARG:POLICY[:SCALE][_...]
-    --attr-zero-points=ARG:ZEROPOINT[*][_...]
+    --attr-zero-points=ARG:POLICY:ZEROPOINT[*][_...]
     --attr-post-ops='SUM[:SCALE[:DATA_TYPE]];'
                     'ELTWISE[:ALPHA[:BETA[:SCALE]]];[...;]'
                     'DW_K3S1P1[:DST_DT[:OUTPUTSCALE]];'
                     'DW_K3S2P1[:DST_DT[:OUTPUTSCALE]];'
+                    'BINARY:DT[:POLICY];'
 ```
 
 `--attr-oscale` defines output scale primitive attribute. `POLICY` specifies the
@@ -34,12 +35,14 @@ passed to a primitive at run-time.
                  of dim0 and dim1 will be multiplied by scale factors different
                  for a pair of {dim0, dim1} points. Number of scale factors
                  equals to dims[0] * dims[1].
+  - `per_tensor` means each element of original tensor will be multiplied by
+                 a unique number. Number of scale factor equals to `nelems`.
+                 As of now supported only by binary post-ops.
 
 `--attr-scales` defines input scales per memory argument primitive attribute.
-This attribute is supported only for integer data types as of now. `ARG`
-specifies which memory argument will be modified with input scale. `POLICY` and
-`SCALE` have the same semantics and meaning as for `--attr-oscale`. To specify
-more than one memory argument, underscore (`_`) delimiter is used.
+`ARG` specifies which memory argument will be modified with input scale.
+`POLICY` and `SCALE` have the same semantics and meaning as for `--attr-oscale`.
+To specify more than one memory argument, underscore (`_`) delimiter is used.
 
 `ARG` supported values are:
   - `src` corresponds to `DNNL_ARG_SRC`
@@ -52,20 +55,29 @@ more than one memory argument, underscore (`_`) delimiter is used.
 `--attr-zero-points` defines zero points per memory argument primitive
 attribute. This attribute is supported only for integer data types as of now.
 `ARG` specifies which memory argument will be modified with zero points.
-`ZEROPOINT` is an integer value which will be subtracted from each tensor point.
-Asterisk mark (`*`) is an optional addition to `ZEROPOINT` indicating the value
-will be passed to a primitive at run-time. To specify more than one memory
-argument, underscore (`_`) delimiter is used.
+`POLICY` has the same semantics and meaning as for `--attr-oscale`. `ZEROPOINT`
+is an integer value which will be subtracted from each tensor point. Asterisk
+mark (`*`) is an optional addition to `ZEROPOINT` indicating the value will be
+passed to a primitive at run-time. To specify more than one memory argument,
+underscore (`_`) delimiter is used.
 
 `ARG` supported values are:
   - `src` corresponds to `DNNL_ARG_SRC`
   - `wei` corresponds to `DNNL_ARG_WEIGHTS`
   - `dst` corresponds to `DNNL_ARG_DST`
 
+`POLICY` supported values are:
+  - `common`
+  - `per_dim_1` (for `src` and `dst`, at run-time only)
+
 `--attr-post-ops` defines post operations primitive attribute. Depending on
 post operations kind, the syntax differs, but regardless the kind, single quotes
 are used in the beginning and in the end in a string literal, even when empty
-post operations are passed. Up to four post operations are supported.
+post operations are passed.
+
+Note that from shell command line, double quotes are required in front of and
+behind single quotes. This is caused by shell interpretator messing with
+delimiters used inside post-ops content. Refer to examples below.
 
 `SUM` post operation kind appends operation result to the output. It supports
 optional arguments `SCALE` parsed as a real number, which scales the operation
@@ -74,7 +86,7 @@ parameter. No data type limitations are applied. Only single `SUM` operation
 can be applied to the output tensor.
 
 `ELTWISE` post operation kind applies one of supported element-wise algorithms
-to the operation result and then stores it/ It supports optional arguments
+to the operation result and then stores it. It supports optional arguments
 `ALPHA` and `BETA` parsed as real numbers. To specify `BETA`, `ALPHA` must be
 specified. `SCALE` has same notation and semantics as for `SUM` kind, but
 requires both `ALPHA` and `BETA` to be specified. `SCALE` is applicable only
@@ -88,6 +100,11 @@ tensor data type. Refer to [data types](knobs_dt.md) for details. Optional
 argument `OUTPUTSCALE` defines the semantics of output scale as for
 `--attr-oscale` with the same syntax. It requires `DST_DT` to be specified.
 
+`BINARY` post operation kind applies one of supported binary algorithms to the
+operation result and then stores it. It requires mandatory argument of `DT`
+specifying data type of second memory operand. It supports optional argument of
+`POLICY` giving a hint what are the dimensions for a second memory operand.
+
 Operations may be called in any order, e.g. apply `SUM` at first and then apply
 `ELTWISE`, or vice versa - apply `ELTWISE` and then `SUM` it with destination.
 
@@ -98,9 +115,12 @@ Operations may be called in any order, e.g. apply `SUM` at first and then apply
       - `exp_dst`
       - `gelu_erf`
       - `gelu_tanh`
+      - `hardswish`
       - `log`
       - `logistic`
       - `logistic_dst`
+      - `logsigmoid`
+      - `mish`
       - `round`
       - `sqrt`
       - `sqrt_dst`
@@ -117,8 +137,24 @@ Operations may be called in any order, e.g. apply `SUM` at first and then apply
       - `swish`
   - Eltwise operations that support both alpha and beta:
       - `clip`
+      - `clip_v2`
+      - `clip_v2_dst`
       - `linear`
       - `pow`
+
+`BINARY` supported values are:
+  - `add`
+  - `div`
+  - `eq`
+  - `ge`
+  - `gt`
+  - `le`
+  - `lt`
+  - `max`
+  - `min`
+  - `mul`
+  - `ne`
+  - `sub`
 
 ## Examples:
 
@@ -155,4 +191,9 @@ bf16 convolutions respectively.
   ./benchdnn --conv --cfg=u8s8u8 --attr-oscale=per_oc:0.5 \
              --attr-post-ops="'relu;dw_k3s1p1:s8:per_oc:1.5;relu'" \
              ic16oc16ih4oh4kh1ph0
+```
+
+Run a convolution problem with binary post operation:
+``` sh
+  ./benchdnn --conv --attr-post-ops="'add:s32:common'" ic16oc16ih4oh4kh1ph0
 ```

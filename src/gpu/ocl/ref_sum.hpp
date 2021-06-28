@@ -136,9 +136,10 @@ struct ref_sum_t : public gpu_primitive_t {
         if (pd()->need_output_reorder()) {
             auto scratchpad = ctx.get_scratchpad_grantor().get_memory_storage(
                     key_sum_reduction);
-            p_temp_dst_acc.reset(new memory_t(ctx.stream()->engine(),
-                    pd()->dst_acc_md(), memory_flags_t::use_runtime_ptr,
-                    scratchpad->data_handle()));
+            CHECK(safe_ptr_assign(p_temp_dst_acc,
+                    new memory_t(ctx.stream()->engine(), pd()->dst_acc_md(),
+                            memory_flags_t::use_runtime_ptr,
+                            scratchpad->data_handle())));
         }
 
         auto dst = ctx.args().at(DNNL_ARG_DST);
@@ -152,7 +153,9 @@ struct ref_sum_t : public gpu_primitive_t {
             nested_scratchpad_t ns(ctx, key_nested_multiple + i, reorders_[i]);
             r_ctx.set_scratchpad_grantor(ns.grantor());
             CHECK(reorders_[i]->execute(r_ctx));
+#ifndef DNNL_SYCL_CUDA
             ctx.stream()->wait();
+#endif
         }
 
         if (pd()->need_output_reorder()) {

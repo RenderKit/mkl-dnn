@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -48,6 +48,12 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward(
             const data_t *, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS);
     auto bias_dw = CTX_IN_MEM(
             const data_t *, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector::prepare_binary_args(pd()->jcp_.post_ops, ctx);
+    const auto post_ops_binary_rhs_arg_vec_dw = pd()->jcp_dw_
+            ? binary_injector::prepare_binary_args(pd()->jcp_dw_->post_ops, ctx,
+                    pd()->jcp_.post_ops.entry_.size() + 1)
+            : std::vector<const void *> {};
 
     auto scratchpad = ctx.get_scratchpad_grantor();
 
@@ -65,17 +71,19 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward(
 
     parallel(0, [&](const int ithr, const int nthr) {
         execute_forward_thr(ithr, nthr, src, weights, bias, weights_dw, bias_dw,
-                dst, scratchpad);
+                dst, scratchpad, post_ops_binary_rhs_arg_vec.data(),
+                post_ops_binary_rhs_arg_vec_dw.data());
     });
 
-    if (pd()->wants_zero_pad_dst())
-        ctx.memory(DNNL_ARG_DST)->zero_pad(ctx.stream());
+    if (pd()->wants_zero_pad_dst()) ctx.zero_pad_output(DNNL_ARG_DST);
 }
 
 void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
         const int nthr, const data_t *src, const data_t *weights,
         const data_t *bias, const data_t *weights_dw, const data_t *bias_dw,
-        data_t *dst, const memory_tracking::grantor_t &scratchpad) const {
+        data_t *dst, const memory_tracking::grantor_t &scratchpad,
+        const void *post_ops_binary_rhs_arg_vec,
+        const void *post_ops_binary_rhs_arg_vec_dw) const {
 
     const memory_desc_wrapper src_d(pd()->src_md());
     const memory_desc_wrapper dst_d(pd()->dst_md());
@@ -88,7 +96,7 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
     const auto &jcp = kernel_->jcp;
     auto rtus_space = pd()->rtus_.reduce_src_
             ? scratchpad.get<data_t>(key_conv_rtus_space)
-            : NULL;
+            : nullptr;
 
     const int ndims = dst_d.ndims();
 
@@ -120,7 +128,7 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
     const int nb_buffer = jcp.nb_load_blocking;
     auto jcp_dw = pd()->jcp_dw_;
     std::vector<data_t *> addrs;
-    void (*dw_jit_ker)(jit_conv_call_s *) = nullptr;
+    jit_generator *dw_jit_ker = nullptr;
 
     auto step = [](int default_step, int remaining, int tail_step) {
         assert(default_step <= tail_step);
@@ -153,8 +161,11 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
 
     auto init_load = [&](int ocb, int ocb_end, int &load_step) {
         load_step = step(nb_load_blocking, ocb_end - ocb, nb_load_blocking_max);
+        // binary postop injector may override zero-padded areas, so proper
+        // output masking needs to be performed base on exact number of channels
+        const auto oc = jcp.with_binary ? jcp.oc_without_padding : jcp.oc;
         p.load_dim = this_block_size(
-                ocb * jcp.oc_block, jcp.oc, load_step * jcp.oc_block);
+                ocb * jcp.oc_block, oc, load_step * jcp.oc_block);
     };
 
     auto ker_1x1 = [&](int ocb, int icb, int ocb_start, int n, int g, int od,
@@ -195,14 +206,18 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
 
             if (ocb == ocb_start) {
                 rp.src = src + data_blk_off(src_d, n, ic_off_idx, id, ih, iw);
-                rtus_driver_->ker_(&rp);
+                (*rtus_driver_)(&rp);
             }
 
             p.bcast_data = rp.ws;
         } else
             p.bcast_data = src + data_blk_off(src_d, n, ic_off_idx, id, ih, iw);
 
-        kernel_->jit_ker(&p);
+        p.oc_l_off = ocb * jcp.oc_block;
+        p.post_ops_binary_rhs_arg_vec = post_ops_binary_rhs_arg_vec;
+        p.dst_orig = dst;
+
+        (*kernel_)(&p);
     };
 
     auto conv_1x1 = [&](int bcast_start, int bcast_end, int ocb_start,
@@ -268,9 +283,15 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
 
             par_conv_dw.kh_padding = (size_t)nstl::max(0, kh_padding);
 
-            par_conv_dw.ch_blocks = nstl::min(ch + ch_num, jcp_dw->nb_ch) - ch;
+            par_conv_dw.load_work = (nstl::min(ch + ch_num, jcp_dw->nb_ch) - ch)
+                    * jcp_dw->ch_block;
 
-            dw_jit_ker(&par_conv_dw);
+            par_conv_dw.oc_l_off = ch * jcp_dw->ch_block;
+            par_conv_dw.post_ops_binary_rhs_arg_vec
+                    = post_ops_binary_rhs_arg_vec_dw;
+            par_conv_dw.dst_orig = dst;
+
+            (*dw_jit_ker)(&par_conv_dw);
 
             for (int i = 0; i < jcp_dw->kh; ++i)
                 addrs[i] += wch_stride;
@@ -283,8 +304,8 @@ void jit_avx2_1x1_convolution_fwd_t::execute_forward_thr(const int ithr,
                 scratchpad, memory_tracking::names::prefix_fusion);
         auto dw_conv_buffer
                 = dw_scratchpad.get<data_t>(key_fusion_inout_buffer);
-        dw_jit_ker = kernel_dw_avx2 ? kernel_dw_avx2->jit_ker
-                                    : kernel_dw_sse41->jit_ker;
+        dw_jit_ker = kernel_dw_avx2 ? kernel_dw_avx2->ker()
+                                    : kernel_dw_sse41->ker();
 
         const auto dw_conv_buffer_size_
                 = (size_t)jcp_dw->kh * jcp.ow * nb_buffer * jcp.oc_block;
@@ -356,7 +377,7 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data(
     const auto &jcp = kernel_->jcp;
     auto rtus_space = pd()->rtus_.reduce_src_
             ? ctx.get_scratchpad_grantor().get<data_t>(key_conv_rtus_space)
-            : NULL;
+            : nullptr;
 
     // TODO (Roma): remove this restriction
     assert(jcp.stride_w == 1 && jcp.stride_h == 1 && jcp.stride_d == 1);
@@ -452,10 +473,10 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data(
                     p.reduce_dim = this_block_size(ocb * jcp.oc_block, jcp.oc,
                             nb_oc_blocking * jcp.oc_block);
 
-                    kernel_->jit_ker(&p);
+                    (*kernel_)(&p);
                 }
 
-                if (pd()->rtus_.reduce_src_) rtus_driver_->ker_(&rp);
+                if (pd()->rtus_.reduce_src_) (*rtus_driver_)(&rp);
             }
         }
     };
@@ -465,17 +486,26 @@ void jit_avx2_1x1_convolution_bwd_data_t::execute_backward_data(
 
 /* convolution backward wtr weights */
 
-jit_avx2_1x1_convolution_bwd_weights_t::jit_avx2_1x1_convolution_bwd_weights_t(
-        const pd_t *apd)
-    : primitive_t(apd), kernel_(nullptr), rtus_driver_(nullptr) {
-    kernel_ = new jit_avx2_1x1_conv_kernel_f32(pd()->jcp_, *pd()->attr());
-    reducer_weights_
-            = new cpu_reducer_2d_t<data_type::f32>(pd()->reducer_wei_conf_);
-    reducer_bias_ = new cpu_reducer_t<data_type::f32>(pd()->reducer_bia_conf_);
-    if (pd()->with_bias())
+status_t jit_avx2_1x1_convolution_bwd_weights_t::init(engine_t *engine) {
+    CHECK(safe_ptr_assign(kernel_,
+            new jit_avx2_1x1_conv_kernel_f32(
+                    pd()->jcp_, *pd()->attr(), *pd()->dst_md(0))));
+    CHECK(kernel_->create_kernel());
+
+    CHECK(safe_ptr_assign(reducer_weights_,
+            new cpu_reducer_2d_t<data_type::f32>(pd()->reducer_wei_conf_)));
+    CHECK(reducer_weights_->create_kernel());
+
+    CHECK(safe_ptr_assign(reducer_bias_,
+            new cpu_reducer_t<data_type::f32>(pd()->reducer_bia_conf_)));
+    if (pd()->with_bias()) {
         assert(reducer_weights_->balancer().nthr_
                 == reducer_bias_->balancer().nthr_);
-    init_rtus_driver<avx2>(this);
+        CHECK(reducer_bias_->create_kernel());
+    }
+
+    CHECK(init_rtus_driver<avx2>(this));
+    return status::success;
 }
 
 void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
@@ -495,7 +525,7 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
     const auto &jcp = kernel_->jcp;
     auto rtus_space = pd()->rtus_.reduce_src_
             ? scratchpad.get<data_t>(key_conv_rtus_space)
-            : NULL;
+            : nullptr;
 
     const bool is_bias_padded
             = pd()->with_bias() && (jcp.oc_without_padding % jcp.oc_block != 0);
@@ -506,12 +536,12 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
 
     auto reducer_bia_scratchpad
             = memory_tracking::grantor_t(scratchpad, prefix_reducer_bia);
-    auto rb = this->reducer_bias_;
+    auto rb = this->reducer_bias_.get();
     rb->init(reducer_bia_scratchpad);
 
     auto reducer_wei_scratchpad
             = memory_tracking::grantor_t(scratchpad, prefix_reducer_wei);
-    auto rw = this->reducer_weights_;
+    auto rw = this->reducer_weights_.get();
     rw->init(reducer_wei_scratchpad);
 
     const int ndims = diff_dst_d.ndims();
@@ -611,7 +641,7 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
                                     * src_d.blocking_desc().strides[ndims - 3];
 
                         rp.src = src + src_offset;
-                        if (oc_b == 0) rtus_driver_->ker_(&rp);
+                        if (oc_b == 0) (*rtus_driver_)(&rp);
 
                         p.bcast_data = rp.ws;
                     } else
@@ -620,7 +650,7 @@ void jit_avx2_1x1_convolution_bwd_weights_t::execute_backward_weights(
                                         * (is_src_layout_nxc ? jcp.ic
                                                              : jcp.ic_block);
 
-                    kernel_->jit_ker(&p);
+                    (*kernel_)(&p);
                 }
             }
         }

@@ -19,9 +19,10 @@
 
 #include "common/c_types_map.hpp"
 #include "common/memory.hpp"
+
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_generator.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -29,20 +30,8 @@ namespace cpu {
 namespace x64 {
 
 struct jit_sse41_conv_fwd_kernel_f32 : public jit_generator {
-    jit_sse41_conv_fwd_kernel_f32(
-            const jit_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jcp(ajcp), attr_(attr), eltwise_injector_(nullptr) {
-        if (jcp.with_eltwise)
-            eltwise_injector_ = new jit_uni_eltwise_injector_f32<sse41>(
-                    this, jcp.eltwise);
-
-        this->generate();
-        jit_ker = (void (*)(jit_conv_call_s *))this->getCode();
-    }
-
-    ~jit_sse41_conv_fwd_kernel_f32() { delete eltwise_injector_; }
-
-    static bool post_ops_ok(jit_conv_conf_t &jcp, const primitive_attr_t &attr);
+    jit_sse41_conv_fwd_kernel_f32(const jit_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md);
 
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, const memory_desc_wrapper &src_d,
@@ -53,9 +42,9 @@ struct jit_sse41_conv_fwd_kernel_f32 : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_sse41_conv_fwd_kernel_f32)
     jit_conv_conf_t jcp;
     const primitive_attr_t &attr_;
-    void (*jit_ker)(jit_conv_call_s *);
 
 private:
+    static constexpr auto simd_w_ = cpu_isa_traits<sse41>::vlen / sizeof(float);
     using reg64_t = const Xbyak::Reg64;
     reg64_t reg_input = rax;
     reg64_t aux_reg_input = r8;
@@ -73,7 +62,8 @@ private:
     reg64_t imm_addr64 = reg_oc_blocks;
     Xbyak::Reg32 reg_ci_flag = r13d;
 
-    jit_uni_eltwise_injector_f32<sse41> *eltwise_injector_;
+    std::unique_ptr<injector::jit_uni_postops_injector_t<sse41>>
+            postops_injector_;
 
     inline void oh_step_unroll_kw(
             int ur_w, int pad_l, int pad_r, int oc_blocks);
@@ -123,7 +113,9 @@ private:
         return sizeof(float) * offset;
     }
 
-    void generate();
+    void apply_postops(const int oc_blocks, const int ur_w);
+
+    void generate() override;
 };
 
 } // namespace x64

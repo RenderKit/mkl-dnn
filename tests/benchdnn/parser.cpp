@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 #include <string.h>
 #include <string>
 
-#include "dnnl.h"
-#include "dnnl_memory.hpp"
 #include "parser.hpp"
+
+#include "dnnl_common.hpp"
 
 namespace parser {
 
@@ -50,10 +50,26 @@ bool parse_tag(std::vector<std::string> &tag,
         const std::string &option_name /* = "tag"*/) {
     auto ret_string = [](const char *str) { return std::string(str); };
     bool ok = parse_vector_option(tag, def_tag, ret_string, str, option_name);
-    static constexpr int ndims_3d = 5; // to check meta-tags in debug mode
-    for (size_t i = 0; i < tag.size(); i++)
-        ok = ok && convert_tag(tag[i], ndims_3d) != dnnl_format_tag_last;
-    return ok;
+    if (!ok) return false;
+
+    for (size_t i = 0; i < tag.size(); i++) {
+        if (check_tag(tag[i], allow_enum_tags_only) != OK) {
+            if (allow_enum_tags_only && check_tag(tag[i]) == OK) {
+                fprintf(stderr,
+                        "ERROR: tag `%s` is valid but not found in "
+                        "`dnnl::memory::format_tag`. To force the testing with "
+                        "this tag, please specify `--allow-enum-tags-only=0` "
+                        "prior to any tag option.\n",
+                        tag[i].c_str());
+            } else {
+                fprintf(stderr,
+                        "ERROR: unknown or invalid tag: `%s`, exiting...\n",
+                        tag[i].c_str());
+            }
+            exit(2);
+        }
+    }
+    return true;
 }
 
 bool parse_multi_tag(std::vector<std::vector<std::string>> &tag,
@@ -107,6 +123,15 @@ bool parse_attr_zero_points(std::vector<attr_t::zero_points_t> &zp,
     return parse_subattr(zp, str, option_name);
 }
 
+bool parse_attr_scratchpad_mode(
+        std::vector<dnnl_scratchpad_mode_t> &scratchpad_mode,
+        const std::vector<dnnl_scratchpad_mode_t> &def_scratchpad_mode,
+        const char *str,
+        const std::string &option_name /* = "attr-scratchpad"*/) {
+    return parse_vector_option(scratchpad_mode, def_scratchpad_mode,
+            str2scratchpad_mode, str, option_name);
+}
+
 bool parse_axis(std::vector<int> &axis, const std::vector<int> &def_axis,
         const char *str, const std::string &option_name /* = "axis"*/) {
     return parse_vector_option(axis, def_axis, atoi, str, option_name);
@@ -145,7 +170,7 @@ bool parse_scale_policy(std::vector<policy_t> &policy,
         const std::vector<policy_t> &def_policy, const char *str,
         const std::string &option_name /*= "scaling"*/) {
     return parse_vector_option(
-            policy, def_policy, attr_t::scale_t::str2policy, str, option_name);
+            policy, def_policy, attr_t::str2policy, str, option_name);
 }
 
 // plain types
@@ -194,7 +219,7 @@ static bool parse_dims_as_desc(dims_t &dims, const char *str) {
             char *end_s; \
             int64_t c = cvfunc(str, &end_s); \
             str += (end_s - str); \
-            if (c < 0) return false; \
+            if ((c) < 0) return false; \
             dims.push_back(c); \
         } \
     } while (0)
@@ -258,10 +283,26 @@ static bool parse_verbose(
     return parse_single_value_option(verbose, 0, atoi, str, option_name);
 }
 
-static bool parse_engine_kind(
+static bool parse_engine(
         const char *str, const std::string &option_name = "engine") {
-    return parse_single_value_option(
-            engine_tgt_kind, dnnl_cpu, str2engine_kind, str, option_name);
+    if (!parse_single_value_option(
+                engine_tgt_kind, dnnl_cpu, str2engine_kind, str, option_name))
+        return false;
+    // Parse engine index if present
+    std::string s(str);
+    auto start_pos = s.find_first_of(':');
+    if (start_pos != std::string::npos)
+        engine_index = stoi(s.substr(start_pos + 1));
+
+    auto n_devices = dnnl_engine_get_count(engine_tgt_kind);
+    if (engine_index >= n_devices) {
+        fprintf(stderr,
+                "ERROR: requested engine with index %ld is not registred in "
+                "the system. Number of devices registred is %ld.\n",
+                (long)engine_index, (long)n_devices);
+        exit(2);
+    }
+    return true;
 }
 
 static bool parse_fast_ref_gpu(
@@ -282,30 +323,6 @@ static bool parse_mem_check(
             mem_check, true, str2bool, str, option_name);
 }
 
-static bool parse_scratchpad_mode(
-        const char *str, const std::string &option_name = "scratchpad") {
-    const std::string pattern = get_pattern(option_name);
-    if (pattern.find(str, 0, pattern.size()) == eol) return false;
-
-    static bool notice_printed = false;
-    if (!notice_printed) {
-        BENCHDNN_PRINT(0, "%s\n",
-                "WARNING (DEPRECATION NOTICE): `--scratchpad` option is "
-                "deprecated. Please use `--attr-scratchpad` instead.");
-        notice_printed = true;
-    }
-    return parse_single_value_option(scratchpad_mode,
-            dnnl_scratchpad_mode_library, str2scratchpad_mode, str,
-            option_name);
-}
-
-static bool parse_attr_scratchpad_mode(
-        const char *str, const std::string &option_name = "attr-scratchpad") {
-    return parse_single_value_option(scratchpad_mode,
-            dnnl_scratchpad_mode_library, str2scratchpad_mode, str,
-            option_name);
-}
-
 static bool parse_skip_impl(
         const char *str, const std::string &option_name = "skip-impl") {
     const std::string pattern = get_pattern(option_name);
@@ -314,15 +331,54 @@ static bool parse_skip_impl(
     return true;
 }
 
+static bool parse_allow_enum_tags_only(const char *str,
+        const std::string &option_name = "allow-enum-tags-only") {
+    return parse_single_value_option(
+            allow_enum_tags_only, true, str2bool, str, option_name);
+}
+
+static bool parse_cpu_isa_hints(
+        const char *str, const std::string &option_name = "cpu-isa-hints") {
+    const bool parsed
+            = parse_single_value_option(hints, isa_hints_t {isa_hints_t::none},
+                    isa_hints_t::str2hints, str, option_name);
+    if (parsed) init_isa_settings();
+    return parsed;
+}
+
+static bool parse_sycl_memory_kind(
+        const char *str, const std::string &option_name = "sycl-memory-kind") {
+    const bool parsed = parse_single_value_option(sycl_memory_kind,
+            sycl_memory_kind_ext_t::usm, str2sycl_memory_kind, str,
+            option_name);
+    if (!parsed) return false;
+#ifndef DNNL_WITH_SYCL
+    fprintf(stderr,
+            "ERROR: option `%s` is supported with DPC++ builds only, "
+            "exiting...\n",
+            option_name.c_str());
+    exit(2);
+#endif
+    return true;
+}
+
+static bool parse_test_start(
+        const char *str, const std::string &option_name = "start") {
+    return parse_single_value_option(
+            test_start, 0, [](const std::string &s) { return std::stoi(s); },
+            str, option_name);
+}
+
 bool parse_bench_settings(const char *str) {
     last_parsed_is_problem = false; // if start parsing, expect an option
 
     return parse_bench_mode(str) || parse_max_ms_per_prb(str)
             || parse_fix_times_per_prb(str) || parse_verbose(str)
-            || parse_engine_kind(str) || parse_fast_ref_gpu(str)
+            || parse_engine(str) || parse_fast_ref_gpu(str)
             || parse_canonical(str) || parse_mem_check(str)
-            || parse_scratchpad_mode(str) || parse_attr_scratchpad_mode(str)
-            || parse_skip_impl(str);
+            || parse_skip_impl(str) || parse_allow_enum_tags_only(str)
+            || parse_cpu_isa_hints(str) || parse_sycl_memory_kind(str)
+            || parse_test_start(str);
 }
 
 void catch_unknown_options(const char *str) {

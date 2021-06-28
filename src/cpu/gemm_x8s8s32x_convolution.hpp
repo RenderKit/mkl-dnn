@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@
 #include "cpu/gemm_x8s8s32x_convolution_utils.hpp"
 
 #include "cpu/gemm/gemm.hpp"
+#include "cpu/zero_point_utils.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -49,7 +50,7 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_t {
         status_t init(engine_t *engine) {
             using namespace data_type;
 
-            bool ok = true && is_fwd()
+            const bool ok = true && is_fwd()
                     && set_default_alg_kind(alg_kind::convolution_direct)
                     && expect_data_types(
                             src_type, s8, data_type::undef, dst_type, s32)
@@ -59,15 +60,25 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_t {
                     && !has_zero_dim_memory()
                     && attr()->has_default_values(
                             primitive_attr_t::skip_mask_t::oscale
+                                    | primitive_attr_t::skip_mask_t::
+                                            zero_points_runtime
                                     | primitive_attr_t::skip_mask_t::post_ops,
                             dst_type)
-                    && output_scales_mask_ok() && post_ops_ok();
+                    && output_scales_mask_ok() && zero_points_valid(attr());
+
             if (!ok) return status::unimplemented;
 
             auto scratchpad = scratchpad_registry().registrar();
-            return jit_gemm_convolution_utils::init_conf(jcp_, scratchpad,
-                    *desc(), src_md_, weights_md_, dst_md_, bias_md_, *attr(),
-                    dnnl_get_max_threads());
+            const auto status_ = jit_gemm_convolution_utils::init_conf(jcp_,
+                    scratchpad, *desc(), src_md_, weights_md_, dst_md_,
+                    bias_md_, *attr(), dnnl_get_max_threads());
+
+            if (status_ == status::success) {
+                if (!gemm_x8s8s32x_convolution_utils::post_ops_ok(
+                            attr()->post_ops_, &dst_md_))
+                    return status::unimplemented;
+            }
+            return status_;
         }
 
         conv_gemm_conf_t jcp_;
@@ -77,33 +88,19 @@ struct _gemm_x8s8s32x_convolution_fwd_t : public primitive_t {
             const auto &mask = attr()->output_scales_.mask_;
             return mask == 0 || mask == 1 << 1;
         }
-
-        bool post_ops_ok() const {
-            using namespace dnnl::impl::primitive_kind;
-            auto const &po = attr()->post_ops_;
-            auto is_eltwise
-                    = [&](int idx) { return po.entry_[idx].is_eltwise(); };
-
-            switch (po.len_) {
-                case 0: return true;
-                case 1: return is_eltwise(0) || po.contain(sum, 0);
-                case 2:
-                    return (po.contain(sum, 0) && is_eltwise(1))
-                            || (po.contain(sum, 1) && is_eltwise(0));
-                default: return false;
-            }
-            return false;
-        }
     };
 
-    _gemm_x8s8s32x_convolution_fwd_t(const pd_t *apd) : primitive_t(apd) {
-        pp_ker_.reset(pp_ker_t::create(pd(), pd()->jcp_));
-    }
+    _gemm_x8s8s32x_convolution_fwd_t(const pd_t *apd) : primitive_t(apd) {}
 
     typedef typename prec_traits<src_type>::type src_data_t;
     typedef typename prec_traits<data_type::s8>::type wei_data_t;
     typedef typename prec_traits<dst_type>::type dst_data_t;
     typedef typename prec_traits<data_type::s32>::type acc_data_t;
+
+    status_t init(engine_t *engine) override {
+        CHECK(safe_ptr_assign(pp_ker_, pp_ker_t::create(pd(), pd()->jcp_)));
+        return (pp_ker_) ? pp_ker_->create_kernel() : status::success;
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         return execute_forward(ctx);
@@ -115,7 +112,10 @@ private:
     status_t execute_forward_thr(const int ithr, const int nthr,
             const src_data_t *src_base, const wei_data_t *wei_base,
             const char *bia_base, dst_data_t *dst_base,
-            const memory_tracking::grantor_t &scratchpad) const;
+            const zero_point_call_params_t &zp,
+            const memory_tracking::grantor_t &scratchpad,
+            const void *post_ops_binary_rhs_arg_vec,
+            const exec_ctx_t &ctx) const;
 
     int nthr_ = 0;
 

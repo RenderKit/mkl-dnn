@@ -115,9 +115,9 @@ in this example.
 
 One can create memory with **NCHW** data layout using
 #dnnl_nchw of the enum type #dnnl_format_tag_t defined in
-[dnnl_types.h](https://github.com/oneapi-src/oneDNN/blob/master/include/dnnl_types.h)
+[dnnl_types.h](https://github.com/oneapi-src/oneDNN/blob/master/include/oneapi/dnnl/dnnl_types.h)
 for the C API, and dnnl::memory::format_tag::nchw defined in
-[dnnl.hpp](https://github.com/oneapi-src/oneDNN/blob/master/include/dnnl.hpp)
+[dnnl.hpp](https://github.com/oneapi-src/oneDNN/blob/master/include/oneapi/dnnl/dnnl.hpp)
 for the C++ API.
 
 
@@ -178,7 +178,7 @@ contiguous in memory. For instance, some might need to work with a sub-tensor
 within a bigger tensor. Sometimes it might be beneficial to artificially make
 the data disjoint, as in case of GEMM with a non-trivial leading dimension to
 get better performance
-([see Tips 6](https://software.intel.com/en-us/articles/a-simple-example-to-measure-the-performance-of-an-intel-mkl-function)).
+([see Tips 6](https://software.intel.com/content/www/us/en/develop/articles/a-simple-example-to-measure-the-performance-of-an-intel-mkl-function)).
 
 The following picture shows a simplified case for a 2D matrix of size
 `rows x columns` kept in row-major format where rows have some non-trivial
@@ -327,21 +327,20 @@ during computation of `d0`, but that does not affect the result.
 
 Some pitfalls of the given approach:
 
-- To keep *padded data are zeros* invariant, dnnl_memory_set_data_handle()
-  and dnnl::memory::set_data_handle() physically add zeros whenever the user
-  attaches a pointer to a memory that uses zero padding. That might affect
-  performance if too many unnecessary calls to these functions are made. We
-  might consider extending our API in the future to allow attaching pointers
-  without subsequent initialization with zeros if the user can guarantee that
-  the padding is already filled correctly.
-
 - The memory size required to keep the data cannot be computed by the formula
   `sizeof(data_type) * N * C * H * W` anymore. The actual size should always be
   queried via dnnl_memory_desc_get_size() in C and
   dnnl::memory::desc::get_size() in C++.
 
-- Element-wise operations that are implemented in the user's code and directly
-  operate on oneDNN blocked layout like this:
+- The actual zero-padding of oneDNN memory objects happen inside the
+  primitive execution functions in order to minimize its performance
+  impact. The current convention is that a primitive execution can
+  assume its inputs are properly zero padded, and should guarantee
+  its outputs are properly zero padded. If a user implements custom
+  kernels on oneDNN blocked memory objects, then they should respect this
+  convention. In particular, element-wise operations that are
+  implemented in the user's code and directly operate on oneDNN
+  blocked layout like this:
   ~~~
       for (int e = 0; e < phys_size; ++e)
           x[e] = eltwise_op(x[e])

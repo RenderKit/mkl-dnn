@@ -20,9 +20,9 @@
 #include "common/c_types_map.hpp"
 #include "common/memory_tracking.hpp"
 
+#include "cpu/x64/injectors/jit_uni_postops_injector.hpp"
 #include "cpu/x64/jit_generator.hpp"
 #include "cpu/x64/jit_primitive_conf.hpp"
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -32,26 +32,17 @@ namespace x64 {
 template <typename Vmm>
 struct _jit_avx512_common_conv_fwd_kernel : public jit_generator {
 
-    _jit_avx512_common_conv_fwd_kernel(
-            const jit_conv_conf_t &ajcp, const primitive_attr_t &attr)
-        : jcp(ajcp), attr_(attr), eltwise_injector_(nullptr) {
-        if (jcp.with_eltwise)
-            eltwise_injector_ = new jit_uni_eltwise_injector_f32<avx512_common>(
-                    this, jcp.eltwise);
-
-        generate();
-        jit_ker_ = (void (*)(jit_conv_call_s *))getCode();
-    }
-
-    ~_jit_avx512_common_conv_fwd_kernel() { delete eltwise_injector_; }
+    _jit_avx512_common_conv_fwd_kernel(const jit_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md);
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(_jit_avx512_common_conv_fwd_kernel)
 
     jit_conv_conf_t jcp;
     const primitive_attr_t &attr_;
-    void (*jit_ker_)(jit_conv_call_s *);
 
 private:
+    constexpr static int isa_simd_width_
+            = cpu_isa_traits<avx512_common>::vlen / sizeof(float);
     using reg64_t = const Xbyak::Reg64;
     enum {
         typesize = sizeof(float),
@@ -93,19 +84,25 @@ private:
 
     reg64_t reg_long_offt = r11;
     reg64_t reg_out_long_offt = r14;
+    reg64_t reg_ker_long_offt = r11;
     reg64_t reg_tail = aux_reg_ker;
     reg64_t reg_load_work = reg_tail;
     Xbyak::Opmask k_oc_tail_mask = Xbyak::Opmask(2);
+    const Xbyak::Opmask postops_mask = Xbyak::Opmask(3);
 
     inline Vmm vmm_ker(int i_ic) {
         assert(i_ic < 4);
         return Vmm(ker_reg_base_idx + i_ic);
     }
 
-    inline Vmm vmm_out(int i_ur, int i_oc) {
-        int idx = i_ur + i_oc * jcp.ur_w;
+    inline int vmm_out_idx(int i_ur, int i_oc) {
+        const int idx = i_ur * jcp.nb_oc_blocking + i_oc;
         assert(idx < ker_reg_base_idx);
-        return Vmm(idx);
+        return idx;
+    }
+
+    inline Vmm vmm_out(int i_ur, int i_oc) {
+        return Vmm(vmm_out_idx(i_ur, i_oc));
     }
 
     inline Vmm vmm_inp(int i_ic, int nb_x_blocking) {
@@ -117,9 +114,11 @@ private:
     Xbyak::Reg64 imm_addr64 = r15;
     Vmm vmm_wei = Vmm(31);
 
-    jit_uni_eltwise_injector_f32<avx512_common> *eltwise_injector_;
+    std::unique_ptr<injector::jit_uni_postops_injector_t<avx512_common>>
+            postops_injector_;
 
     inline void prepare_output(int ur_w);
+    inline void apply_postops(int ur_w);
     inline void store_output(int ur_w);
     inline void compute_loop_fma(int ur_w, int pad_l, int pad_r);
     inline void compute_loop_fma_core(int ur_w, int pad_l, int pad_r);
@@ -127,7 +126,7 @@ private:
     inline void compute_loop_4fma_1st(int ur_w, int pad_l, int pad_r);
     inline void compute_loop(int ur_w, int pad_l, int pad_r);
 
-    void generate();
+    void generate() override;
 
     inline size_t get_output_offset(int oi, int n_oc_block) {
         const bool is_nxc_layout = is_dst_layout_nxc();
@@ -183,44 +182,32 @@ private:
 
 struct jit_avx512_common_conv_fwd_kernel {
 
-    jit_avx512_common_conv_fwd_kernel(
-            const jit_conv_conf_t ajcp, const primitive_attr_t &attr)
-        : jit_ker(nullptr)
-        , zmm_kernel_(nullptr)
-        , ymm_kernel_(nullptr)
-        , xmm_kernel_(nullptr) {
+    jit_avx512_common_conv_fwd_kernel(const jit_conv_conf_t &ajcp,
+            const primitive_attr_t &attr, const memory_desc_t &dst_md)
+        : kernel_(nullptr) {
         switch (ajcp.oc_block) {
             case 16:
-                zmm_kernel_
-                        = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Zmm>(
-                                ajcp, attr);
-                jit_ker = zmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Zmm>(
+                        ajcp, attr, dst_md);
                 return;
             case 8:
-                ymm_kernel_
-                        = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Ymm>(
-                                ajcp, attr);
-                jit_ker = ymm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Ymm>(
+                        ajcp, attr, dst_md);
                 return;
             case 4:
-                xmm_kernel_
-                        = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Xmm>(
-                                ajcp, attr);
-                jit_ker = xmm_kernel_->jit_ker_;
+                kernel_ = new _jit_avx512_common_conv_fwd_kernel<Xbyak::Xmm>(
+                        ajcp, attr, dst_md);
                 return;
             default: assert(!"invalid channel blocking");
         }
     }
 
-    ~jit_avx512_common_conv_fwd_kernel() {
-        delete zmm_kernel_;
-        delete ymm_kernel_;
-        delete xmm_kernel_;
-    }
+    status_t create_kernel() { return kernel_->create_kernel(); }
+
+    ~jit_avx512_common_conv_fwd_kernel() { delete kernel_; }
 
     enum { typesize = sizeof(float) };
 
-    static bool post_ops_ok(jit_conv_conf_t &jcp, const primitive_attr_t &attr);
     static status_t init_conf(jit_conv_conf_t &jcp,
             const convolution_desc_t &cd, memory_desc_t &src_pd,
             memory_desc_t &weights_pd, memory_desc_t &dst_pd,
@@ -228,27 +215,23 @@ struct jit_avx512_common_conv_fwd_kernel {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
-    void (*jit_ker)(jit_conv_call_s *);
-    _jit_avx512_common_conv_fwd_kernel<Xbyak::Zmm> *zmm_kernel_;
-    _jit_avx512_common_conv_fwd_kernel<Xbyak::Ymm> *ymm_kernel_;
-    _jit_avx512_common_conv_fwd_kernel<Xbyak::Xmm> *xmm_kernel_;
+    void operator()(jit_conv_call_s *p) const { (*kernel_)(p); }
+
+    const Xbyak::uint8 *jit_ker() const { return kernel_->jit_ker(); }
 
 private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_common_conv_fwd_kernel);
+    jit_generator *kernel_;
 };
 
 template <typename Vmm>
 struct _jit_avx512_common_conv_bwd_data_kernel_f32 : public jit_generator {
 
     _jit_avx512_common_conv_bwd_data_kernel_f32(const jit_conv_conf_t &ajcp)
-        : jcp(ajcp) {
-        generate();
-        jit_ker_ = (void (*)(jit_conv_call_s *))getCode();
-    }
+        : jcp(ajcp) {}
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(_jit_avx512_common_conv_bwd_data_kernel_f32)
     jit_conv_conf_t jcp;
-    void (*jit_ker_)(jit_conv_call_s *);
 
 private:
     using reg64_t = const Xbyak::Reg64;
@@ -318,7 +301,7 @@ private:
             int ur_w, int l_overflow, int r_overflow, int k_offset);
     inline void compute_loop(
             int ur_w, int l_overflow, int r_overflow, int k_offset = 0);
-    void generate();
+    void generate() override;
 
     inline int get_iw_start(int ki, int l_overflow) {
         int res = (jcp.iw - 1 + jcp.r_pad) % jcp.stride_w
@@ -373,35 +356,27 @@ private:
 struct jit_avx512_common_conv_bwd_data_kernel_f32 {
 
     jit_avx512_common_conv_bwd_data_kernel_f32(const jit_conv_conf_t &ajcp)
-        : jit_ker(nullptr)
-        , zmm_kernel_(nullptr)
-        , ymm_kernel_(nullptr)
-        , xmm_kernel_(nullptr) {
+        : kernel_(nullptr) {
         switch (ajcp.ic_block) {
             case 16:
-                zmm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
+                kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
                         Xbyak::Zmm>(ajcp);
-                jit_ker = zmm_kernel_->jit_ker_;
                 return;
             case 8:
-                ymm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
+                kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
                         Xbyak::Ymm>(ajcp);
-                jit_ker = ymm_kernel_->jit_ker_;
                 return;
             case 4:
-                xmm_kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
+                kernel_ = new _jit_avx512_common_conv_bwd_data_kernel_f32<
                         Xbyak::Xmm>(ajcp);
-                jit_ker = xmm_kernel_->jit_ker_;
                 return;
             default: assert(!"invalid channel blocking");
         }
     }
 
-    ~jit_avx512_common_conv_bwd_data_kernel_f32() {
-        delete zmm_kernel_;
-        delete ymm_kernel_;
-        delete xmm_kernel_;
-    }
+    status_t create_kernel() { return kernel_->create_kernel(); }
+
+    ~jit_avx512_common_conv_bwd_data_kernel_f32() { delete kernel_; }
 
     enum { typesize = sizeof(float) };
 
@@ -411,27 +386,24 @@ struct jit_avx512_common_conv_bwd_data_kernel_f32 {
     static void init_scratchpad(memory_tracking::registrar_t &scratchpad,
             const jit_conv_conf_t &jcp);
 
-    void (*jit_ker)(jit_conv_call_s *);
-    _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Zmm> *zmm_kernel_;
-    _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Ymm> *ymm_kernel_;
-    _jit_avx512_common_conv_bwd_data_kernel_f32<Xbyak::Xmm> *xmm_kernel_;
+    void operator()(const jit_conv_call_s *p) const { (*kernel_)(p); }
+    const Xbyak::uint8 *jit_ker() const { return kernel_->jit_ker(); }
 
 private:
     DNNL_DISALLOW_COPY_AND_ASSIGN(jit_avx512_common_conv_bwd_data_kernel_f32);
+    jit_generator *kernel_;
 };
 
 struct jit_avx512_common_conv_bwd_weights_kernel_f32 : public jit_generator {
 
     jit_avx512_common_conv_bwd_weights_kernel_f32(const jit_conv_conf_t &ajcp)
-        : jcp(ajcp) {
-        if (jcp.harness != harness_nxc) {
-            generate();
-            jit_ker = (void (*)(jit_conv_call_s *))getCode();
-        } else {
+        : jcp(ajcp) {}
+
+    void generate() override {
+        if (jcp.harness != harness_nxc)
+            generate_kernel();
+        else
             generate_microkernel();
-            jit_microker = (void (*)(float *, const float *, const float *,
-                    int64_t, int64_t))getCode();
-        }
     }
 
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_common_conv_bwd_weights_kernel_f32)
@@ -444,9 +416,6 @@ struct jit_avx512_common_conv_bwd_weights_kernel_f32 : public jit_generator {
             const jit_conv_conf_t &jcp);
 
     jit_conv_conf_t jcp;
-    void (*jit_ker)(jit_conv_call_s *);
-    void (*jit_microker)(
-            float *, const float *, const float *, int64_t, int64_t);
 
 private:
     using reg64_t = const Xbyak::Reg64;
@@ -522,11 +491,11 @@ private:
     inline ptrdiff_t get_full_src_offset(
             int i_iw, int i_ic, ptrdiff_t input_offset) {
         const bool is_nxc_layout = is_src_layout_nxc();
-        const size_t w_shift_st
-                = (jcp.is_hw_transp ? jcp.iw : 1) * jcp.ic_block;
+        const size_t w_shift_st = (jcp.is_hw_transp ? jcp.iw : 1)
+                * (jcp.is_1stconv ? 1 : jcp.ic_block);
         ptrdiff_t w_shift = is_nxc_layout
                 ? jcp.ngroups * jcp.ic
-                : (jcp.ver == ver_4fma || jcp.is_1stconv ? 1 : w_shift_st);
+                : jcp.ver == ver_4fma ? 1 : w_shift_st;
         ptrdiff_t ic_shift = jcp.ver == ver_4fma
                 ? jcp.tr_iw
                 : (jcp.is_1stconv && !is_nxc_layout
@@ -541,7 +510,7 @@ private:
         return ow * jcp.stride_w + kw * (jcp.dilate_w + 1) - l_pad;
     }
 
-    void generate();
+    void generate_kernel();
     void generate_microkernel();
 
     static void balance(const jit_conv_conf_t &j, int &nthr, int &nthr_mb,

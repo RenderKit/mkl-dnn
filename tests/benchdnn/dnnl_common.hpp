@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@
 #ifndef DNNL_COMMON_HPP
 #define DNNL_COMMON_HPP
 
+#include <functional>
 #include <stddef.h>
 #include <stdint.h>
+
 #include <vector>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 #include "src/common/bfloat16.hpp"
 #include "src/common/float16.hpp"
 #include "src/common/nstl.hpp"
@@ -180,39 +182,55 @@ inline float max_dt(dnnl_data_type_t dt) {
 
 #undef CASE_ALL
 
+#define BENCHDNN_S32_TO_F32_SAT_CONST 2147483520.f
+
 template <dnnl_data_type_t dt>
-inline float saturate(float val) {
-    auto res = MAX2((float)dnnl::impl::nstl::numeric_limits<
-                            typename prec_traits<dt>::type>::lowest(),
-            MIN2((float)dnnl::impl::nstl::numeric_limits<
-                         typename prec_traits<dt>::type>::max(),
-                    val));
-    return mxcsr_cvt(res);
+inline float saturate_and_round(float val) {
+    const float dt_max = max_dt(dt);
+    const float dt_min = (float)dnnl::impl::nstl::numeric_limits<
+            typename prec_traits<dt>::type>::lowest();
+    if (dt == dnnl_s32 && val >= max_dt(dnnl_s32)) return max_dt(dnnl_s32);
+    if (val > dt_max) val = dt_max;
+    if (val < dt_min) val = dt_min;
+    return mxcsr_cvt(val);
+}
+
+inline bool is_integral_dt(dnnl_data_type_t dt) {
+    return dt == dnnl_s32 || dt == dnnl_s8 || dt == dnnl_u8;
 }
 
 inline float maybe_saturate(dnnl_data_type_t dt, float value) {
-    if (dt == dnnl_s32 || dt == dnnl_s8 || dt == dnnl_u8) {
-        switch (dt) {
+    if (!is_integral_dt(dt)) return value;
+
+    switch (dt) {
 #define CASE(dt) \
-    case dt: { \
-        return saturate<dt>(value); \
-    }
-            CASE(dnnl_s32);
-            CASE(dnnl_s8);
-            CASE(dnnl_u8);
+    case dt: return saturate_and_round<dt>(value);
+        CASE(dnnl_s32);
+        CASE(dnnl_s8);
+        CASE(dnnl_u8);
 #undef CASE
-            default: assert(!"bad data_type");
-        }
-        return 0;
+        default: assert(!"bad data_type");
     }
-    return value;
+    return 0;
 }
 
 float round_to_nearest_representable(dnnl_data_type_t dt, float value);
 
-/* simplification */
 extern dnnl_engine_kind_t engine_tgt_kind;
-extern dnnl_scratchpad_mode_t scratchpad_mode;
+extern size_t engine_index;
+extern isa_hints_t hints;
+
+// Extended version of dnnl_sycl_interop_memory_kind_t enumeration.
+enum class sycl_memory_kind_ext_t {
+    usm, // Same as dnnl_sycl_interop_usm
+    buffer, // Same as dnnl_sycl_interop_buffer
+    usm_device, // USM allocated via malloc_device()
+    usm_shared, // USM allocated via malloc_shared()
+};
+
+extern sycl_memory_kind_ext_t sycl_memory_kind;
+
+void init_isa_settings();
 
 inline const char *query_impl_info(const_dnnl_primitive_desc_t pd) {
     const char *str;
@@ -221,10 +239,11 @@ inline const char *query_impl_info(const_dnnl_primitive_desc_t pd) {
 }
 
 struct dnn_mem_t;
-struct attr_bundle_t;
 
 struct args_t {
     args_t &set(int arg, const dnn_mem_t &mem);
+    args_t &set(
+            const std::vector<int> &args, const std::vector<dnn_mem_t> &mems);
     void clear() { args_.clear(); }
 
     int size() const { return (int)args_.size(); }
@@ -248,11 +267,12 @@ inline const engine_t &get_cpu_engine() {
     return instance;
 }
 
+int get_memory_footprint(const_dnnl_primitive_desc_t pd, res_t *res);
+
 template <typename func_t, typename prb_t>
-int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *p,
-        res_t *r, dir_t dir = FLAG_FWD,
+int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *prb,
+        res_t *res, dir_t dir = FLAG_FWD,
         const_dnnl_primitive_desc_t hint = nullptr) {
-    int status = OK;
     dnnl_primitive_desc_t pd {};
     dnnl_primitive_t return_prim {};
 
@@ -273,9 +293,8 @@ int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *p,
 
     // The first primitive creation using a temporary engine.
     engine_t engine(engine_tgt_kind);
-    status = init_pd_func(engine, p, pd, r, dir, hint);
-    if (status != OK) return status;
-    if (r->state == SKIPPED || r->state == UNIMPLEMENTED) return OK;
+    SAFE(init_pd_func(engine, prb, pd, res, dir, hint), WARN);
+    if (res->state == SKIPPED || res->state == UNIMPLEMENTED) return OK;
     DNN_SAFE_CLEAN(dnnl_primitive_create(&return_prim, pd), WARN, cleanup_pd);
     DNN_SAFE_CLEAN(dnnl_primitive_desc_destroy(pd), WARN, cleanup_prim);
     DNN_SAFE(dnnl_primitive_destroy(return_prim), WARN);
@@ -283,8 +302,10 @@ int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *p,
 #endif
     // The second (if the cache is enabled) primitive creation using
     // the global test engine.
-    status = init_pd_func(get_test_engine(), p, pd, r, dir, hint);
-    if (status != OK) return status;
+    SAFE(init_pd_func(get_test_engine(), prb, pd, res, dir, hint), WARN);
+    if (res->state == SKIPPED || res->state == UNIMPLEMENTED) return OK;
+    // Collect memory footprint for a given primitive descriptor.
+    SAFE(get_memory_footprint(pd, res), WARN);
     // This primitive is expected to come from the cache.
     DNN_SAFE_CLEAN(dnnl_primitive_create(&return_prim, pd), WARN, cleanup_pd);
     DNN_SAFE_CLEAN(dnnl_primitive_desc_destroy(pd), WARN, cleanup_prim);
@@ -292,22 +313,46 @@ int init_prim(dnnl_primitive_t *prim, const func_t &init_pd_func, prb_t *p,
     return OK;
 }
 
+typedef std::function<dnnl_status_t(
+        const dnnl_stream_t &, const std::vector<dnnl_exec_arg_t> &)>
+        perf_function_t;
+
+int execute_and_wait(perf_function_t &exec_func, const dnnl_engine_t &engine,
+        const args_t &args);
 int execute_and_wait(dnnl_primitive_t prim, const args_t &args);
 
+int measure_perf(benchdnn_timer_t &t, perf_function_t &perf_func, args_t &args);
 int measure_perf(benchdnn_timer_t &t, dnnl_primitive_t prim, args_t &args);
 
 void maybe_prepare_runtime_scales(dnn_mem_t &scales_m, const attr_t &attr,
         int64_t scale_cnt, const float *scales);
-void maybe_prepare_runtime_scales(
-        dnn_mem_t &scales_m, const attr_bundle_t &attr_bundle);
 
-void maybe_prepare_runtime_zero_points(
-        dnn_mem_t &zero_points_m, const attr_t &attr, int arg);
+void maybe_prepare_runtime_zero_points(dnn_mem_t &zero_points_m,
+        const attr_t &attr, int arg, int64_t count, const int32_t *zero_points);
 
 bool check_md_consistency_with_tag(
         const dnnl_memory_desc_t &md, const std::string &tag);
 
 void check_known_skipped_case_common(
-        const std::vector<dnnl_data_type_t> &v_dt, res_t *r);
+        const std::vector<dnnl_data_type_t> &v_dt, dir_t dir, res_t *res);
+void check_binary_post_ops(const attr_t &attr, res_t *res);
+
+bool is_cpu(const dnnl_engine_t &engine = get_test_engine());
+bool is_gpu(const dnnl_engine_t &engine = get_test_engine());
+bool is_sycl_engine(const dnnl_engine_t &engine = get_test_engine());
+bool is_nvidia_gpu(const dnnl_engine_t &engine = get_test_engine());
+bool is_nvidia_eltwise_ok(
+        dir_t dir, attr_t::post_ops_t::kind_t alg, float alpha);
+inline bool is_nvidia_eltwise_ok(
+        dir_t dir, const attr_t::post_ops_t::entry_t &e) {
+    return is_nvidia_eltwise_ok(dir, e.kind, e.eltwise.alpha);
+}
+
+int init_md(dnnl_memory_desc_t *md, int ndims, const dnnl_dims_t dims,
+        dnnl_data_type_t data_type, const std::string &tag);
+int check_mem_size(const dnnl_memory_desc_t &md);
+int check_mem_size(const_dnnl_primitive_desc_t const_pd);
+
+sycl_memory_kind_ext_t str2sycl_memory_kind(const char *str);
 
 #endif

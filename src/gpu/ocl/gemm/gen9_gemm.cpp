@@ -48,6 +48,31 @@ struct driver_params_f32_nocopy_t {
 static_assert(sizeof(plan_element_t) == 8,
         "Plan element structure has been padded by the compiler.");
 
+std::tuple<int, int, int> gen9_gemm_t::pd_t::get_blocking(bool nocopy) const {
+    int block_m, block_n, block_k;
+
+    if (!nocopy) {
+        if (desc()->acc_type == data_type::f16) {
+            block_m = driver_params_f16_copy_t::block_m;
+            block_n = driver_params_f16_copy_t::block_n;
+            block_k = driver_params_f16_copy_t::block_k;
+        } else {
+            block_m = driver_params_f32_copy_t::block_m;
+            block_n = driver_params_f32_copy_t::block_n;
+            block_k = driver_params_f32_copy_t::block_k;
+        }
+    } else {
+        block_m = driver_params_f32_nocopy_t::block_m;
+        block_n = driver_params_f32_nocopy_t::block_n;
+        block_k = driver_params_f32_nocopy_t::block_k;
+    }
+
+    if (desc()->acc_type != desc()->c_type())
+        block_k = utils::rnd_up(desc()->k(), 64);
+
+    return std::make_tuple(block_m, block_n, block_k);
+}
+
 status_t gen9_gemm_t::launch_beta(const gemm_exec_ctx_t &ctx,
         compute::compute_stream_t *compute_stream, int64_t m, int64_t n,
         float alpha, const memory_storage_t &a, int64_t offset_a,
@@ -171,13 +196,13 @@ status_t gen9_gemm_t::launch_nocopy(const gemm_exec_ctx_t &ctx,
         arg_list.set(19, offset_f);
     }
 
-    bool transa = (pd()->desc()->transa == dnnl_trans);
-    bool transb = (pd()->desc()->transb == dnnl_trans);
+    bool transa = (pd()->desc()->transa() == dnnl_trans);
+    bool transb = (pd()->desc()->transb() == dnnl_trans);
 
     int unroll_m, unroll_n, unroll_k;
 
-    gen9_gemm_nocopy_kernel_t::get_unrolls(
-            transa, transb, unroll_m, unroll_n, unroll_k, pd()->desc()->c_type);
+    gen9_gemm_nocopy_kernel_t::get_unrolls(transa, transb, unroll_m, unroll_n,
+            unroll_k, pd()->desc()->c_type());
 
     size_t nthreads_x = (n + unroll_n - 1) / nstl::max(unroll_n, 1);
     size_t nthreads_y = (m + unroll_m - 1) / nstl::max(unroll_m, 1);
@@ -191,7 +216,9 @@ status_t gen9_gemm_t::launch_nocopy(const gemm_exec_ctx_t &ctx,
     size_t lthreads_y = 8;
     size_t lthreads_z = 1;
 
-#ifndef CL_VERSION_2_0
+    // TODO: remove DNNL_WITH_SYCL from the condition once non-uniform
+    // work-groups are fixed in the compiler.
+#if !defined(CL_VERSION_2_0) || defined(DNNL_WITH_SYCL)
     while (nthreads_x % lthreads_x)
         lthreads_x--;
     while (nthreads_y % lthreads_y)
@@ -254,28 +281,28 @@ status_t gen9_gemm_t::execute(const gemm_exec_ctx_t &ctx) const {
 }
 
 status_t gen9_gemm_t::execute_standard(const gemm_exec_ctx_t &ctx) const {
-    auto a_type = pd()->desc()->a_type;
-    auto b_type = pd()->desc()->b_type;
-    auto c_type = pd()->desc()->c_type;
+    auto a_type = pd()->desc()->a_type();
+    auto b_type = pd()->desc()->b_type();
+    auto c_type = pd()->desc()->c_type();
 
     auto *compute_stream
             = utils::downcast<compute::compute_stream_t *>(ctx.stream());
 
-    auto mb = pd()->desc()->batch;
-    auto m = pd()->desc()->m;
-    auto n = pd()->desc()->n;
-    auto k = pd()->desc()->k;
+    auto mb = pd()->desc()->batch();
+    auto m = pd()->desc()->m();
+    auto n = pd()->desc()->n();
+    auto k = pd()->desc()->k();
 
-    bool transa = (pd()->desc()->transa == dnnl_trans);
-    bool transb = (pd()->desc()->transb == dnnl_trans);
+    bool transa = (pd()->desc()->transa() == dnnl_trans);
+    bool transb = (pd()->desc()->transb() == dnnl_trans);
 
-    auto lda = pd()->desc()->lda;
-    auto ldb = pd()->desc()->ldb;
-    auto ldc = pd()->desc()->ldc;
+    auto lda = pd()->desc()->lda();
+    auto ldb = pd()->desc()->ldb();
+    auto ldc = pd()->desc()->ldc();
 
-    auto stride_a = pd()->desc()->stride_a;
-    auto stride_b = pd()->desc()->stride_b;
-    auto stride_c = pd()->desc()->stride_c;
+    auto stride_a = pd()->desc()->stride_a();
+    auto stride_b = pd()->desc()->stride_b();
+    auto stride_c = pd()->desc()->stride_c();
 
     auto alpha = pd()->alpha();
     auto beta = pd()->beta();
@@ -288,8 +315,8 @@ status_t gen9_gemm_t::execute_standard(const gemm_exec_ctx_t &ctx) const {
     auto beta_native = beta;
     auto one_native = 1.0f;
 
-    auto &a = GEMM_CTX_ARG_STORAGE(a);
-    auto &b = GEMM_CTX_ARG_STORAGE(b);
+    auto &a = GEMM_CTX_ARG_STORAGE(b);
+    auto &b = GEMM_CTX_ARG_STORAGE(a);
     auto &c = GEMM_CTX_ARG_STORAGE(c);
 
     size_t off_a0
@@ -306,22 +333,9 @@ status_t gen9_gemm_t::execute_standard(const gemm_exec_ctx_t &ctx) const {
 
     status_t status;
     constexpr int64_t align = 0x1000;
+
     int block_m, block_n, block_k;
-    if (!nocopy) {
-        if (pd()->desc()->acc_type == data_type::f16) {
-            block_m = driver_params_f16_copy_t::block_m;
-            block_n = driver_params_f16_copy_t::block_n;
-            block_k = driver_params_f16_copy_t::block_k;
-        } else {
-            block_m = driver_params_f32_copy_t::block_m;
-            block_n = driver_params_f32_copy_t::block_n;
-            block_k = driver_params_f32_copy_t::block_k;
-        }
-    } else {
-        block_m = driver_params_f32_nocopy_t::block_m;
-        block_n = driver_params_f32_nocopy_t::block_n;
-        block_k = driver_params_f32_nocopy_t::block_k;
-    }
+    std::tie(block_m, block_n, block_k) = pd()->get_blocking(nocopy);
 
     if (!nocopy && beta != 0. && beta != 1.) {
         status = launch_beta(
@@ -331,7 +345,7 @@ status_t gen9_gemm_t::execute_standard(const gemm_exec_ctx_t &ctx) const {
 
     int64_t off_b_packed = 0;
     int64_t off_a_packed
-            = ((off_b_packed + block_n * block_k) + align - 1) & -align;
+            = utils::rnd_up(off_b_packed + block_n * block_k, align);
 
     auto temp_buf = ctx.get_scratchpad_grantor().get_memory_storage(
             memory_tracking::names::key_gemm_tmp_buffer);
@@ -401,23 +415,23 @@ status_t gen9_gemm_t::execute_standard(const gemm_exec_ctx_t &ctx) const {
 }
 
 status_t gen9_gemm_t::execute_superkernel(const gemm_exec_ctx_t &ctx) const {
-    auto a_type = pd()->desc()->a_type;
-    auto b_type = pd()->desc()->b_type;
-    auto c_type = pd()->desc()->c_type;
+    auto a_type = pd()->desc()->a_type();
+    auto b_type = pd()->desc()->b_type();
+    auto c_type = pd()->desc()->c_type();
 
     auto *compute_stream
             = utils::downcast<compute::compute_stream_t *>(ctx.stream());
 
-    auto m = pd()->desc()->m;
-    auto n = pd()->desc()->n;
-    auto k = pd()->desc()->k;
+    auto m = pd()->desc()->m();
+    auto n = pd()->desc()->n();
+    auto k = pd()->desc()->k();
 
-    bool transa = (pd()->desc()->transa == dnnl_trans);
-    bool transb = (pd()->desc()->transb == dnnl_trans);
+    bool transa = (pd()->desc()->transa() == dnnl_trans);
+    bool transb = (pd()->desc()->transb() == dnnl_trans);
 
-    auto lda = pd()->desc()->lda;
-    auto ldb = pd()->desc()->ldb;
-    auto ldc = pd()->desc()->ldc;
+    auto lda = pd()->desc()->lda();
+    auto ldb = pd()->desc()->ldb();
+    auto ldc = pd()->desc()->ldc();
 
     auto alpha = pd()->alpha();
     auto beta = pd()->beta();
@@ -426,8 +440,8 @@ status_t gen9_gemm_t::execute_superkernel(const gemm_exec_ctx_t &ctx) const {
     auto eltwise_beta = pd()->eltwise_beta();
     auto eltwise_scale = pd()->eltwise_scale();
 
-    auto &a = GEMM_CTX_ARG_STORAGE(a);
-    auto &b = GEMM_CTX_ARG_STORAGE(b);
+    auto &a = GEMM_CTX_ARG_STORAGE(b);
+    auto &b = GEMM_CTX_ARG_STORAGE(a);
     auto &c = GEMM_CTX_ARG_STORAGE(c);
 
     size_t off_a0
@@ -442,6 +456,11 @@ status_t gen9_gemm_t::execute_superkernel(const gemm_exec_ctx_t &ctx) const {
 
     auto temp_buf = ctx.get_scratchpad_grantor().get_memory_storage(
             memory_tracking::names::key_gemm_tmp_buffer);
+    auto temp_buf_size
+            = ctx.get_scratchpad_grantor()
+                      .get_registry()
+                      .get(memory_tracking::names::key_gemm_tmp_buffer)
+                      .size;
 
     int unroll_m[2], unroll_n;
     gen9_gemm_nocopy_superkernel_t::get_unrolls(
@@ -504,7 +523,7 @@ status_t gen9_gemm_t::execute_superkernel(const gemm_exec_ctx_t &ctx) const {
     }
 
     void *plan_void = nullptr;
-    temp_buf->map_data(&plan_void, nullptr);
+    temp_buf->map_data(&plan_void, nullptr, temp_buf_size);
 
     if (!plan_void) return status::runtime_error;
 

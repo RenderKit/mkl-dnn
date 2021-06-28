@@ -17,7 +17,7 @@
 #ifndef COMMON_CONVOLUTION_PD_HPP
 #define COMMON_CONVOLUTION_PD_HPP
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "primitive_desc.hpp"
@@ -281,7 +281,8 @@ struct convolution_fwd_pd_t : public convolution_pd_t {
     }
 
     int n_inputs() const override {
-        return 2 + with_bias() + attr_post_op_dw_inputs();
+        return 2 + with_bias() + attr_post_op_dw_inputs()
+                + n_binary_po_inputs();
     }
 
     int n_outputs() const override { return 1; }

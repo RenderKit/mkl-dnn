@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 #include <malloc.h>
 #endif
 
-#include "dnnl_types.h"
+#include "oneapi/dnnl/dnnl_types.h"
 
 #include "common/bfloat16.hpp"
 #include "common/dnnl_traits.hpp"
@@ -355,14 +355,14 @@ static dnnl_status_t gemm_packing_driver(int ithr, dim_t m, dim_t n, dim_t k,
                 auto a_row_sum = pack_dst->row_sums<c_type>(ithr, Bmn, blk_k);
 
                 arg->copyA(&nk, &nmn, a_src, &arg->lda, &arg->alpha, a_dst,
-                        NULL, NULL, a_row_sum);
+                        nullptr, nullptr, a_row_sum);
             } else {
                 auto b_src = b + mn_stride * Bmn + k_stride * Bk;
                 auto b_dst = pack_dst->matrix<b_type>(ithr, Bk, Bmn);
                 auto b_col_sum = pack_dst->col_sums<c_type>(ithr, blk_k, Bmn);
 
                 arg->copyB(&nk, &nmn, b_src, &arg->ldb, &arg->alpha, b_dst,
-                        NULL, NULL, b_col_sum);
+                        nullptr, nullptr, b_col_sum);
             }
         }
     }
@@ -377,6 +377,12 @@ void gemm_kernel(dim_t m, dim_t n, const dim_t k, const float alpha,
         const c_type *co, offset_type offsetc,
         const gemm_info_t<a_type, b_type, c_type> *arg) {
 
+#ifdef DNNL_WITH_SYCL
+    std::vector<c_type> col_offset_vec(m);
+    std::vector<c_type> row_offset_vec(n);
+    c_type *col_offset = col_offset_vec.data();
+    c_type *row_offset = row_offset_vec.data();
+#else
     // Since m and n are limited by blocking, stack overflow may not happen;
     // it's up to 32kB
 #if !defined(_MSC_VER)
@@ -386,17 +392,15 @@ void gemm_kernel(dim_t m, dim_t n, const dim_t k, const float alpha,
     c_type *col_offset = (c_type *)_alloca(sizeof(*col_offset) * m);
     c_type *row_offset = (c_type *)_alloca(sizeof(*row_offset) * n);
 #endif
+#endif
 
     bool col_req = false;
     bool row_req = false;
 
     constexpr bool is_int8 = utils::one_of(
             data_traits<a_type>::data_type, data_type::s8, data_type::u8);
-    constexpr bool is_bf16 = data_traits<a_type>::data_type == data_type::bf16;
     constexpr bool is_f32 = data_traits<a_type>::data_type == data_type::f32;
     bool is_int8_amx = is_int8 && mayiuse(avx512_core_bf16_amx_int8);
-    bool is_bf16_amx = is_bf16 && mayiuse(avx512_core_bf16_amx_bf16);
-    bool is_amx = is_int8_amx || is_bf16_amx;
 
     if (is_int8) {
         c_type ao = arg->ao;
@@ -471,46 +475,13 @@ void gemm_kernel(dim_t m, dim_t n, const dim_t k, const float alpha,
 
     bool isBeta0 = beta == 0.0f;
 
-    dim_t align_m = 0;
-    dim_t align_n = 0;
-    dim_t align_k = k;
-    if (is_amx) {
-        align_m = m - utils::rnd_dn(m, arg->um);
-        align_n = n - utils::rnd_dn(n, arg->un);
-        align_k = utils::rnd_up(k, arg->uk);
-    }
-    m -= align_m;
-    n -= align_n;
-
     /* Column and row offsets are ignored by non-integer compute kernels.
      * Scaling is done only for bfloat16 kernels.
      */
-    if (m > 0) {
-        if (n > 0) {
-            arg->kernel[isBeta0][col_req][row_req](&m, &n, &align_k, &alpha, a,
-                    b, c, ldc, col_offset, row_offset);
-        }
-        if (align_n > 0) {
-            arg->kernel[isBeta0][col_req][row_req](&m, &align_n, &align_k,
-                    &alpha, a, b + n * align_k, c + n * ldc, ldc, col_offset,
-                    row_offset + n);
-        }
-    }
-    if (align_m > 0) {
-        if (n > 0) {
-            arg->kernel[isBeta0][col_req][row_req](&align_m, &n, &align_k,
-                    &alpha, a + m * align_k, b, c + m, ldc, col_offset + m,
-                    row_offset);
-        }
-        if (align_n > 0) {
-            arg->kernel[isBeta0][col_req][row_req](&align_m, &align_n, &align_k,
-                    &alpha, a + m * align_k, b + n * align_k, c + m + n * ldc,
-                    ldc, col_offset + m, row_offset + n);
-        }
-    }
+    if (m > 0 && n > 0)
+        arg->kernel[isBeta0][col_req][row_req](
+                &m, &n, &k, &alpha, a, b, c, ldc, col_offset, row_offset);
 
-    m += align_m;
-    n += align_n;
     msan_unpoison_matrix(c, m, n, ldc, sizeof(*c));
 
     // sgemm kernels don't support bias yet.
@@ -621,7 +592,7 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
         mem_size += c_buf_nelems * sizeof(*c) + PAGE_4K;
     }
 
-    char *mem = NULL;
+    char *mem = nullptr;
 
     if (mem_size > 0) {
         mem = (char *)malloc(mem_size, 128);
@@ -631,14 +602,14 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
     a_type *bufferA = (a_type *)align(mem, PAGE_4K);
     b_type *bufferB = (b_type *)align(bufferA + a_buf_nelems, PAGE_4K);
 
-    c_type *a_row_sum = NULL;
-    c_type *b_col_sum = NULL;
+    c_type *a_row_sum = nullptr;
+    c_type *b_col_sum = nullptr;
     if (is_int8) {
         a_row_sum = (c_type *)align(bufferB + b_buf_nelems, PAGE_4K);
         b_col_sum = (c_type *)align(a_row_sum + a_row_sum_nelems, PAGE_4K);
     }
 
-    c_type *bufferC = NULL;
+    c_type *bufferC = nullptr;
     if (need_c_buffer) {
         if (is_int8)
             bufferC = (c_type *)align(b_col_sum + b_col_sum_nelems, PAGE_4K);
@@ -683,7 +654,7 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                      * kernels.
                      */
                     arg->copyB(&sizeK, &sizeN, b_block, &ldb, &one, bufferB,
-                            NULL, NULL, b_col_sum);
+                            nullptr, nullptr, b_col_sum);
                 }
 
                 dim_t sizeUM = 0;
@@ -727,7 +698,8 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                             buf_shift = Um_forA * sizeK;
 
                         bufferA_eff = bufferA + buf_shift;
-                        a_row_sum_eff = a_row_sum ? a_row_sum + Um_forA : NULL;
+                        a_row_sum_eff
+                                = a_row_sum ? a_row_sum + Um_forA : nullptr;
 
                         if (!a_block_copied) {
                             const a_type *a_block
@@ -738,7 +710,8 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                              * and 16-bit copy kernels.
                              */
                             arg->copyA(&sizeK, &sizeUM, a_block, &lda, &alpha,
-                                    bufferA_eff, NULL, NULL, a_row_sum_eff);
+                                    bufferA_eff, nullptr, nullptr,
+                                    a_row_sum_eff);
                         }
                     }
 
@@ -753,7 +726,7 @@ static dnnl_status_t gemm_kernel_driver(int ithr, dim_t m, dim_t n, dim_t k,
                     if (need_c_buffer) {
                         gemm_kernel(sizeUM, sizeN, sizeK, 1.0f, bufferA_eff,
                                 bufferB, 0.0f, bufferC + Um, ldc_buf,
-                                a_row_sum_eff, b_col_sum, (c_type *)NULL,
+                                a_row_sum_eff, b_col_sum, (c_type *)nullptr,
                                 offset_type::none, arg);
 
                         /* Finish the block adding the necessary alpha, beta
@@ -835,7 +808,7 @@ static dnnl_status_t kernel_driver_parallel_acopiedbcopy(int ithr, dim_t m,
         mem_size += c_buf_nelems * sizeof(*c) + PAGE_4K;
     }
 
-    char *mem = NULL;
+    char *mem = nullptr;
 
     if (mem_size > 0) {
         mem = (char *)malloc(mem_size, 128);
@@ -844,12 +817,12 @@ static dnnl_status_t kernel_driver_parallel_acopiedbcopy(int ithr, dim_t m,
 
     b_type *bufferB = (b_type *)align(mem, PAGE_4K);
 
-    c_type *b_col_sum = NULL;
+    c_type *b_col_sum = nullptr;
     if (is_int8) {
         b_col_sum = (c_type *)align(bufferB + b_buf_nelems, PAGE_4K);
     }
 
-    c_type *bufferC = NULL;
+    c_type *bufferC = nullptr;
     if (need_c_buffer) {
         if (is_int8)
             bufferC = (c_type *)align(b_col_sum + b_col_sum_nelems, PAGE_4K);
@@ -873,8 +846,8 @@ static dnnl_status_t kernel_driver_parallel_acopiedbcopy(int ithr, dim_t m,
             /* Column sum argument is ignored for non-integer kernels and
              * scaling factor is ignored by 8-bit and 16-bit copy kernels.
              */
-            arg->copyB(&k, &sizeN, b_block, &ldb, &one, bufferB, NULL, NULL,
-                    b_col_sum);
+            arg->copyB(&k, &sizeN, b_block, &ldb, &one, bufferB, nullptr,
+                    nullptr, b_col_sum);
         }
 
         dim_t co_stride = 0;
@@ -889,7 +862,7 @@ static dnnl_status_t kernel_driver_parallel_acopiedbcopy(int ithr, dim_t m,
         c_type *c_block = c + Bn * ldc;
         if (need_c_buffer) {
             gemm_kernel(m, sizeN, k, 1.0f, bufferA, bufferB, 0.0f, bufferC,
-                    ldc_buf, a_row_sum, b_col_sum, (c_type *)NULL,
+                    ldc_buf, a_row_sum, b_col_sum, (c_type *)nullptr,
                     offset_type::none, arg);
 
             // Finish the block adding the necessary alpha, beta and offsets.
@@ -951,8 +924,9 @@ static inline bool nocopy_checker_avx512(int nthr, const int transa,
     static const dim_t K_NOTRANSB_PER_THR = 1;
     static const double FORCE_NOCOPY_THRESH = 0.00196;
 
-    bool is_NT_case = transa == no_trans && transb == do_trans;
-    bool is_TN_case = transa == do_trans && transb == no_trans;
+    bool is_NN = transa == no_trans && transb == no_trans;
+    bool is_NT = transa == no_trans && transb == do_trans;
+    bool is_TN = transa == do_trans && transb == no_trans;
 
     bool is_lda_bad = lda % BAD_LD_MULT == 0;
     bool is_ldb_bad = ldb % BAD_LD_MULT == 0;
@@ -962,14 +936,19 @@ static inline bool nocopy_checker_avx512(int nthr, const int transa,
     bool is_lda_verybad = lda % VERYBAD_LD_MULT == 0;
 
     // Copy-based performs better for TN case with small N in sequential case.
-    if (nthr == 1 && is_TN_case && m > 100
+    if (nthr == 1 && is_TN && m > 100
             && ((m < 1200 && n < 200 && k < 1200)
                     || (is_lda_bad && is_ldb_bad)))
         return false;
 
+    // Copy-based performs better for NN case on very bad leading dimension if
+    // each thread has enough work.
+    if (nthr <= 8 && is_NN && is_lda_verybad && k > 500 && n > 100)
+        return false;
+
     // Crude threshold for nocopy kernels if copy overhead is significant.
     if (1.0 / m + 1.0 / n >= FORCE_NOCOPY_THRESH
-            && !(is_lda_verybad && is_NT_case)) {
+            && !(is_lda_verybad && is_NT)) {
         return true;
     }
 
@@ -1412,9 +1391,9 @@ static dnnl_status_t parallel_a_copy(const int ithr, const int nthrs,
                 * utils::rnd_up(k_padd, arg->uk);
 
     // Allocate shared memory for A and its row sum buffers in master thread.
-    char *mem = NULL;
-    a_type *bufferA = NULL;
-    c_type *a_row_sum = NULL;
+    char *mem = nullptr;
+    a_type *bufferA = nullptr;
+    c_type *a_row_sum = nullptr;
 
     if (!a_packed) {
         if (ithr == 0) { // If thread master
@@ -1489,9 +1468,10 @@ static dnnl_status_t parallel_a_copy(const int ithr, const int nthrs,
                      * kernels.
                      */
                     c_type *a_row_sum_eff
-                            = a_row_sum ? a_row_sum + offset : NULL;
+                            = a_row_sum ? a_row_sum + offset : nullptr;
                     arg->copyA(&sizeK, &band, a_block, &lda, &alpha,
-                            bufferA + buf_shift, NULL, NULL, a_row_sum_eff);
+                            bufferA + buf_shift, nullptr, nullptr,
+                            a_row_sum_eff);
                 }
             }
             if (!a_packed)
@@ -1542,17 +1522,27 @@ static inline void adjust_thread_count(dim_t m, dim_t n, dim_t k, int *nthrs) {
     auto veclen = get_vector_length<T>();
     const double fp_per_cycle = 2.0 * 2.0 * veclen;
 
-    if (mayiuse(avx2) && !mayiuse(avx512_core))
+    const bool is_f32 = data_traits<T>::data_type == data_type::f32;
+
+    const bool is_avx512_mic = mayiuse(avx512_mic);
+    const bool is_avx512 = mayiuse(avx512_core);
+    const bool is_avx = mayiuse(avx);
+    const bool is_only_avx2 = mayiuse(avx2) && !is_avx512;
+
+    if (is_avx512_mic) return;
+
+    // Some sgemm cases still benefit from using all threads.
+    const bool use_all_threads = is_f32 && n > 50
+            && ((is_avx && m <= 3) || (is_avx512 && m <= 10));
+    if (use_all_threads) return;
+
+    if (is_only_avx2)
         if (m > 10 * n && n < *nthrs)
             if (m / *nthrs < veclen * 3)
                 *nthrs = nstl::max(m / veclen / 3, dim_t(1));
 
     double gemm_cycles = m * n * k / fp_per_cycle;
-    if (data_traits<T>::data_type == data_type::f32) {
-        gemm_cycles *= 2.0;
-    } else {
-        gemm_cycles *= 8.0;
-    }
+    gemm_cycles *= is_f32 ? 2.0 : 8.0;
 
     int i = *nthrs;
 
@@ -1595,20 +1585,20 @@ static inline void adjust_thread_count(dim_t m, dim_t n, dim_t k, int *nthrs) {
 
 template <typename a_type, typename b_type, typename c_type>
 static dnnl_status_t call_no_copy_sgemm(
-        gemm_info_t<a_type, b_type, c_type> *arg) {
+        int nthrs, gemm_info_t<a_type, b_type, c_type> *arg) {
 
     if (arg->packing == pack_type::none) {
         auto transa_char = (arg->transa != do_trans) ? "N" : "T";
         auto transb_char = (arg->transb != do_trans) ? "N" : "T";
 
         if (mayiuse(avx512_core))
-            return jit_avx512_common_gemm_f32(transa_char, transb_char, &arg->m,
-                    &arg->n, &arg->k, &arg->alpha, (float *)arg->a, &arg->lda,
-                    (float *)arg->b, &arg->ldb, &arg->beta, (float *)arg->c,
-                    &arg->ldc, (float *)arg->co);
+            return jit_avx512_common_gemm_f32(nthrs, transa_char, transb_char,
+                    &arg->m, &arg->n, &arg->k, &arg->alpha, (float *)arg->a,
+                    &arg->lda, (float *)arg->b, &arg->ldb, &arg->beta,
+                    (float *)arg->c, &arg->ldc, (float *)arg->co);
         else
-            return jit_avx_gemm_f32(transa_char, transb_char, &arg->m, &arg->n,
-                    &arg->k, &arg->alpha, (float *)arg->a, &arg->lda,
+            return jit_avx_gemm_f32(nthrs, transa_char, transb_char, &arg->m,
+                    &arg->n, &arg->k, &arg->alpha, (float *)arg->a, &arg->lda,
                     (float *)arg->b, &arg->ldb, &arg->beta, (float *)arg->c,
                     &arg->ldc, (float *)arg->co);
     } else
@@ -1644,7 +1634,7 @@ static dnnl_status_t gemm_threading_driver(
     if (is_b_packed && arg->ao != 0)
         if (!arg->b_packed->has_col_sums()) return dnnl_invalid_arguments;
 
-    auto nthr_max = (dnnl_in_parallel()) ? 1 : dnnl_get_max_threads();
+    auto nthr_max = dnnl_get_current_num_threads();
     int nthr_goal = nthr_max;
 
     adjust_thread_count<c_type>(arg->m, arg->n, arg->k, &nthr_goal);
@@ -1732,7 +1722,8 @@ static dnnl_status_t gemm_threading_driver(
         if (arg->measure_only) return dnnl_success;
     }
 
-    if (nocopy_checker(nthr_goal, arg)) return call_no_copy_sgemm(arg);
+    if (nocopy_checker(nthr_goal, arg))
+        return call_no_copy_sgemm(nthr_goal, arg);
 
     if (nthr_goal == 1)
         return gemm_kernel_driver(0, arg->m, arg->n, arg->k, arg->a, arg->b,
@@ -1790,7 +1781,7 @@ static dnnl_status_t gemm_threading_driver(
         }
     }
 
-    char *shared_mem = NULL;
+    char *shared_mem = nullptr;
 
     // Always use the maximum number of threads to avoid OMP overhead that can
     // occur due to change thread counts.
@@ -1871,14 +1862,14 @@ static dnnl_status_t gemm_threading_driver(
                                     arg->transb == no_trans ? "N" : "T", m, n,
                                     k, &arg->alpha, (float *)a, arg->lda,
                                     (float *)b, arg->ldb, &beta_eff,
-                                    (float *)c_eff, ldc_eff, NULL, NULL);
+                                    (float *)c_eff, ldc_eff, nullptr, nullptr);
                         } else {
                             avx_gemm_f32::sgemm_nocopy_driver(
                                     arg->transa == no_trans ? "N" : "T",
                                     arg->transb == no_trans ? "N" : "T", m, n,
                                     k, &arg->alpha, (float *)a, arg->lda,
                                     (float *)b, arg->ldb, &beta_eff,
-                                    (float *)c_eff, ldc_eff, NULL, NULL);
+                                    (float *)c_eff, ldc_eff, nullptr, nullptr);
                         }
                         thread_arg[ithr].result = dnnl_success;
                         break;

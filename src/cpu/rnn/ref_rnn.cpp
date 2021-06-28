@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -181,7 +181,7 @@ rnn_grid_execution_sig((_ref_rnn_common_t<aprop, src_type, weights_type,
     AOC<gates_t, 4> ws_grid(
             ws_grid_, rnn.n_layer, rnn.n_dir, rnn.n_iter, (int)rnn.ws_per_cell);
 
-    /* Raw inputs/ouputs coming from the user */
+    /* Raw inputs/outputs coming from the user */
     // Here we cannot use AOC as user's input can have arbitrary strides, so we use desc_wrapper.
     auto src_layer_mdw = memory_desc_wrapper(pd()->src_md(0));
     auto dst_layer_mdw = memory_desc_wrapper(pd()->dst_md(0));
@@ -257,7 +257,7 @@ rnn_grid_execution_sig((_ref_rnn_common_t<aprop, src_type, weights_type,
 
                 // The dst_* paths should be before the src_* paths as
                 // the later will override cell_src_layer and
-                // cell_src_iter appropriatly for 1st layer and 1st
+                // cell_src_iter appropriately for 1st layer and 1st
                 // iter.
                 bool last_iter_skip_copy = rnn.skip_dst_iter_copy()
                         && (cell_position & last_iter);
@@ -314,6 +314,7 @@ rnn_grid_execution_sig((_ref_rnn_common_t<aprop, src_type, weights_type,
                         proj_ht = scratch_ht_;
                 }
 
+#if DNNL_X64
                 CHECK((this->*cell_func)(rnn, cell_position, cell_dst_layer,
                         cell_dst_iter_c,
                         &(ws_diff_states_layer(lay, dir, iter, 0)),
@@ -322,8 +323,10 @@ rnn_grid_execution_sig((_ref_rnn_common_t<aprop, src_type, weights_type,
                         &(weights_layer(lay, dir, 0)),
                         &(weights_iter(lay, dir, 0)),
                         &(weights_projection(lay, dir)),
-                        &(weights_peephole(lay, dir, 0)), &(bias(lay, dir, 0)),
-                        cell_src_layer, cell_src_iter, cell_src_iter_c,
+                        &(weights_peephole(lay, dir, 0)),
+                        w_proj_comp + (j * rnn.n_dir + dir) * rnn.dic,
+                        &(bias(lay, dir, 0)), cell_src_layer, cell_src_iter,
+                        cell_src_iter_c,
                         &(ws_diff_states_layer(lay + 1, dir, iter, 0)),
                         &(ws_diff_states_iter(lay, dir, iter + 1, 0)),
                         &(ws_diff_states_iter_c(lay, dir, iter + 1, 0)),
@@ -335,7 +338,33 @@ rnn_grid_execution_sig((_ref_rnn_common_t<aprop, src_type, weights_type,
                         &(ws_gates(lay, dir, iter, 0)), cell_scratch_gates,
                         proj_ht, scratch_diff_ht_,
                         &(ws_grid(lay, dir, iter, 0)), scratch_cell_,
-                        cell_dst_iter));
+                        cell_dst_iter, amx_scratchpad, addr_batch_global));
+#else
+                CHECK((this->*cell_func)(rnn, cell_position, cell_dst_layer,
+                        cell_dst_iter_c,
+                        &(ws_diff_states_layer(lay, dir, iter, 0)),
+                        &(ws_diff_states_iter(lay, dir, iter, 0)),
+                        &(ws_diff_states_iter_c(lay, dir, iter, 0)),
+                        &(weights_layer(lay, dir, 0)),
+                        &(weights_iter(lay, dir, 0)),
+                        &(weights_projection(lay, dir)),
+                        &(weights_peephole(lay, dir, 0)),
+                        w_proj_comp + (j * rnn.n_dir + dir) * rnn.dic,
+                        &(bias(lay, dir, 0)), cell_src_layer, cell_src_iter,
+                        cell_src_iter_c,
+                        &(ws_diff_states_layer(lay + 1, dir, iter, 0)),
+                        &(ws_diff_states_iter(lay, dir, iter + 1, 0)),
+                        &(ws_diff_states_iter_c(lay, dir, iter + 1, 0)),
+                        &(diff_weights_layer(lay, dir, 0)),
+                        &(diff_weights_iter(lay, dir, 0)),
+                        &(diff_weights_projection(lay, dir, 0)),
+                        &(diff_weights_peephole(lay, dir, 0)),
+                        &(diff_bias(lay, dir, 0)),
+                        &(ws_gates(lay, dir, iter, 0)), cell_scratch_gates,
+                        proj_ht, scratch_diff_ht_,
+                        &(ws_grid(lay, dir, iter, 0)), scratch_cell_,
+                        cell_dst_iter, amx_scratchpad));
+#endif
             }
 
             if ((aprop == prop_kind::backward) && rnn.merge_gemm_layer) {
@@ -546,8 +575,9 @@ void copy_init_iter_fwd_template(const rnn_conf_t &rnn, const rnn_pd_t *pd,
     float data_shift = pd->attr()->rnn_data_qparams_.shift_;
     float data_scale = pd->attr()->rnn_data_qparams_.scale_;
 
-    const bool quantize = pd->with_src_iter()
-            && pd->src_md(1)->data_type == data_type::f32 && rnn.is_int8();
+    const bool quantize = rnn.is_int8()
+            && IMPLICATION(pd->with_src_iter(),
+                    pd->src_md(1)->data_type == data_type::f32);
     auto maybe_q = [&](input_data_t f) {
         if (quantize) {
             float qf = f * data_scale + data_shift;
@@ -555,6 +585,7 @@ void copy_init_iter_fwd_template(const rnn_conf_t &rnn, const rnn_pd_t *pd,
         } else
             return (src_data_t)f;
     };
+    const src_data_t zero = maybe_q(0.f);
 
     if (src_iter_) {
         parallel_nd(
@@ -570,9 +601,10 @@ void copy_init_iter_fwd_template(const rnn_conf_t &rnn, const rnn_pd_t *pd,
         parallel_nd(
                 rnn.n_layer, rnn.n_dir, rnn.mb, [&](int lay, int dir, int b) {
                     for (int j = 0; j < rnn.sic; j++)
-                        ws_states_iter(lay + 1, dir, 0, b, j) = (src_data_t)0;
-                    for (int j = 0; j < rnn.dhc; j++)
-                        ws_states_iter_c(lay + 1, dir, 1, b, j) = 0.0f;
+                        ws_states_iter(lay + 1, dir, 0, b, j) = zero;
+                    if (pd->cell_kind() == alg_kind::vanilla_lstm)
+                        for (int j = 0; j < rnn.dhc; j++)
+                            ws_states_iter_c(lay + 1, dir, 0, b, j) = 0.0f;
                 });
     }
 }
@@ -611,9 +643,10 @@ void copy_init_iter_bwd_template(const rnn_conf_t &rnn, const rnn_pd_t *pd,
                 rnn.n_layer, rnn.n_dir, rnn.mb, [&](int lay, int dir, int i) {
                     for (int j = 0; j < rnn.dic; j++)
                         ws_diff_states_iter(lay, dir, rnn.n_iter, i, j) = 0.0f;
-                    for (int j = 0; j < rnn.dhc; j++)
-                        ws_diff_states_iter_c(lay, dir, rnn.n_iter, i, j)
-                                = 0.0f;
+                    if (pd->cell_kind() == alg_kind::vanilla_lstm)
+                        for (int j = 0; j < rnn.dhc; j++)
+                            ws_diff_states_iter_c(lay, dir, rnn.n_iter, i, j)
+                                    = 0.0f;
                 });
     }
 }
@@ -1078,9 +1111,8 @@ void _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>::execute_(
             layer_weights_n_comp + rnn.weights_layer_comp_offset);
     auto w_iter_comp = reinterpret_cast<const float *>(
             iter_weights_n_comp + rnn.weights_iter_comp_offset);
-    // auto w_projection_comp = reinterpret_cast<const float *>(
-    //         projection_weights_n_comp + rnn.weights_projection_comp_offset);
-
+    auto w_projection_comp = reinterpret_cast<const float *>(
+            projection_weights_n_comp + rnn.weights_projection_comp_offset);
     auto scratchpad = ctx.get_scratchpad_grantor();
 
     auto ptr_wei_layer
@@ -1097,6 +1129,16 @@ void _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>::execute_(
     auto scratch_diff_ht = scratchpad.template get<gemm_acc_t>(key_rnn_diff_ht);
     auto scratch_cell = scratchpad.template get<scratch_t>(key_rnn_cell);
 
+    gemm_acc_t *amx_scratchpad = nullptr;
+#if DNNL_X64
+    x64::brgemm_batch_element_t *addr_batch_global = nullptr;
+    if (rnn.is_brgemm && (rnn.is_int8_amx() || rnn.is_bf16_amx())) {
+        amx_scratchpad = scratchpad.template get<gemm_acc_t>(
+                key_brgemm_primitive_buffer);
+    }
+    addr_batch_global = scratchpad.template get<x64::brgemm_batch_element_t>(
+            key_brgemm_primitive_batch);
+#endif
     // Fetching buffers from the workspace
     // if no workspace was provided we use the scratchpad
     char *scratch_ptr = scratchpad.template get<char>(key_rnn_space);
@@ -1154,8 +1196,9 @@ void _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>::execute_(
                     rnn.ws_diff_states_layer_size / sizeof(gemm_acc_t));
             zero_ws(ithr, nthr, ws_diff_states_iter,
                     rnn.ws_diff_states_iter_size / sizeof(gemm_acc_t));
-            zero_ws(ithr, nthr, ws_diff_states_iter_c,
-                    rnn.ws_diff_states_iter_c_size / sizeof(gemm_acc_t));
+            if (this->pd()->cell_kind() == alg_kind::vanilla_lstm)
+                zero_ws(ithr, nthr, ws_diff_states_iter_c,
+                        rnn.ws_diff_states_iter_c_size / sizeof(gemm_acc_t));
         });
     }
 
@@ -1198,15 +1241,21 @@ void _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>::execute_(
     }
 
     // run the execution on the grid
-    (this->*grid_computation)(rnn, ptr_wei_layer, ptr_wei_iter,
-            ptr_wei_projection, weights_peephole, ptr_bias, src_layer,
+    (this->*grid_computation)(
+            rnn, ptr_wei_layer, ptr_wei_iter, ptr_wei_projection,
+            weights_peephole, w_projection_comp, ptr_bias, src_layer,
             (const src_iter_t *)src_iter, src_iter_c, (dst_layer_t *)dst_layer,
             (dst_iter_t *)dst_iter, dst_iter_c, ws_states_layer, ws_states_iter,
             ws_states_iter_c, ws_diff_states_layer, ws_diff_states_iter,
             ws_diff_states_iter_c, ws_gates, ws_ht, ws_grid, scratch_gates,
             scratch_ht, scratch_diff_ht, scratch_cell, diff_weights_layer,
             diff_weights_iter, diff_weights_projection, diff_weights_peephole,
-            diff_bias);
+            diff_bias, amx_scratchpad
+#if DNNL_X64
+            ,
+            addr_batch_global
+#endif
+    );
 
     // Finally we copy the results to the result buffers
     if (!(rnn.skip_dst_layer_copy() && rnn.is_fwd)) {
@@ -1234,33 +1283,43 @@ void _ref_rnn_common_t<aprop, src_type, weights_type, acc_type>::execute_(
 
 /* Fix for MSVS warning C4661 */
 template <>
-rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution);
+rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_ref);
+template <>
+rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_brgemm);
 template <>
 rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru);
 template <>
 rnn_cell_execution_sig(ref_rnn_fwd_f32_t::cell_execution_gru_lbr);
 template <>
-rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution);
+rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_ref);
+template <>
+rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_brgemm);
 template <>
 rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru);
 template <>
 rnn_cell_execution_sig(ref_rnn_bwd_f32_t::cell_execution_gru_lbr);
 
 template <>
-rnn_cell_execution_sig(ref_rnn_fwd_bf16_t::cell_execution);
+rnn_cell_execution_sig(ref_rnn_fwd_bf16_t::cell_execution_ref);
+template <>
+rnn_cell_execution_sig(ref_rnn_fwd_bf16_t::cell_execution_brgemm);
 template <>
 rnn_cell_execution_sig(ref_rnn_fwd_bf16_t::cell_execution_gru);
 template <>
 rnn_cell_execution_sig(ref_rnn_fwd_bf16_t::cell_execution_gru_lbr);
 template <>
-rnn_cell_execution_sig(ref_rnn_bwd_bf16_t::cell_execution);
+rnn_cell_execution_sig(ref_rnn_bwd_bf16_t::cell_execution_ref);
+template <>
+rnn_cell_execution_sig(ref_rnn_bwd_bf16_t::cell_execution_brgemm);
 template <>
 rnn_cell_execution_sig(ref_rnn_bwd_bf16_t::cell_execution_gru);
 template <>
 rnn_cell_execution_sig(ref_rnn_bwd_bf16_t::cell_execution_gru_lbr);
 
 template <>
-rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution);
+rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_ref);
+template <>
+rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_brgemm);
 template <>
 rnn_cell_execution_sig(ref_rnn_fwd_u8s8_t::cell_execution_gru);
 template <>

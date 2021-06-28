@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -249,6 +249,27 @@ inline U soft_relu_bwd(T dd, T s) {
     return (U)(dd * logistic_fwd<float>(s));
 }
 
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U logsigmoid_fwd(T s) {
+    return -soft_relu_fwd(-s);
+}
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U logsigmoid_bwd(T dd, T s) {
+    return soft_relu_bwd(dd, -s);
+}
+
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U mish_fwd(T s) {
+    return s * tanh_fwd(soft_relu_fwd(s));
+}
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U mish_bwd(T dd, T s) {
+    const float tanh = tanh_fwd(soft_relu_fwd(s));
+    const float srelu_bwd = soft_relu_bwd(1.0f, s);
+    const float derivative = tanh + s * srelu_bwd * (1 - ::powf(tanh, 2.0f));
+    return dd * derivative;
+}
+
 template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
 inline U swish_fwd(T s, A alpha) {
@@ -314,6 +335,23 @@ inline U clip_bwd(T dd, T s, A alpha, A beta) {
 
 template <typename T, typename A,
         typename U = typename utils::remove_reference<T>::type>
+inline U clip_v2_fwd(T s, A alpha, A beta) {
+    s = s > alpha ? s : (U)alpha;
+    return s < beta ? s : (U)beta;
+}
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U clip_v2_bwd(T dd, T s, A alpha, A beta) {
+    return dd * (alpha < s && s < beta ? 1 : 0);
+}
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
+inline U clip_v2_bwd_use_dst(T dd, T d, A alpha, A beta) {
+    return clip_v2_bwd(dd, d, alpha, beta);
+}
+
+template <typename T, typename A,
+        typename U = typename utils::remove_reference<T>::type>
 inline U pow_fwd(T s, A alpha, A beta) {
     return (U)(alpha * ::powf((float)s, beta));
 }
@@ -332,7 +370,6 @@ inline U gelu_erf_fwd(T s) {
     float v = s * sqrt_2_over_2;
     return (U)(0.5f * s * (1.f + ::erff(v)));
 }
-
 template <typename T, typename U = typename utils::remove_reference<T>::type>
 inline U gelu_erf_bwd(T dd, T s) {
     const float two_over_sqrt_pi = 1.12837922573089599609375f;
@@ -340,6 +377,16 @@ inline U gelu_erf_bwd(T dd, T s) {
     float v = s * sqrt_2_over_2;
     return (U)(dd * 0.5f
             * (1.f + ::erff(v) + v * two_over_sqrt_pi * ::expf(-v * v)));
+}
+
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U hardswish_fwd(T s) {
+    return (s / 6.f) * bounded_relu_fwd(s + 3.f, 6.f);
+}
+template <typename T, typename U = typename utils::remove_reference<T>::type>
+inline U hardswish_bwd(T dd, T s) {
+    return (s < 3.f && s > -3.f ? dd * (2 * s + 3.f) / 6.f
+                                : s >= 3.f ? dd : 0.f);
 }
 
 inline bool is_eltwise_ok(
@@ -350,12 +397,14 @@ inline bool is_eltwise_ok(
     const bool eltwise_use_src
             = one_of(alg, eltwise_relu, eltwise_tanh, eltwise_elu,
                       eltwise_square, eltwise_abs, eltwise_sqrt, eltwise_linear,
-                      eltwise_bounded_relu, eltwise_soft_relu, eltwise_logistic,
-                      eltwise_exp, eltwise_gelu_tanh, eltwise_swish,
-                      eltwise_log, eltwise_clip, eltwise_pow, eltwise_gelu_erf,
-                      eltwise_round)
+                      eltwise_bounded_relu, eltwise_soft_relu,
+                      eltwise_logsigmoid, eltwise_mish, eltwise_logistic,
+                      eltwise_exp, eltwise_gelu_tanh, eltwise_hardswish,
+                      eltwise_swish, eltwise_log, eltwise_clip, eltwise_clip_v2,
+                      eltwise_pow, eltwise_gelu_erf, eltwise_round)
             && IMPLICATION(alg == eltwise_bounded_relu, alpha >= 0)
-            && IMPLICATION(alg == eltwise_clip, beta >= alpha)
+            && IMPLICATION(
+                    one_of(alg, eltwise_clip, eltwise_clip_v2), beta >= alpha)
             && IMPLICATION(alg == eltwise_round, dt == dnnl_f32)
             && IMPLICATION(one_of(dt, dnnl_s32, dnnl_s8, dnnl_u8),
                     one_of(alg, eltwise_relu, eltwise_linear));
@@ -365,10 +414,13 @@ inline bool is_eltwise_ok(
                       eltwise_tanh_use_dst_for_bwd, eltwise_elu_use_dst_for_bwd,
                       eltwise_sqrt_use_dst_for_bwd,
                       eltwise_logistic_use_dst_for_bwd,
-                      eltwise_exp_use_dst_for_bwd)
+                      eltwise_exp_use_dst_for_bwd,
+                      eltwise_clip_v2_use_dst_for_bwd)
             && IMPLICATION(one_of(alg, eltwise_relu_use_dst_for_bwd,
                                    eltwise_elu_use_dst_for_bwd),
-                    alpha >= 0);
+                    alpha >= 0)
+            && IMPLICATION(
+                    alg == eltwise_clip_v2_use_dst_for_bwd, beta >= alpha);
 
     return eltwise_use_src || eltwise_use_dst;
 }

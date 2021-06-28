@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -168,7 +168,7 @@ T gelu_erf_bwd(T dd, T s) {
             * (1.f + ::erff(v) + v * two_over_sqrt_pi * ::expf(-v * v)));
 }
 
-struct eltwise_test_params {
+struct eltwise_test_params_t {
     algorithm alg_kind;
     memory::format_tag data_format;
     memory::format_tag diff_format;
@@ -187,7 +187,7 @@ memory::dim n_elems(const memory::desc &md) {
 }
 
 template <typename data_t>
-void check_eltwise_fwd(const eltwise_test_params &p, const memory::desc &md,
+void check_eltwise_fwd(const eltwise_test_params_t &p, const memory::desc &md,
         const memory &src, const memory &dst) {
     auto src_data = map_memory<data_t>(src);
     auto dst_data = map_memory<data_t>(dst);
@@ -221,7 +221,7 @@ void check_eltwise_fwd(const eltwise_test_params &p, const memory::desc &md,
 }
 
 template <typename data_t>
-void compare_eltwise_fwd(const eltwise_test_params &p, const memory::desc &md,
+void compare_eltwise_fwd(const eltwise_test_params_t &p, const memory::desc &md,
         const memory &dst, const memory &ref_dst) {
     data_t eps;
     if (data_traits<data_t>::data_type == memory::data_type::s8
@@ -244,7 +244,7 @@ void compare_eltwise_fwd(const eltwise_test_params &p, const memory::desc &md,
 }
 
 template <typename data_t>
-void check_eltwise_bwd(const eltwise_test_params &p, const memory::desc &md,
+void check_eltwise_bwd(const eltwise_test_params_t &p, const memory::desc &md,
         const memory &src, const memory &diff_dst, const memory &diff_src) {
     auto src_data = map_memory<data_t>(src);
     auto diff_dst_data = map_memory<data_t>(diff_dst);
@@ -326,18 +326,18 @@ void check_eltwise_bwd(const eltwise_test_params &p, const memory::desc &md,
 }
 
 template <typename data_t>
-class eltwise_test : public ::testing::TestWithParam<eltwise_test_params> {
+class eltwise_test_t : public ::testing::TestWithParam<eltwise_test_params_t> {
 private:
     memory src;
     std::shared_ptr<memory::desc> data_desc;
     eltwise_forward::primitive_desc eltwise_prim_desc;
-    eltwise_test_params p;
+    eltwise_test_params_t p;
     engine eng;
     stream strm;
     memory::data_type data_type;
 
 protected:
-    virtual void SetUp() {
+    void SetUp() override {
         data_type = data_traits<data_t>::data_type;
         SKIP_IF(unsupported_data_type(data_type),
                 "Engine does not support this data type.");
@@ -348,12 +348,32 @@ protected:
                         && (data_type == memory::data_type::s32
                                 || data_type == memory::data_type::s8),
                 "oneDNN only supports relu w/ slope=0 for integers");
+        SKIP_IF_CUDA(p.alg_kind != algorithm::eltwise_relu
+                        && p.alg_kind != algorithm::eltwise_bounded_relu
+                        && p.alg_kind != algorithm::eltwise_tanh
+                        && p.alg_kind != algorithm::eltwise_elu
+                        && p.alg_kind != algorithm::eltwise_logistic,
+                "Unsupported algorithm type for CUDA");
+        SKIP_IF_CUDA(p.alg_kind == algorithm::eltwise_relu && p.alpha != 0.0,
+                "DNNL only supports relu w/ slope=0 for integers");
+        SKIP_IF_CUDA(!cuda_check_format_tag(p.data_format),
+                "Unsupported format tag");
+        SKIP_IF_CUDA(!cuda_check_format_tag(p.diff_format),
+                "Unsupported format tag");
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
 
+    bool cuda_check_format_tag(memory::format_tag tag) {
+        // Blocking is not supported by cuDNN
+        return (tag != memory::format_tag::aBcd8b
+                && tag != memory::format_tag::aBcd16b
+                && tag != memory::format_tag::aBcde8b
+                && tag != memory::format_tag::aBcde16b);
+    }
+
     void Test() {
-        p = ::testing::TestWithParam<eltwise_test_params>::GetParam();
+        p = ::testing::TestWithParam<eltwise_test_params_t>::GetParam();
 
         eng = get_test_engine();
         strm = make_stream(eng);
@@ -367,9 +387,9 @@ protected:
 
     void Forward() {
         data_desc.reset(new memory::desc(p.dims, data_type, p.data_format));
-        src = memory(*data_desc, eng);
-        memory dst(*data_desc, eng);
-        memory ref_dst(*data_desc, eng);
+        src = test::make_memory(*data_desc, eng);
+        auto dst = test::make_memory(*data_desc, eng);
+        auto ref_dst = test::make_memory(*data_desc, eng);
 
         data_t data_median = data_t(0);
         data_t data_deviation = (p.alg_kind == algorithm::eltwise_elu
@@ -404,9 +424,15 @@ protected:
     }
 
     void Backward() {
+        SKIP_IF_CUDA(p.alg_kind != algorithm::eltwise_relu
+                        && p.alg_kind != algorithm::eltwise_bounded_relu,
+                "Unsupported algorithm");
+        SKIP_IF_CUDA(p.diff_format != p.data_format,
+                "CUDA does not support different data formats for data and "
+                "diff vectors");
         memory::desc diff_data_desc(p.dims, data_type, p.diff_format);
-        memory diff_src(diff_data_desc, eng);
-        memory diff_dst(diff_data_desc, eng);
+        auto diff_src = test::make_memory(diff_data_desc, eng);
+        auto diff_dst = test::make_memory(diff_data_desc, eng);
 
         data_t data_median = data_t(0);
         data_t data_deviation = p.alg_kind == algorithm::eltwise_elu
@@ -442,11 +468,11 @@ protected:
     }
 };
 
-using eltwise_test_f16 = eltwise_test<float16_t>;
-using eltwise_test_bf16 = eltwise_test<bfloat16_t>;
-using eltwise_test_f32 = eltwise_test<float>;
-using eltwise_test_s32 = eltwise_test<int>;
-using eltwise_test_s8 = eltwise_test<int8_t>;
+using eltwise_test_f16 = eltwise_test_t<float16_t>;
+using eltwise_test_bf16 = eltwise_test_t<bfloat16_t>;
+using eltwise_test_f32 = eltwise_test_t<float>;
+using eltwise_test_s32 = eltwise_test_t<int>;
+using eltwise_test_s8 = eltwise_test_t<int8_t>;
 
 TEST_P(eltwise_test_f16, TestsEltwise) {}
 
@@ -465,7 +491,7 @@ TEST_P(eltwise_test_s8, TestsEltwise) {}
     { __VA_ARGS__ }
 
 #define PARAMS(alg, data, diff_data, alpha, beta, ...) \
-    eltwise_test_params { \
+    eltwise_test_params_t { \
         algorithm::alg, EXPAND_FORMATS(data), EXPAND_FORMATS(diff_data), \
                 alpha, beta, EXPAND_DIMS(__VA_ARGS__) \
     }
@@ -531,7 +557,7 @@ INST_TEST_CASE(SimpleZeroDim,
         PARAMS_ALL_ALG_SDPART(nCdhw16c, nCdhw16c, 0.1f, 0.2f, 4, 0, 2, 2, 2));
 
 #define CASE_EF(alg, d0, d1, d2, d3) \
-    eltwise_test_params { \
+    eltwise_test_params_t { \
         algorithm::eltwise_##alg, EXPAND_FORMATS(nchw), EXPAND_FORMATS(nchw), \
                 0.f, 0.f, {d0, d1, d2, d3}, true, dnnl_invalid_arguments \
     }

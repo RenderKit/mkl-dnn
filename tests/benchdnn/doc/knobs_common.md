@@ -3,6 +3,11 @@
 **Benchdnn** drivers support a set of options available for every driver.
 The following common options are supported:
 
+* --allow-enum-tags-only=`BOOL` -- Instructs the driver to validate format tags
+  against the documented tags from `dnnl_format_tag_t` enumeration only.  When
+  BOOL is `true` (the default), the only allowed format tags are the ones from
+  `dnnl_format_tag_t` enumeration.
+
 * --attr-scratchpad=`MODE` -- Specifies the scratchpad mode to be used for
   benchmarking. MODE values can be `library` (the default) or `user`. Refer to
   [scratchpad primitive attribute](https://oneapi-src.github.io/oneDNN/dev_guide_attributes_scratchpad.html)
@@ -21,8 +26,21 @@ The following common options are supported:
   reproducer line omitting options and problem descriptor entries which values
   are set to their defaults.
 
-* --engine=`ENGINE` -- Specifies an engine kind ENGINE to be used for
-  benchmarking. ENGINE values can be `cpu` (the default) or `gpu`.
+* --engine=`KIND[:INDEX]` -- Specifies an engine kind KIND to be used for
+  benchmarking. KIND values can be `cpu` (the default) or `gpu`. Optional
+  non-negative integer value of INDEX may be specified followed by colon `:`.
+  E.g. `--engine=gpu:1`, which means to use second GPU device. Enumeration
+  follows the library enumeration identification. It may be checked up with
+  DNNL_VERBOSE output. By default INDEX is `0`. If index is greater or equal
+  to the number of devices of requested kind discovered on a system, runtime
+  error will occur.
+
+* --cpu-isa-hints=`HINTS` -- Specifies the ISA specific hints to the CPU engine.
+  `HINTS` values can be `none` (the default), `no_hints` or `prefer_ymm`. `none`
+  value respects the `DNNL_CPU_ISA_HINTS` environment variable setting, while
+  others will override it with chosen value. The settings other than `none` take
+  place immediately after the parsing and subsequent attempts to set the hints
+  will result in runtime error.
 
 * --mem-check=`BOOL` -- Instructs the driver to perform a device RAM capability
   check if the problem fits the device. When BOOL is `true` (the default), the
@@ -43,6 +61,13 @@ The following common options are supported:
   STR is empty (the default), the driver behavior is not modified. STR supports
   several patterns to be matched against through `:` delimiter between patterns.
   E.g. `--skip-impl=ref:gemm`.
+
+* --start=`N` -- Specifies the test index to start testing. All tests before
+  the index are skipped.
+
+* --sycl-memory-kind=`KIND` -- Specifies the memory kind to test with DPC++
+  engines. KIND values can be `usm` (default), `buffer`, `usm_device` (to use
+  malloc_device) or `usm_shared` (to use malloc_shared).
 
 * -v`N`, --verbose=`N` -- Specifies the driver verbose level. It prints
   additional information depending on a level N. N is a non-negative integer

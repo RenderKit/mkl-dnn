@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -98,35 +98,50 @@ struct memory_desc_wrapper : public c_compatible {
     size_t data_type_size() const { return types::data_type_size(data_type()); }
 
     /** return the size of data type of additional buffer */
-    size_t additional_buffer_data_size() const {
-        if (extra().flags & memory_extra_flags::compensation_conv_s8s8)
+    size_t additional_buffer_data_size(uint64_t flag_select) const {
+        if (flag_select & memory_extra_flags::compensation_conv_s8s8)
             return sizeof(int32_t);
-        if (extra().flags & memory_extra_flags::gpu_rnn_u8s8_compensation)
+        if (flag_select & memory_extra_flags::rnn_u8s8_compensation)
             return sizeof(float);
+        if (flag_select & memory_extra_flags::compensation_conv_asymmetric_src)
+            return sizeof(int32_t);
         return 0;
     }
 
     /** return true if memory format has additional buffer */
     bool is_additional_buffer() const {
+        using namespace memory_extra_flags;
         return (extra().flags
-                & (memory_extra_flags::compensation_conv_s8s8
-                        | memory_extra_flags::gpu_rnn_u8s8_compensation));
+                & (compensation_conv_s8s8 | rnn_u8s8_compensation
+                        | compensation_conv_asymmetric_src));
     }
 
-    /** returns the size of additional buffer */
+    /** returns the size of the appended buffer when the memory descriptor
+     * requires extra space to hold compensation data */
     size_t additional_buffer_size() const {
-        if (extra().flags
-                & (memory_extra_flags::compensation_conv_s8s8
-                        | memory_extra_flags::gpu_rnn_u8s8_compensation)) {
-            int cmask = extra().compensation_mask;
-            assert(cmask == 1 || cmask == 3 || cmask == 27);
+        using namespace memory_extra_flags;
+
+        auto calculate_size = [=](int cmask, size_t buff_data_size) {
+            assert(cmask == 1 || cmask == 3 || cmask == 13 || cmask == 27);
             dim_t prod = 1;
             for (int d = 0; d < ndims(); ++d)
                 if (cmask & (1 << d)) prod *= padded_dims()[d];
-            return prod * additional_buffer_data_size();
-        }
+            return (size_t)prod * buff_data_size;
+        };
 
-        return 0;
+        size_t buff_size = 0;
+        const uint64_t comp_flags
+                = compensation_conv_s8s8 | rnn_u8s8_compensation;
+        if (extra().flags & comp_flags) {
+            buff_size += calculate_size(extra().compensation_mask,
+                    additional_buffer_data_size(comp_flags));
+        }
+        if (extra().flags & compensation_conv_asymmetric_src) {
+            buff_size += calculate_size(extra().asymm_compensation_mask,
+                    additional_buffer_data_size(
+                            compensation_conv_asymmetric_src));
+        }
+        return buff_size;
     }
 
     /** returns the size required to store described memory
@@ -151,9 +166,12 @@ struct memory_desc_wrapper : public c_compatible {
             const auto &bd = blocking_desc();
 
             size_t max_size = 0;
-            for (int d = 0; d < ndims(); ++d)
+            for (int d = 0; d < ndims(); ++d) {
+                dim_t strided_pdim = padded_dims()[d] / blocks[d];
+                dim_t effective_stride = strided_pdim == 1 ? 1 : bd.strides[d];
                 max_size = nstl::max<size_t>(
-                        max_size, padded_dims()[d] / blocks[d] * bd.strides[d]);
+                        max_size, strided_pdim * effective_stride);
+            }
 
             if (max_size == 1 && bd.inner_nblks != 0) {
                 max_size = utils::array_product(bd.inner_blks, bd.inner_nblks);
@@ -163,11 +181,19 @@ struct memory_desc_wrapper : public c_compatible {
         }
     }
 
+    /** returns the true if some dim is broadcasted (stride == 0) */
+    bool has_broadcast() const {
+        const auto &bd = blocking_desc();
+        for (int d = 0; d < ndims(); d++)
+            if (bd.strides[d] == 0) return true;
+        return false;
+    }
+
     /** returns true if data is dense in memory */
     bool is_dense(bool with_padding = false) const {
         if (utils::one_of(format_kind(), format_kind::undef, format_kind::any))
             return false;
-        if (has_runtime_dims_or_strides()) return false;
+        if (has_runtime_dims_or_strides() || has_broadcast()) return false;
         return nelems(with_padding) * data_type_size() == size();
     }
 
@@ -323,21 +349,10 @@ struct memory_desc_wrapper : public c_compatible {
      * a scalar \param l_offset. if \param is_pos_padded is true, \param
      * l_offset represents logical offset in already padded area */
     dim_t off_l(dim_t l_offset, bool is_pos_padded = false) const {
-        assert(is_blocking_desc());
-        dims_t pos;
-        for (int rd = 0; rd < ndims(); ++rd) {
-            const int d = ndims() - 1 - rd;
-            const dim_t cur_dim = is_pos_padded ? padded_dims()[d] : dims()[d];
-            /* switch to faster 32-bit division when possible. */
-            if (l_offset <= INT32_MAX && cur_dim <= INT32_MAX) {
-                pos[d] = (int32_t)l_offset % (int32_t)cur_dim;
-                l_offset = (int32_t)l_offset / (int32_t)cur_dim;
-            } else {
-                pos[d] = l_offset % cur_dim;
-                l_offset /= cur_dim;
-            }
-        }
-        return off_v(pos, is_pos_padded);
+        dims_t dims_pos;
+        const auto &cur_dims = is_pos_padded ? padded_dims() : dims();
+        utils::l_dims_by_l_offset(dims_pos, l_offset, cur_dims, ndims());
+        return off_v(dims_pos, is_pos_padded);
     }
 
     /** returns physical offset by logical one. logical offset is represented by

@@ -21,7 +21,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 #define DEBUG_TEST_MEMORY_DESC_OPS_CPP 0
 
@@ -86,6 +86,26 @@ struct memory_desc_proxy_t {
 
 enum test_direction_t { BI_DIRECTION = 0 /* default */, UNI_DIRECTION = 1 };
 
+namespace properties {
+
+using fmt = dnnl::memory::format_tag;
+
+TEST(memory_desc_properties_test, TestMemoryDescSize) {
+    auto md1_simple = memory_desc_proxy_t {{1, 1, 1, 1}, {1, 1, 1, 1}}.md;
+    auto md1_strided = memory_desc_proxy_t {{1, 1, 1, 1}, {8, 4, 2, 1}}.md;
+    auto md2_blocked = memory_desc_proxy_t {{1, 4, 1, 1}, fmt::nChw8c}.md;
+
+    ASSERT_EQ(md1_simple, md1_strided);
+    ASSERT_NE(md2_blocked, md1_simple);
+    ASSERT_NE(md2_blocked, md1_strided);
+
+    ASSERT_EQ(md1_simple.get_size(), 1 * sizeof(float));
+    ASSERT_EQ(md1_strided.get_size(), 1 * sizeof(float));
+    ASSERT_EQ(md2_blocked.get_size(), 8 * sizeof(float));
+}
+
+} // namespace properties
+
 namespace reshape {
 
 struct params_t {
@@ -95,7 +115,7 @@ struct params_t {
     dnnl_status_t expected_status;
 };
 
-class reshape_test : public ::testing::TestWithParam<params_t> {
+class reshape_test_t : public ::testing::TestWithParam<params_t> {
 protected:
     void Test(const memory::desc &in_md, const memory::desc &out_md) {
         memory::desc get_out_md = in_md.reshape(out_md.dims());
@@ -107,7 +127,7 @@ protected:
         ASSERT_EQ(get_out_md, out_md);
     }
 };
-TEST_P(reshape_test, TestsReshape) {
+TEST_P(reshape_test_t, TestsReshape) {
     params_t p = ::testing::TestWithParam<decltype(p)>::GetParam();
     catch_expected_failures([=]() { Test(p.in.md, p.out.md); },
             p.expected_status != dnnl_success, p.expected_status);
@@ -184,9 +204,9 @@ auto cases_generic = ::testing::Values(
         );
 // clang-format on
 
-INSTANTIATE_TEST_SUITE_P(TestReshapeEF, reshape_test, cases_expect_to_fail);
-INSTANTIATE_TEST_SUITE_P(TestReshapeZeroDim, reshape_test, cases_zero_dim);
-INSTANTIATE_TEST_SUITE_P(TestReshapeOK, reshape_test, cases_generic);
+INSTANTIATE_TEST_SUITE_P(TestReshapeEF, reshape_test_t, cases_expect_to_fail);
+INSTANTIATE_TEST_SUITE_P(TestReshapeZeroDim, reshape_test_t, cases_zero_dim);
+INSTANTIATE_TEST_SUITE_P(TestReshapeOK, reshape_test_t, cases_generic);
 
 } // namespace reshape
 
@@ -200,7 +220,7 @@ struct params_t {
     dnnl_status_t expected_status;
 };
 
-class permute_axes_test : public ::testing::TestWithParam<params_t> {
+class permute_axes_test_t : public ::testing::TestWithParam<params_t> {
 protected:
     void Test(const memory::desc &in_md, const memory::desc &out_md,
             const std::vector<int> &perm) {
@@ -214,7 +234,7 @@ protected:
         ASSERT_EQ(get_out_md, out_md);
     }
 };
-TEST_P(permute_axes_test, TestsPermuteAxes) {
+TEST_P(permute_axes_test_t, TestsPermuteAxes) {
     params_t p = ::testing::TestWithParam<decltype(p)>::GetParam();
     catch_expected_failures([=]() { Test(p.in.md, p.out.md, p.perm); },
             p.expected_status != dnnl_success, p.expected_status);
@@ -261,8 +281,8 @@ auto cases_generic = ::testing::Values(
 // clang-format on
 
 INSTANTIATE_TEST_SUITE_P(
-        TestPermuteAxesEF, permute_axes_test, cases_expect_to_fail);
-INSTANTIATE_TEST_SUITE_P(TestPermuteAxesOK, permute_axes_test, cases_generic);
+        TestPermuteAxesEF, permute_axes_test_t, cases_expect_to_fail);
+INSTANTIATE_TEST_SUITE_P(TestPermuteAxesOK, permute_axes_test_t, cases_generic);
 
 } // namespace permute_axes
 

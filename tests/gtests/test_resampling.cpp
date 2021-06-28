@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -28,7 +28,7 @@ struct test_resampling_desc_t {
     float fd, fh, fw;
 };
 
-struct resampling_test_params {
+struct resampling_test_params_t {
     prop_kind aprop_kind;
     algorithm aalgorithm;
     memory::format_tag src_format;
@@ -38,29 +38,25 @@ struct resampling_test_params {
     dnnl_status_t expected_status;
 };
 
-float linear_map(memory::dim y, float f) {
-    volatile float s = (y + 0.5f)
-            * (1.f / f); // prevent Intel Compiler optimizing operation for better accuracy
+float linear_map(memory::dim y, memory::dim y_max, memory::dim x_max) {
+    const float s = (y + 0.5f) * x_max / y_max;
     return s - 0.5f;
 }
 memory::dim left_edge(memory::dim y, memory::dim y_max, memory::dim x_max) {
-    return std::max(
-            (int64_t)floor(linear_map(y, (float)y_max / x_max)), (int64_t)0);
+    return std::max((int64_t)floor(linear_map(y, y_max, x_max)), (int64_t)0);
 }
 memory::dim right_edge(memory::dim y, memory::dim y_max, memory::dim x_max) {
-    return std::min(
-            (int64_t)ceil(linear_map(y, (float)y_max / x_max)), x_max - 1);
+    return std::min((int64_t)ceil(linear_map(y, y_max, x_max)), x_max - 1);
 }
 memory::dim nearest_edge(memory::dim y, memory::dim y_max, memory::dim x_max) {
-    return std::round(linear_map(y, (float)y_max / x_max));
+    return std::round(linear_map(y, y_max, x_max));
 }
 float linear_weight(memory::dim y, memory::dim y_max, memory::dim x_max) {
-    return fabs(
-            linear_map(y, (float)y_max / x_max) - left_edge(y, y_max, x_max));
+    return fabs(linear_map(y, y_max, x_max) - left_edge(y, y_max, x_max));
 }
 
 template <typename data_t>
-void compute_ref_resampling_fwd(const resampling_test_params &p,
+void compute_ref_resampling_fwd(const resampling_test_params_t &p,
         const memory &src_m, const memory &dst_m) {
     auto src_data = map_memory<data_t>(src_m);
     auto dst_data = map_memory<data_t>(dst_m);
@@ -125,7 +121,7 @@ void compute_ref_resampling_fwd(const resampling_test_params &p,
 }
 
 template <typename data_t>
-void compute_ref_resampling_bwd(const resampling_test_params &p,
+void compute_ref_resampling_bwd(const resampling_test_params_t &p,
         const memory &diff_dst_m, const memory &diff_src_m) {
     auto diff_src_data = map_memory<data_t>(diff_src_m);
     auto diff_dst_data = map_memory<data_t>(diff_dst_m);
@@ -206,21 +202,32 @@ void compute_ref_resampling_bwd(const resampling_test_params &p,
 }
 
 template <typename data_t>
-class resampling_test
-    : public ::testing::TestWithParam<resampling_test_params> {
+class resampling_test_t
+    : public ::testing::TestWithParam<resampling_test_params_t> {
 private:
     std::shared_ptr<test_memory> src, dst, diff_src, diff_dst;
     std::shared_ptr<memory::desc> src_desc, dst_desc;
     std::vector<float> factors;
     resampling_forward::primitive_desc resampling_pd;
 
-    resampling_test_params p;
+    resampling_test_params_t p;
     engine eng;
     stream strm;
 
 protected:
-    virtual void SetUp() {
+    bool cuda_supported_format_tag(memory::format_tag tag) {
+        return impl::utils::one_of(
+                tag, dnnl_abc, dnnl_abcd, dnnl_acb, dnnl_acdb);
+    }
+    void SetUp() override {
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
+        SKIP_IF_CUDA(p.aalgorithm == algorithm::resampling_nearest,
+                "nearet algorithm is not supported for cudnn backend");
+        SKIP_IF_CUDA(p.ndims == 5,
+                "cudnn resampling backend does not support 5d tensor");
+        SKIP_IF_CUDA(!cuda_supported_format_tag(p.src_format),
+                "Unsupported format tag");
+
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
@@ -280,9 +287,9 @@ protected:
                     resampling_pd.dst_desc(), resampling_pd_no_dst.dst_desc());
         }
 
-        memory src(resampling_pd.src_desc(), eng);
-        memory dst(resampling_pd.dst_desc(), eng);
-        memory dst_ref(resampling_pd.dst_desc(), eng);
+        auto src = test::make_memory(resampling_pd.src_desc(), eng);
+        auto dst = test::make_memory(resampling_pd.dst_desc(), eng);
+        auto dst_ref = test::make_memory(resampling_pd.dst_desc(), eng);
 
         fill_data<data_t>(src.get_desc().get_size() / sizeof(data_t), src);
         check_zero_tail<data_t>(1, src);
@@ -305,9 +312,12 @@ protected:
         auto resampling_bwd_pd = resampling_backward::primitive_desc(
                 resampling_bwd_desc, eng, resampling_pd);
 
-        memory diff_src(resampling_bwd_pd.diff_src_desc(), eng);
-        memory diff_dst(resampling_bwd_pd.diff_dst_desc(), eng);
-        memory diff_src_ref(resampling_bwd_pd.diff_src_desc(), eng);
+        auto diff_src
+                = test::make_memory(resampling_bwd_pd.diff_src_desc(), eng);
+        auto diff_dst
+                = test::make_memory(resampling_bwd_pd.diff_dst_desc(), eng);
+        auto diff_src_ref
+                = test::make_memory(resampling_bwd_pd.diff_src_desc(), eng);
 
         fill_data<data_t>(
                 diff_dst.get_desc().get_size() / sizeof(data_t), diff_dst);
@@ -327,7 +337,7 @@ protected:
     }
 };
 
-using resampling_test_float = resampling_test<float>;
+using resampling_test_float = resampling_test_t<float>;
 
 #define EXPAND_SIZES_3D(...) \
     5, { __VA_ARGS__ }
@@ -339,70 +349,90 @@ using resampling_test_float = resampling_test<float>;
 TEST_P(resampling_test_float, TestsResampleF32) {}
 
 INSTANTIATE_TEST_SUITE_P(TestResampleEF, resampling_test_float,
-        ::testing::Values(resampling_test_params {prop_kind::forward,
+        ::testing::Values(resampling_test_params_t {prop_kind::forward,
                 algorithm::resampling_linear, memory::format_tag::any,
                 EXPAND_SIZES_1D(1, 1, 5, 10, 2.f), true,
                 dnnl_invalid_arguments}));
 
 INSTANTIATE_TEST_SUITE_P(TestResampleForwardPlainLinear, resampling_test_float,
         ::testing::Values(
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(1, 1, 5, 10, 2.f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(1, 1, 525, 5, 0.01f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(13, 10, 7, 13, 1.99f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(10, 16, 7, 13, 1.9f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::nchw,
                         EXPAND_SIZES_2D(32, 10, 14, 7, 29, 5, 2.1f, 0.72f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::nhwc,
                         EXPAND_SIZES_2D(2, 14, 5, 5, 2, 3, 0.5f, 0.6f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ndhwc,
                         EXPAND_SIZES_3D(
                                 1, 16, 5, 10, 1, 10, 5, 1, 2.f, 0.5f, 1.f)}));
 
+GPU_INSTANTIATE_TEST_SUITE_P(TestResamplePlainLinear, resampling_test_float,
+        ::testing::Values(
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::ncw,
+                        EXPAND_SIZES_1D(1, 1, 5, 10, 2.f)},
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::ncw,
+                        EXPAND_SIZES_1D(1, 1, 525, 5, 0.01f)},
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::ncw,
+                        EXPAND_SIZES_1D(13, 10, 7, 13, 1.99f)},
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::ncw,
+                        EXPAND_SIZES_1D(10, 16, 7, 13, 1.9f)},
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::nchw,
+                        EXPAND_SIZES_2D(32, 10, 14, 7, 29, 5, 2.1f, 0.72f)},
+                resampling_test_params_t {prop_kind::forward,
+                        algorithm::resampling_linear, memory::format_tag::nhwc,
+                        EXPAND_SIZES_2D(2, 14, 5, 5, 2, 3, 0.5f, 0.6f)}));
 INSTANTIATE_TEST_SUITE_P(TestResampleForwardBlockedLinear,
         resampling_test_float,
         ::testing::Values(
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear,
                         memory::format_tag::nChw8c,
                         EXPAND_SIZES_2D(32, 16, 14, 6, 28, 3, 2, 0.5f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear,
                         memory::format_tag::nChw16c,
                         EXPAND_SIZES_2D(32, 10, 14, 7, 29, 5, 2.1f, 0.72f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_linear, memory::format_tag::ncdhw,
                         EXPAND_SIZES_3D(
                                 1, 1, 5, 10, 15, 10, 5, 7, 2.f, 0.5f, 0.5f)}));
 
 INSTANTIATE_TEST_SUITE_P(TestResampleForwardPlainNN, resampling_test_float,
         ::testing::Values(
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(10, 16, 5, 10, 2.f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(13, 10, 7, 13, 1.99f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest, memory::format_tag::ncw,
                         EXPAND_SIZES_1D(10, 16, 7, 13, 1.9f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest, memory::format_tag::nchw,
                         EXPAND_SIZES_2D(32, 10, 14, 7, 29, 5, 2.1f, 0.72f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest, memory::format_tag::nhwc,
                         EXPAND_SIZES_2D(64, 32, 5, 5, 2, 3, 0.5f, 0.6f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest,
                         memory::format_tag::ndhwc,
                         EXPAND_SIZES_3D(
@@ -410,15 +440,15 @@ INSTANTIATE_TEST_SUITE_P(TestResampleForwardPlainNN, resampling_test_float,
 
 INSTANTIATE_TEST_SUITE_P(TestResampleForwardBlockedNN, resampling_test_float,
         ::testing::Values(
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest,
                         memory::format_tag::nChw8c,
                         EXPAND_SIZES_2D(32, 16, 14, 6, 28, 3, 2, 0.5f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest,
                         memory::format_tag::nChw16c,
                         EXPAND_SIZES_2D(32, 10, 14, 7, 29, 5, 2.1f, 0.72f)},
-                resampling_test_params {prop_kind::forward,
+                resampling_test_params_t {prop_kind::forward,
                         algorithm::resampling_nearest,
                         memory::format_tag::nCdhw16c,
                         EXPAND_SIZES_3D(

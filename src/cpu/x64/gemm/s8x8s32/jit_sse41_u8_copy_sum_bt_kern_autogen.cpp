@@ -24,7 +24,9 @@ namespace cpu {
 namespace x64 {
 
 jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
-    : jit_generator(nullptr, U8_COPY_KERNEL_CODE_SIZE) {
+    : jit_generator(nullptr, U8_COPY_KERNEL_CODE_SIZE) {}
+
+void jit_sse41_u8_copy_sum_bt_kern::generate() {
 
 #ifndef _WIN32
 #define M rdi
@@ -39,7 +41,7 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
 #define A2 r8
 #define LDA3 r11
 
-#define ARG_BIAS 24 + stacksize + rsp
+#define ARG_BIAS (24 + stacksize + rsp)
 
 #else
 
@@ -138,13 +140,13 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         punpcklwd(xmm1, xmm3);
         punpcklqdq(xmm0, xmm1);
         pshufd(xmm6, xmm0, 0xd8);
-        pmovsxbw(xmm5, xmm6);
+        pmovzxbw(xmm5, xmm6);
         movhlps(xmm6, xmm6);
-        pmovsxbw(xmm6, xmm6);
+        pmovzxbw(xmm6, xmm6);
         phaddw(xmm5, xmm6);
         phaddw(xmm5, xmm5);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         movdqu(xword[B - 0x80], xmm0);
         sub(B, -16);
@@ -170,10 +172,10 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         punpcklbw(xmm0, xmm1);
         punpcklbw(xmm2, xmm3);
         punpcklwd(xmm0, xmm2);
-        pmovsxbw(xmm5, xmm0);
+        pmovzxbw(xmm5, xmm0);
         phaddw(xmm5, xmm5);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         movq(qword[B - 0x80], xmm0);
         sub(B, -8);
@@ -189,9 +191,9 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         add(A1, LDA);
         pinsrw(xmm1, eax, 0x0);
         punpcklbw(xmm0, xmm1);
-        pmovsxbw(xmm5, xmm0);
+        pmovzxbw(xmm5, xmm0);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         movd(dword[B - 0x80], xmm0);
         sub(B, -4);
@@ -202,7 +204,7 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         jle(l1d4, T_NEAR);
         mov(ax, word[A1 - 0x80]);
         pinsrw(xmm0, eax, 0x0);
-        pmovsxbd(xmm5, xmm0);
+        pmovzxbd(xmm5, xmm0);
         paddd(xmm7, xmm5);
         mov(word[B - 0x80], ax);
         sub(B, -2);
@@ -256,11 +258,11 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         mov(al, byte[A1 - 0x80]);
         add(A1, LDA);
         pinsrb(xmm0, eax, 0x7);
-        pmovsxbw(xmm5, xmm0);
+        pmovzxbw(xmm5, xmm0);
         phaddw(xmm5, xmm6);
         phaddw(xmm5, xmm5);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         movq(qword[B - 0x80], xmm0);
         sub(B, -8);
@@ -283,10 +285,10 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         mov(al, byte[A1 - 0x80]);
         add(A1, LDA);
         pinsrb(xmm0, eax, 0x3);
-        pmovsxbw(xmm5, xmm0);
+        pmovzxbw(xmm5, xmm0);
         phaddw(xmm5, xmm5);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         movd(dword[B - 0x80], xmm0);
         sub(B, -4);
@@ -302,9 +304,9 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         mov(al, byte[A1 - 0x80]);
         add(A1, LDA);
         pinsrb(xmm0, eax, 0x1);
-        pmovsxbw(xmm5, xmm0);
+        pmovzxbw(xmm5, xmm0);
         phaddw(xmm5, xmm5);
-        pmovsxwd(xmm5, xmm5);
+        pmovzxwd(xmm5, xmm5);
         paddd(xmm7, xmm5);
         mov(byte[B - 0x7f], al);
         sub(B, -2);
@@ -315,7 +317,7 @@ jit_sse41_u8_copy_sum_bt_kern::jit_sse41_u8_copy_sum_bt_kern()
         jle(l374, T_NEAR);
         mov(al, byte[A1 - 0x80]);
         pinsrw(xmm0, eax, 0x0);
-        pmovsxbd(xmm5, xmm0);
+        pmovzxbd(xmm5, xmm0);
         paddd(xmm7, xmm5);
         mov(byte[B - 0x80], al);
         sub(B, -1);

@@ -24,44 +24,46 @@ namespace impl {
 namespace cpu {
 namespace lnorm_utils {
 
-struct statistics_kernel_t {
-    static statistics_kernel_t *create(const layer_normalization_pd_t *pd);
-    virtual ~statistics_kernel_t() = default;
+template <data_type_t data_type>
+struct stat_and_data_kernel_t {
+    using data_t = typename prec_traits<data_type>::type;
+    static stat_and_data_kernel_t<data_type> *create(
+            const layer_normalization_pd_t *pd);
+    virtual ~stat_and_data_kernel_t() = default;
 
-    virtual void operator()(const float *src, float *mean, float *var) const;
+    virtual void operator()(const data_t *src, data_t *dst, const float *ss,
+            float *mean, float *var, const size_t block_size) const;
 
-protected:
-    statistics_kernel_t(const layer_normalization_pd_t *pd)
-        : C_(pd->norm_axis()) {}
-
-    int C_;
-};
-
-struct data_kernel_t {
-    static data_kernel_t *create(const layer_normalization_pd_t *pd);
-    virtual ~data_kernel_t() = default;
-
-    virtual void operator()(const float *src, float *dst, const float *ss,
-            const float *mean, const float *var) const;
+    virtual status_t create_kernel() { return status::success; }
 
 protected:
-    data_kernel_t(const layer_normalization_pd_t *pd)
+    stat_and_data_kernel_t(const layer_normalization_pd_t *pd)
         : C_(pd->norm_axis())
         , use_scaleshift_(pd->use_scaleshift())
+        , save_stats_(pd->is_training())
+        , calculate_stats_(!pd->stats_are_src())
         , eps_(pd->desc()->layer_norm_epsilon) {}
 
     int C_;
     bool use_scaleshift_;
+    bool save_stats_;
+    bool calculate_stats_;
     const float eps_;
 };
 
+template <data_type_t data_type>
 struct diff_ss_kernel_t {
-    static diff_ss_kernel_t *create(const layer_normalization_pd_t *pd);
+    using data_t = typename prec_traits<data_type>::type;
+    static diff_ss_kernel_t<data_type> *create(
+            const layer_normalization_pd_t *pd);
     virtual ~diff_ss_kernel_t() = default;
 
-    virtual void operator()(const float *src, const float *diff_dst,
+    virtual void operator()(const data_t *src, const data_t *diff_dst,
             float *diff_gamma, float *diff_beta, const float *mean,
-            const float *var) const;
+            const float *var, float *const inv_sqrtvar,
+            const size_t block_size) const;
+
+    virtual status_t create_kernel() { return status::success; }
 
 protected:
     diff_ss_kernel_t(const layer_normalization_pd_t *pd)
@@ -71,13 +73,18 @@ protected:
     const float eps_;
 };
 
+template <data_type_t data_type>
 struct diff_data_kernel_t {
-    static diff_data_kernel_t *create(const layer_normalization_pd_t *pd);
+    using data_t = typename prec_traits<data_type>::type;
+    static diff_data_kernel_t<data_type> *create(
+            const layer_normalization_pd_t *pd);
     virtual ~diff_data_kernel_t() = default;
 
-    virtual void operator()(const float *src, const float *diff_dst,
-            float *diff_src, const float *ss, const float *mean,
-            const float *var) const;
+    virtual void operator()(const data_t *src, const data_t *diff_dst,
+            data_t *diff_src, const float *ss, const float *mean,
+            float *const inv_sqrtvar, const size_t block_size) const;
+
+    virtual status_t create_kernel() { return status::success; }
 
 protected:
     diff_data_kernel_t(const layer_normalization_pd_t *pd)

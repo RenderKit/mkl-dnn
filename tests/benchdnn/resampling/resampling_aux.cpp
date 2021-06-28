@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "dnnl_common.hpp"
 #include "dnnl_debug.hpp"
@@ -70,16 +70,16 @@ int str2desc(desc_t *desc, const char *str) {
     const char *s = str;
     assert(s);
 
-#define CASE_NN(p, c) \
+#define CASE_NN(prb, c) \
     do { \
-        if (!strncmp(p, s, strlen(p))) { \
+        if (!strncmp(prb, s, strlen(prb))) { \
             ok = 1; \
-            s += strlen(p); \
+            s += strlen(prb); \
             char *end_s; \
             d.c = strtol(s, &end_s, 10); \
             s += (end_s - s); \
             if (d.c < 0) return FAIL; \
-            /* printf("@@@debug: %s: %ld\n", p, d. c); */ \
+            /* printf("@@@debug: %s: %ld\n", prb, d. c); */ \
         } \
     } while (0)
 #define CASE_N(c) CASE_NN(#c, c)
@@ -140,17 +140,19 @@ std::ostream &operator<<(std::ostream &s, const desc_t &d) {
     return s;
 }
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+std::ostream &operator<<(std::ostream &s, const prb_t &prb) {
     dump_global_params(s);
     settings_t def;
 
-    if (canonical || p.dir != def.dir[0]) s << "--dir=" << p.dir << " ";
-    if (canonical || p.dt != def.dt[0]) s << "--dt=" << p.dt << " ";
-    if (canonical || p.tag != def.tag[0]) s << "--tag=" << p.tag << " ";
-    if (canonical || p.alg != def.alg[0])
-        s << "--alg=" << alg2str(p.alg) << " ";
+    if (canonical || prb.dir != def.dir[0]) s << "--dir=" << prb.dir << " ";
+    if (canonical || prb.sdt != def.sdt[0]) s << "--sdt=" << prb.sdt << " ";
+    if (canonical || prb.ddt != def.ddt[0]) s << "--ddt=" << prb.ddt << " ";
+    if (canonical || prb.tag != def.tag[0]) s << "--tag=" << prb.tag << " ";
+    if (canonical || prb.alg != def.alg[0])
+        s << "--alg=" << alg2str(prb.alg) << " ";
 
-    s << static_cast<const desc_t &>(p);
+    s << prb.attr;
+    s << static_cast<const desc_t &>(prb);
 
     return s;
 }

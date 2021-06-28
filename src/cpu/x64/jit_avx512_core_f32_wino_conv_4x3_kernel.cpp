@@ -66,7 +66,7 @@ bool is_winograd_faster_than_direct(const jit_conv_winograd_conf_t &jcp) {
     /* Determines if current winograd implementation is faster than direct.
        Following conditions are empirical and based on performance data */
     unsigned int ncores_per_socket
-            = cpu.getNumCores(Xbyak::util::IntelCpuTopologyLevel::CoreLevel);
+            = cpu().getNumCores(Xbyak::util::IntelCpuTopologyLevel::CoreLevel);
     unsigned int nthreads = dnnl_get_max_threads();
 
     if (jcp.prop_kind == prop_kind::forward_inference) {
@@ -98,7 +98,7 @@ bool is_winograd_faster_than_direct(const jit_conv_winograd_conf_t &jcp) {
 /* assumes 512 bits registers */
 /* TODO: add support for strides */
 /* TODO: handle the prefetch distance automatically */
-typedef enum cache_t_ { L1, L2, L3 } cache_t;
+using cache_t = enum cache_t_ { L1, L2, L3 };
 
 template <typename data_t>
 struct prefetcher_t {
@@ -1390,7 +1390,7 @@ bool jit_avx512_core_f32_wino_conv_4x3_fwd_kernel::post_ops_ok(
     auto is_relu = [&](int idx) { return p.entry_[idx].is_relu(); };
     auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(); };
 
-    switch (p.len_) {
+    switch (p.len()) {
         case 0: return true; // no post_ops
         case 1: return is_relu(0) || is_sum(0); // relu or sum
         case 2:

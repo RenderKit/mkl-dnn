@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -118,9 +118,11 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
         }
 
         arg_usage_t arg_usage(int arg) const override {
+            if (arg == (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS))
+                return arg_usage_t::input;
 
-            if (utils::one_of(arg, DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS,
-                        DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS))
+            if (arg == (DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS)
+                    && attr_post_op_dw_inputs() > 1)
                 return arg_usage_t::input;
 
             return convolution_fwd_pd_t::arg_usage(arg);
@@ -186,8 +188,10 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
             if (po_op_iter == -1) return status::unimplemented;
 
             primitive_attr_t attr_1x1(*attr());
-            if (!attr_1x1.is_initialized()) return status::out_of_memory;
-            attr_1x1.post_ops_.len_ = po_op_iter;
+            // erase post-ops after fusion as they will be handled separately
+            auto &e = attr_1x1.post_ops_.entry_;
+            e.erase(e.begin() + po_op_iter, e.end());
+
             attr_1x1.set_scratchpad_mode(scratchpad_mode::user);
 
             dnnl_primitive_desc_iterator it(
@@ -212,6 +216,11 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
                 arg_cache.append_ctx_arg(DNNL_ARG_BIAS);
             arg_cache.append_inout_arg(DNNL_ARG_DST, inout_sp_offset_end,
                     root_pd->dst_md(), false);
+            for (int idx = 0; idx < attr_1x1.post_ops_.len(); ++idx) {
+                if (attr_1x1.post_ops_.contain(primitive_kind::binary, idx))
+                    arg_cache.append_ctx_arg(DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx)
+                            | DNNL_ARG_SRC_1);
+            }
             args_.push_back(arg_cache);
 
             // Increment scratchpad offsets
@@ -220,60 +229,68 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
                     += memory_desc_wrapper(root_pd->dst_md()).size();
 
             const auto &po = attr()->post_ops_;
-            const auto &end = po.len_;
+            const auto &end = po.len();
 
             unsigned int fusion_ops = 0;
-            // Loop through the post-ops untill we reach the end
+            // Loop through the post-ops until we reach the end
             // (if we have more than one op to fuse later)
             while (po_op_iter < end) {
                 if (fusion_ops++ > max_fusions_) return status::unimplemented;
 
                 const auto &prev_op_pd = op_pds_.back();
 
-                if (po.entry_[po_op_iter].kind == primitive_kind::convolution) {
-                    if (prev_op_pd->kind() != primitive_kind::convolution)
-                        return status::unimplemented;
-                    auto conv_pd = reinterpret_cast<convolution_pd_t *>(
-                            prev_op_pd.get());
-                    bool ok = true && is_fwd()
-                            && utils::everyone_is(1, conv_pd->KD(),
-                                    conv_pd->KH(), conv_pd->KW());
-                    if (!ok) return status::unimplemented;
-
-                    convolution_desc_t cd_dw;
-                    primitive_attr_t attr_dw;
-                    primitive_desc_t *append_conv_pd;
-                    CHECK(get_depthwise_conv_desc(cd_dw, *(conv_pd->dst_md()),
-                            root_attr, attr_dw, po_op_iter));
-                    dnnl_primitive_desc_iterator it(
-                            engine, (op_desc_t *)&cd_dw, &attr_dw, nullptr);
-                    if (!it.is_initialized()) return status::out_of_memory;
-                    ++it;
-                    append_conv_pd = (it.fetch_once());
-                    if (!append_conv_pd) return status::unimplemented;
-
-                    auto status = append_op(append_conv_pd,
-                            inout_sp_offset_begin, inout_sp_offset_end, engine);
-                    if (status != status::success) {
-                        delete append_conv_pd;
-                        return status;
-                    }
-
-                    const auto &op = op_pds_.back();
-                    arg_cache_t arg_cache;
-                    arg_cache.append_inout_arg(DNNL_ARG_SRC,
-                            inout_sp_offset_begin, op->src_md(), true);
-                    arg_cache.append_ctx_arg(DNNL_ARG_DST);
-                    arg_cache.append_ctx_arg(DNNL_ARG_WEIGHTS,
-                            DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS);
-                    if (op->weights_md(1)->data_type != data_type::undef)
-                        arg_cache.append_ctx_arg(DNNL_ARG_BIAS,
-                                DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS);
-
-                    args_.push_back(arg_cache);
-
-                } else // other fused ops
+                if (po.entry_[po_op_iter].kind != primitive_kind::convolution)
                     return status::unimplemented;
+
+                if (prev_op_pd->kind() != primitive_kind::convolution)
+                    return status::unimplemented;
+
+                auto conv_pd = reinterpret_cast<convolution_pd_t *>(
+                        prev_op_pd.get());
+                bool ok = true && is_fwd()
+                        && utils::everyone_is(
+                                1, conv_pd->KD(), conv_pd->KH(), conv_pd->KW());
+                if (!ok) return status::unimplemented;
+
+                convolution_desc_t cd_dw;
+                primitive_attr_t attr_dw;
+                CHECK(get_depthwise_conv_desc(cd_dw, *(conv_pd->dst_md()),
+                        root_attr, attr_dw, po_op_iter));
+                dnnl_primitive_desc_iterator it(
+                        engine, (op_desc_t *)&cd_dw, &attr_dw, nullptr);
+                if (!it.is_initialized()) return status::out_of_memory;
+
+                primitive_desc_t *append_conv_pd = (++it).fetch_once();
+                if (!append_conv_pd) return status::unimplemented;
+
+                auto status = append_op(append_conv_pd, inout_sp_offset_begin,
+                        inout_sp_offset_end, engine);
+                if (status != status::success) {
+                    delete append_conv_pd;
+                    return status;
+                }
+
+                const auto &op = op_pds_.back();
+                arg_cache_t arg_cache;
+                arg_cache.append_inout_arg(DNNL_ARG_SRC, inout_sp_offset_begin,
+                        op->src_md(), true);
+                arg_cache.append_ctx_arg(DNNL_ARG_DST);
+                arg_cache.append_ctx_arg(DNNL_ARG_WEIGHTS,
+                        DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_WEIGHTS);
+                if (op->weights_md(1)->data_type != data_type::undef)
+                    arg_cache.append_ctx_arg(DNNL_ARG_BIAS,
+                            DNNL_ARG_ATTR_POST_OP_DW | DNNL_ARG_BIAS);
+                for (int idx = 0; idx < attr_dw.post_ops_.len(); ++idx) {
+                    if (attr_dw.post_ops_.contain(primitive_kind::binary, idx))
+                        arg_cache.append_ctx_arg(
+                                (DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx)
+                                        | DNNL_ARG_SRC_1),
+                                (DNNL_ARG_ATTR_MULTIPLE_POST_OP(
+                                         idx + po_op_iter + 1)
+                                        | DNNL_ARG_SRC_1));
+                }
+
+                args_.push_back(arg_cache);
 
                 while (++po_op_iter < end) {
                     if (utils::one_of(po.entry_[po_op_iter].kind,
@@ -329,7 +346,6 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
             op_pd->create_primitive(p, engine);
             primitives_.emplace_back(p);
         }
-
         return status::success;
     }
 
@@ -337,7 +353,7 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
         engine_t *engine = ctx.stream()->engine();
         const auto scratchpad = ctx.get_scratchpad_grantor();
 
-        const auto inout_buffer = scratchpad.get<char>(
+        const auto inout_buffer = scratchpad.get_memory_storage(
                 memory_tracking::names::key_fusion_inout_buffer);
 
         const auto &ctx_args = ctx.args();
@@ -355,14 +371,14 @@ struct ref_fused_convolution_fwd_t : public primitive_t {
                     exec_args[arg_info.op_arg] = ctx_args.at(arg_info.ctx_arg);
                 } else {
                     inout_memory.emplace_back(new memory_t(engine, &arg_info.md,
-                            memory_flags_t::use_runtime_ptr,
-                            inout_buffer + arg_info.offset));
+                            inout_buffer->get_sub_storage(arg_info.offset,
+                                    memory_desc_wrapper(arg_info.md).size())));
                     exec_args[arg_info.op_arg].mem = inout_memory.back().get();
                     exec_args[arg_info.op_arg].is_const = arg_info.is_const;
                 }
             }
 
-            exec_ctx_t op_ctx(ctx.stream(), std::move(exec_args));
+            exec_ctx_t op_ctx(ctx, std::move(exec_args));
 
             nested_scratchpad_t ns(ctx,
                     memory_tracking::names::key_fusion_forward_scratchpad, op);

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #ifndef GPU_JIT_JIT_GENERATOR_HPP
 #define GPU_JIT_JIT_GENERATOR_HPP
 
+#include "gpu/jit/jit_generator_base.hpp"
 #include "gpu/jit/ngen/ngen_opencl.hpp"
 
 namespace dnnl {
@@ -26,9 +27,8 @@ namespace jit {
 
 using gpu_gen_t = ngen::HW;
 constexpr gpu_gen_t gpu_gen9 = ngen::HW::Gen9;
-constexpr gpu_gen_t gpu_gen10 = ngen::HW::Gen10;
 constexpr gpu_gen_t gpu_gen11 = ngen::HW::Gen11;
-constexpr gpu_gen_t gpu_gen12lp = ngen::HW::Gen12LP;
+constexpr gpu_gen_t gpu_xe_lp = ngen::HW::Xe_LP;
 
 // nGEN jit generator
 //
@@ -84,7 +84,8 @@ constexpr gpu_gen_t gpu_gen12lp = ngen::HW::Gen12LP;
 //
 
 template <gpu_gen_t hw>
-class jit_generator : public ngen::OpenCLCodeGenerator<hw> {
+class jit_generator : public ngen::OpenCLCodeGenerator<hw>,
+                      public jit_generator_base {
 private:
 #ifdef CL_VERSION_2_0
     struct svm_deleter {
@@ -94,11 +95,24 @@ private:
             if (ptr) clSVMFree(context_, ptr);
         }
     };
-    std::unique_ptr<void, svm_deleter> dbg_memory_ = nullptr;
+    std::unique_ptr<void, svm_deleter> dbg_memory_;
 #endif
 
 public:
     jit_generator() = default;
+
+    std::vector<unsigned char> get_binary(
+            cl_context context, cl_device_id device) override {
+        return ngen::OpenCLCodeGenerator<hw>::getBinary(context, device);
+    }
+
+    const char *kernel_name() const override {
+        return ngen::OpenCLCodeGenerator<hw>::getExternalName().c_str();
+    }
+
+    cl_kernel get_kernel(cl_context context, cl_device_id device) override {
+        return ngen::OpenCLCodeGenerator<hw>::getKernel(context, device);
+    }
 
 #ifdef CL_VERSION_2_0
     void dbg_alloc(cl_context context);
@@ -122,4 +136,4 @@ void jit_generator<hw>::dbg_alloc(cl_context context) {
 } // namespace impl
 } // namespace dnnl
 
-#endif // JIT_GENERATOR_HPP
+#endif // GPU_JIT_JIT_GENERATOR_HPP

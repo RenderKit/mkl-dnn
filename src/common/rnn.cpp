@@ -16,7 +16,7 @@
 
 #include <initializer_list>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "type_helpers.hpp"
@@ -89,10 +89,11 @@ status_t check_data_type_consistency_fwd(const rnn_desc_t &r) {
     data_type_t dst_layer_dt = r.dst_layer_desc.data_type;
     data_type_t weights_iter_dt = r.weights_iter_desc.data_type;
     data_type_t weights_layer_dt = r.weights_layer_desc.data_type;
+    data_type_t weights_projection_dt = r.weights_projection_desc.data_type;
 
     bool is_forward = !(r.prop_kind == prop_kind::backward);
     bool is_inference = r.prop_kind == prop_kind::forward_inference;
-    bool is_lstm = r.cell_kind == dnnl_vanilla_lstm;
+    bool is_int8_ok = one_of(r.cell_kind, dnnl_vanilla_lstm, dnnl_vanilla_gru);
 
     bool cell_state_check = expect_dt(r.src_iter_c_desc, f32, f16)
             && expect_dt(r.dst_iter_c_desc, f32, f16);
@@ -108,7 +109,7 @@ status_t check_data_type_consistency_fwd(const rnn_desc_t &r) {
                            weights_iter_dt, weights_layer_dt)
             && expect_dt(r.src_iter_desc, bf16)
             && expect_dt(r.weights_peephole_desc, f32)
-            && r.weights_projection_desc.data_type == data_type::undef
+            && one_of(weights_projection_dt, bf16, data_type::undef)
             && expect_dt(r.dst_iter_desc, bf16) && expect_dt(r.bias_desc, f32);
 
     bool is_f16 = is_forward
@@ -119,20 +120,20 @@ status_t check_data_type_consistency_fwd(const rnn_desc_t &r) {
             && r.weights_peephole_desc.data_type == data_type::undef
             && expect_dt(r.dst_iter_desc, f16) && expect_dt(r.bias_desc, f16);
 
-    bool is_u8u8u8 = is_inference && is_lstm && src_layer_dt == u8
+    bool is_u8u8u8 = is_inference && is_int8_ok && src_layer_dt == u8
             && one_of(dst_layer_dt, u8, f32)
             && everyone_is(s8, weights_iter_dt, weights_layer_dt)
             && expect_dt(r.src_iter_desc, u8)
             && expect_dt(r.src_iter_c_desc, f32)
             && r.weights_peephole_desc.data_type == data_type::undef
-            && r.weights_projection_desc.data_type == data_type::undef
+            && one_of(weights_projection_dt, s8, data_type::undef)
             && expect_dt(r.dst_iter_desc, u8)
             && expect_dt(r.dst_iter_c_desc, f32) && expect_dt(r.bias_desc, f32);
 
-    bool is_f32u8f32 = is_inference && is_lstm && src_layer_dt == u8
+    bool is_f32u8f32 = is_inference && is_int8_ok && src_layer_dt == u8
             && everyone_is(s8, weights_iter_dt, weights_layer_dt)
             && r.weights_peephole_desc.data_type == data_type::undef
-            && r.weights_projection_desc.data_type == data_type::undef
+            && one_of(weights_projection_dt, s8, data_type::undef)
             && one_of(dst_layer_dt, u8, f32) && expect_dt(r.src_iter_desc, f32)
             && expect_dt(r.dst_iter_desc, f32) && expect_dt(r.bias_desc, f32);
 

@@ -41,7 +41,7 @@
 #include <numeric>
 #include <string>
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 #include "example_utils.hpp"
 
@@ -121,12 +121,12 @@ void compute_attention(float *context_vectors, dim_t src_seq_length_max,
             for (dim_t k = 0; k < feature_size; k++) {
                 size_t tnc_offset
                         = i * batch * feature_size + j * feature_size + k;
-                alignment_model_ptr[tnc_offset] = tanhf(
-                        (float)(weighted_src_layer.data()[j * feature_size + k]
-                                - dec_src_layer_shift * compensation[k])
-                                / (dec_src_layer_scale
-                                        * weights_src_layer_scale)
-                        + weighted_annotations[tnc_offset]);
+                alignment_model_ptr[tnc_offset]
+                        = tanhf((float)(weighted_src_layer[j * feature_size + k]
+                                        - dec_src_layer_shift * compensation[k])
+                                        / (dec_src_layer_scale
+                                                * weights_src_layer_scale)
+                                + weighted_annotations[tnc_offset]);
             }
         }
     }
@@ -643,6 +643,9 @@ void simple_net() {
     // access those.
     /// @snippet cpu_rnn_inference_int8.cpp noctx mem dim
     //[noctx mem dim]
+    std::vector<float> dec_dst_iter(
+            dec_n_layers * batch * 2 * feature_size, 1.0f);
+
     memory::dims dec_dst_iter_dims
             = {dec_n_layers, 1, batch, feature_size + feature_size};
     memory::dims dec_dst_iter_noctx_dims
@@ -699,7 +702,8 @@ void simple_net() {
     /// @snippet cpu_rnn_inference_int8.cpp create noctx mem
     ///
     //[create noctx mem]
-    auto dec_dst_iter_memory = memory(dec_dst_iter_md, cpu_engine);
+    auto dec_dst_iter_memory
+            = memory(dec_dst_iter_md, cpu_engine, dec_dst_iter.data());
     auto dec_dst_iter_noctx_md = dec_dst_iter_md.submemory_desc(
             dec_dst_iter_noctx_dims, {0, 0, 0, 0, 0});
     //[create noctx mem]

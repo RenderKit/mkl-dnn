@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 #ifndef DNNL_DEBUG_HPP
 #define DNNL_DEBUG_HPP
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 dnnl_data_type_t str2dt(const char *str);
 dnnl_format_tag_t str2fmt_tag(const char *str);
@@ -31,6 +31,9 @@ const char *status2str(dnnl_status_t status);
 
 /* data type */
 const char *dt2str(dnnl_data_type_t dt);
+
+/* format */
+const char *fmt_tag2str(dnnl_format_tag_t tag);
 
 /* endinge kind */
 const char *engine_kind2str(dnnl_engine_kind_t kind);

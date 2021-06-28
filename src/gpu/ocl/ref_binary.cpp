@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ status_t ref_binary_t::pd_t::init_conf(engine_t *engine) {
     conf.dst_md_info = memory_desc_info_t::create(dst_d);
     conf.src0_data_type = src0_d.data_type();
     conf.src1_data_type = src1_d.data_type();
+    conf.dst_data_type = dst_d.data_type();
     conf.ndims = ndims;
     for (int i = 0; i < MAX_NDIMS; ++i) {
         conf.bcast_dims[i] = i < ndims ? broadcast_dims()[i] : 1;
@@ -42,24 +43,39 @@ status_t ref_binary_t::pd_t::init_conf(engine_t *engine) {
     conf.is_mul = (alg == alg_kind::binary_mul);
     conf.is_max = (alg == alg_kind::binary_max);
     conf.is_min = (alg == alg_kind::binary_min);
+    conf.is_div = (alg == alg_kind::binary_div);
+    conf.is_sub = (alg == alg_kind::binary_sub);
+    conf.is_ge = (alg == alg_kind::binary_ge);
+    conf.is_gt = (alg == alg_kind::binary_gt);
+    conf.is_le = (alg == alg_kind::binary_le);
+    conf.is_lt = (alg == alg_kind::binary_lt);
+    conf.is_eq = (alg == alg_kind::binary_eq);
+    conf.is_ne = (alg == alg_kind::binary_ne);
     conf.is_tensor_op = is_tensor_op();
     conf.is_dense = dst_d.is_dense();
     conf.same_src_dt = (src0_d.data_type() == src1_d.data_type());
     conf.is_same_md = (src0_d == dst_d) && (src1_d == dst_d);
+    conf.attr_info = attr_info_t::create(attr());
+    conf.with_binary_post_op
+            = conf.attr_info.all_post_ops.find(primitive_kind::binary) != -1;
     int ic_block_sz = 1;
     conf.use_unroll_16b = false;
     conf.src0_unroll_16b = false;
 
     auto &blk0 = src0_d.blocking_desc();
     auto &blk1 = src1_d.blocking_desc();
+    auto &blkd = dst_d.blocking_desc();
     bool is_16b_blk0 = (blk0.inner_nblks >= 1)
             && (blk0.inner_idxs[blk0.inner_nblks - 1] == 1)
             && (blk0.inner_blks[blk0.inner_nblks - 1] == 16);
     bool is_16b_blk1 = (blk1.inner_nblks >= 1)
             && (blk1.inner_idxs[blk1.inner_nblks - 1] == 1)
             && (blk1.inner_blks[blk1.inner_nblks - 1] == 16);
+    bool is_16b_blkd = (blkd.inner_nblks >= 1)
+            && (blkd.inner_idxs[blkd.inner_nblks - 1] == 1)
+            && (blkd.inner_blks[blkd.inner_nblks - 1] == 16);
 
-    if (!conf.is_tensor_op) {
+    if (is_16b_blkd && !conf.is_tensor_op) {
         // If: in case when both are blocked
         // Else: only src0 is blocked
         if (is_16b_blk0 && is_16b_blk1) {
@@ -73,14 +89,11 @@ status_t ref_binary_t::pd_t::init_conf(engine_t *engine) {
 
     auto *compute_engine = utils::downcast<compute::compute_engine_t *>(engine);
     conf.dispatch = compute_engine->create_dispatch(dst_d.md_);
-    if (conf.is_tensor_op && conf.is_dense && conf.is_same_md) {
+    if (conf.is_tensor_op && conf.is_dense && conf.is_same_md
+            && !conf.with_binary_post_op) {
         conf.dispatch.define_dim("IDX", 0, dst_d.nelems());
     } else {
-        // Setting the MB as the innermost dim for optimized performance
-        // Hence starting i = 1, ignoring MB
-        conf.dispatch.define_dim_with_nesting_level(
-                "D0", ndims, dst_d.dims()[0], 1);
-        for (int i = 1; i < MAX_NDIMS; ++i) {
+        for (int i = 0; i < MAX_NDIMS; ++i) {
             if (i == 1 && (conf.use_unroll_16b || conf.src0_unroll_16b)) {
                 // changing value for broadcasting offsets
                 // division by IC for enabling blocking within kernel
@@ -95,21 +108,31 @@ status_t ref_binary_t::pd_t::init_conf(engine_t *engine) {
         }
     }
     conf.dispatch.generate();
-    conf.attr_info = attr_info_t::create(attr());
     return status::success;
 }
 
 status_t ref_binary_t::pd_t::init_kernel_ctx(
         compute::kernel_ctx_t &kernel_ctx) const {
     kernel_ctx.set_data_type(conf.src0_data_type);
+    kernel_ctx.set_data_type(conf.src1_data_type);
+    kernel_ctx.set_data_type(conf.dst_data_type);
     kernel_ctx.define_int("NDIMS", conf.ndims);
     kernel_ctx.define_int("IS_MUL", conf.is_mul);
     kernel_ctx.define_int("IS_ADD", conf.is_add);
     kernel_ctx.define_int("IS_MAX", conf.is_max);
     kernel_ctx.define_int("IS_MIN", conf.is_min);
+    kernel_ctx.define_int("IS_DIV", conf.is_div);
+    kernel_ctx.define_int("IS_SUB", conf.is_sub);
+    kernel_ctx.define_int("IS_GE", conf.is_ge);
+    kernel_ctx.define_int("IS_GT", conf.is_gt);
+    kernel_ctx.define_int("IS_LE", conf.is_le);
+    kernel_ctx.define_int("IS_LT", conf.is_lt);
+    kernel_ctx.define_int("IS_EQ", conf.is_eq);
+    kernel_ctx.define_int("IS_NE", conf.is_ne);
     kernel_ctx.define_int("IS_TENSOR_OP", conf.is_tensor_op);
     kernel_ctx.define_int("IS_DENSE", conf.is_dense);
     kernel_ctx.define_int("IS_SAME_MD", conf.is_same_md);
+    kernel_ctx.define_int("WITH_BINARY_POST_OP", conf.with_binary_post_op);
     kernel_ctx.define_int("SAME_SRC_DT", conf.same_src_dt);
     kernel_ctx.define_int("BCAST_DIM0", conf.bcast_dims[0]);
     kernel_ctx.define_int("BCAST_DIM1", conf.bcast_dims[1]);
@@ -119,6 +142,7 @@ status_t ref_binary_t::pd_t::init_kernel_ctx(
     kernel_ctx.define_int("BCAST_DIM5", conf.bcast_dims[5]);
     kernel_ctx.define_int("USE_UNROLL_16B", conf.use_unroll_16b);
     kernel_ctx.define_int("SRC0_UNROLL_16B", conf.src0_unroll_16b);
+    kernel_ctx.define_int("SUB_GROUP_SIZE", 1);
 
     def_memory_desc_info(kernel_ctx, conf.src0_md_info, "SRC0");
     def_memory_desc_info(kernel_ctx, conf.src1_md_info, "SRC1");
@@ -133,16 +157,15 @@ status_t ref_binary_t::pd_t::init_kernel_ctx(
 
 status_t ref_binary_t::execute_ref(const exec_ctx_t &ctx) const {
 
+    status_t status = status::success;
+
     auto &src0 = CTX_IN_STORAGE(DNNL_ARG_SRC_0);
     auto &src1 = CTX_IN_STORAGE(DNNL_ARG_SRC_1);
-    auto &dst = CTX_OUT_STORAGE(DNNL_ARG_DST);
+    auto &dst = CTX_OUT_CLEAN_STORAGE(DNNL_ARG_DST, status);
+    CHECK(status);
 
     const auto &conf = pd()->conf;
 
-    auto eltwise_scale = conf.attr_info.eltwise_scale;
-    auto eltwise_alpha = conf.attr_info.eltwise_alpha;
-    auto eltwise_beta = conf.attr_info.eltwise_beta;
-    auto sum_scale = conf.attr_info.sum_scale;
     auto src0_scale = conf.attr_info.src0_scale;
     auto src1_scale = conf.attr_info.src1_scale;
 
@@ -150,16 +173,16 @@ status_t ref_binary_t::execute_ref(const exec_ctx_t &ctx) const {
     arg_list.set(0, src0);
     arg_list.set(1, src1);
     arg_list.set(2, dst);
-    arg_list.set(3, eltwise_alpha);
-    arg_list.set(4, eltwise_beta);
-    arg_list.set(5, eltwise_scale);
-    arg_list.set(6, sum_scale);
-    arg_list.set(7, src0_scale);
-    arg_list.set(8, src1_scale);
+
+    unsigned arg_idx = append_post_ops_to_arg_list(
+            ctx, arg_list, 3, conf.attr_info.all_post_ops);
+
+    arg_list.set(arg_idx++, src0_scale);
+    arg_list.set(arg_idx, src1_scale);
 
     auto nd_range = conf.dispatch.nd_range();
 
-    status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
+    status = parallel_for(ctx, nd_range, kernel_, arg_list);
     return status;
 }
 

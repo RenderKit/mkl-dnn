@@ -19,7 +19,7 @@
 
 #include <typeindex>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "dnnl_thread.hpp"
@@ -76,6 +76,14 @@ struct primitive_desc_t : public c_compatible {
             return arg_usage_t::input;
         if (arg == DNNL_ARG_SCRATCHPAD && !is_zero_md(scratchpad_md()))
             return arg_usage_t::output;
+        for (int idx = 0; idx < attr()->post_ops_.len(); ++idx) {
+            if (attr()->post_ops_.contain(primitive_kind::binary, idx)
+                    && arg
+                            == (DNNL_ARG_ATTR_MULTIPLE_POST_OP(idx)
+                                    | DNNL_ARG_SRC_1))
+                return arg_usage_t::input;
+        }
+
         return arg_usage_t::unused;
     }
 
@@ -175,9 +183,29 @@ struct primitive_desc_t : public c_compatible {
 
     virtual int n_inputs() const { return 0; }
     virtual int n_outputs() const { return 0; }
+    virtual int n_binary_po_inputs() const {
+        int n_inputs = 0;
+        for (int idx = 0; idx < attr()->post_ops_.len(); ++idx) {
+            if (attr()->post_ops_.contain(primitive_kind::binary, idx))
+                n_inputs++;
+        }
+        return n_inputs;
+    }
 
-    virtual status_t create_primitive(std::shared_ptr<primitive_t> &primitive,
-            engine_t *engine, bool is_primitive_nested = true) const = 0;
+    virtual status_t create_primitive(
+            std::pair<std::shared_ptr<primitive_t>, bool> &primitive,
+            engine_t *engine) const = 0;
+
+    // This is a proxy interface that is used for creating nested primitives.
+    // It ignores the bool value that indicates whether the requested primitive
+    // was taken from cache.
+    status_t create_primitive(
+            std::shared_ptr<primitive_t> &primitive, engine_t *engine) const {
+        std::pair<std::shared_ptr<primitive_t>, bool> p;
+        CHECK(create_primitive(p, engine));
+        primitive = p.first;
+        return status::success;
+    }
 
     virtual const char *name() const = 0;
 
@@ -193,7 +221,10 @@ struct primitive_desc_t : public c_compatible {
         // TODO: consider removing it in v2.0 by introducing alg_kind in softmax
         bool valid_logsoftmax = pd_t::base_pkind == primitive_kind::softmax
                 && adesc->kind == primitive_kind::logsoftmax;
-        if (adesc->kind != pd_t::base_pkind && !valid_logsoftmax)
+        bool valid_pooling = pd_t::base_pkind == primitive_kind::pooling_v2
+                && adesc->kind == primitive_kind::pooling;
+        if (adesc->kind != pd_t::base_pkind && !valid_logsoftmax
+                && !valid_pooling)
             return invalid_arguments;
         assert(hint_fwd ? hint_fwd->kind() == pd_t::base_pkind : true);
         auto hint
@@ -269,8 +300,8 @@ struct dnnl_primitive_desc : public dnnl::impl::c_compatible {
     virtual dnnl::impl::status_t query(
             dnnl::impl::query_t what, int idx, void *result) const;
 
-    dnnl::impl::status_t create_primitive_iface(
-            primitive_iface_t **primitive_iface) const;
+    virtual dnnl::impl::status_t create_primitive_iface(
+            std::pair<primitive_iface_t *, bool> &primitive_iface) const;
 
     const std::shared_ptr<dnnl::impl::primitive_desc_t> &impl() const;
 
@@ -285,11 +316,11 @@ protected:
         if (!new_pd->is_initialized()) return nullptr; \
         return new_pd.release(); \
     } \
-    status_t create_primitive(std::shared_ptr<primitive_t> &primitive, \
-            engine_t *engine, bool is_primitive_nested) const override { \
+    status_t create_primitive( \
+            std::pair<std::shared_ptr<primitive_t>, bool> &primitive, \
+            engine_t *engine) const override { \
         return primitive_t::create_primitive_common<impl_type, pd_t>( \
-                primitive, this, engine, use_global_scratchpad, \
-                is_primitive_nested); \
+                primitive, this, engine, use_global_scratchpad); \
     } \
     const char *name() const override { return impl_name; } \
     std::type_index impl_id() const override { return typeid(pd_t); }

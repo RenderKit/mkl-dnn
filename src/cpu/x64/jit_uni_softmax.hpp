@@ -80,7 +80,8 @@ struct jit_uni_softmax_fwd_t : public primitive_t {
                             // the avx512_common version may reject a
                             // problem because it is blocked by 8
                             // instead of 16.
-                            isa >= avx512_common && mayiuse(avx512_core))
+                            is_superset(isa, avx512_common)
+                                    && mayiuse(avx512_core))
                     && is_dense() // not dense impl can be easily done
                     && attr()->has_default_values();
             if (!ok) return status::unimplemented;
@@ -91,6 +92,8 @@ struct jit_uni_softmax_fwd_t : public primitive_t {
 
     jit_uni_softmax_fwd_t(const pd_t *apd);
     ~jit_uni_softmax_fwd_t();
+
+    status_t init(engine_t *engine) override;
 
     status_t execute(const exec_ctx_t &ctx) const override;
 
@@ -142,7 +145,8 @@ struct jit_uni_softmax_bwd_t : public primitive_t {
                             // the avx512_common version may reject a
                             // problem because it is blocked by 8
                             // instead of 16.
-                            isa >= avx512_common && mayiuse(avx512_core))
+                            is_superset(isa, avx512_common)
+                                    && mayiuse(avx512_core))
                     && set_default_formats_common()
                     && is_dense() // not dense impl can be easily done
                     && attr()->has_default_values();
@@ -154,6 +158,8 @@ struct jit_uni_softmax_bwd_t : public primitive_t {
 
     jit_uni_softmax_bwd_t(const pd_t *apd);
     ~jit_uni_softmax_bwd_t();
+
+    status_t init(engine_t *engine) override;
 
     status_t execute(const exec_ctx_t &ctx) const override;
 

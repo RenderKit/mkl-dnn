@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -134,6 +134,8 @@ extern int min_times_per_prb; /** minimal amount of runs per prb */
 extern int fix_times_per_prb; /** if non-zero run prb that many times */
 
 extern bool fast_ref_gpu;
+extern bool allow_enum_tags_only;
+extern int test_start;
 
 struct benchdnn_timer_t {
     enum mode_t { min = 0, avg = 1, max = 2, n_modes };
@@ -158,7 +160,7 @@ struct benchdnn_timer_t {
 
     double sec(mode_t mode = min) const { return ms(mode) / 1e3; }
 
-    long long ticks(mode_t mode = min) const {
+    unsigned long long ticks(mode_t mode = min) const {
         if (!times()) return 0; // nothing to report
         return ticks_[mode] / (mode == avg ? times() : 1);
     }
@@ -166,7 +168,7 @@ struct benchdnn_timer_t {
     benchdnn_timer_t &operator=(const benchdnn_timer_t &rhs);
 
     int times_;
-    long long ticks_[n_modes], ticks_start_;
+    unsigned long long ticks_[n_modes], ticks_start_;
     double ms_[n_modes], ms_start_;
 };
 
@@ -200,8 +202,10 @@ enum skip_reason_t {
     CASE_NOT_SUPPORTED,
     DATA_TYPE_NOT_SUPPORTED,
     INVALID_CASE,
+    KNOWN_LIMITATION,
     NOT_ENOUGH_RAM,
     SKIP_IMPL_HIT,
+    SKIP_START,
 };
 const char *skip_reason2str(skip_reason_t skip_reason);
 
@@ -211,6 +215,7 @@ struct res_t {
     benchdnn_timer_t timer;
     std::string impl_name;
     skip_reason_t reason;
+    size_t ibytes, obytes;
 };
 
 void parse_result(

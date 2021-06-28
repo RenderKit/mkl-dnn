@@ -164,7 +164,6 @@ static status_t init_kernel_ctx_common(compute::kernel_ctx_t &kernel_ctx,
             "SUM");
 
     def_attr_info(kernel_ctx, conf.attr_info);
-
     return status::success;
 }
 
@@ -186,6 +185,10 @@ status_t ref_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     auto &bias = CTX_IN_STORAGE(DNNL_ARG_BIAS);
     auto &oscales = CTX_IN_STORAGE(DNNL_ARG_ATTR_OUTPUT_SCALES);
     auto &dst = CTX_OUT_STORAGE(DNNL_ARG_DST);
+    auto &src_zpoints
+            = CTX_IN_STORAGE(DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC);
+    auto &dst_zpoints
+            = CTX_IN_STORAGE(DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_DST);
 
     auto &conf = pd()->conf;
     auto common_oscales = conf.attr_info.common_oscales;
@@ -197,7 +200,7 @@ status_t ref_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     arg_list.set(3, dst);
 
     unsigned arg_idx = append_post_ops_to_arg_list(
-            arg_list, 4, conf.attr_info.all_post_ops);
+            ctx, arg_list, 4, conf.attr_info.all_post_ops);
 
     arg_list.set(arg_idx, common_oscales);
     if (conf.attr_info.with_per_oc_oscales) {
@@ -208,6 +211,16 @@ status_t ref_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     } else {
         arg_list.set(++arg_idx, memory_storage_t::empty_storage());
     }
+
+    if (conf.attr_info.with_src_zpoints)
+        arg_list.set(++arg_idx, src_zpoints);
+    else
+        arg_list.set(++arg_idx, memory_storage_t::empty_storage());
+
+    if (conf.attr_info.with_dst_zpoints)
+        arg_list.set(++arg_idx, dst_zpoints);
+    else
+        arg_list.set(++arg_idx, memory_storage_t::empty_storage());
 
     auto nd_range = pd()->conf.dispatch.nd_range();
 
@@ -237,6 +250,9 @@ status_t ref_convolution_bwd_data_t::execute_backward_data(
     arg_list.set(1, weights);
     arg_list.set(2, diff_dst);
     arg_list.set(3, bias);
+
+    append_post_ops_to_arg_list(
+            ctx, arg_list, 4, pd()->conf.attr_info.all_post_ops);
 
     auto nd_range = pd()->conf.dispatch.nd_range();
 

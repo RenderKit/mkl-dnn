@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,13 +30,14 @@ namespace primitive_hashing {
 
 key_t::key_t(const primitive_desc_t *pd, const engine_t *engine, int impl_nthr)
     : primitive_kind_(pd->kind())
-    , op_desc_(primitive_kind_, pd->op_desc())
-    , attr_(*pd->attr())
+    , op_desc_(pd->op_desc())
+    , attr_(pd->attr())
     , impl_id_(pd->impl_id())
     , impl_nthr_(impl_nthr)
     , engine_kind_(engine ? engine->kind() : engine_kind::any_engine)
     , runtime_kind_(engine ? engine->runtime_kind() : runtime_kind::none)
-    , device_id_(engine ? engine->device_id() : 0) {
+    , device_id_(engine ? engine->device_id() : device_id_t(0, 0, 0))
+    , thread_id_(std::this_thread::get_id()) {
     init_mds(pd);
 }
 
@@ -80,21 +81,24 @@ void key_t::init_mds(const primitive_desc_t *pd) {
         case primitive_kind::layer_normalization: {
             break;
         }
-        case primitive_kind::logsoftmax: {
-            break;
-        }
         case primitive_kind::lrn: {
             break;
         }
         case primitive_kind::matmul: {
             break;
         }
-        case primitive_kind::pooling: {
+        case primitive_kind::pooling_v2: {
             auto typed_pd = utils::downcast<const pooling_pd_t *>(pd);
             if (!typed_pd->is_fwd()) {
                 mds.push_back(*typed_pd->diff_dst_md(0));
                 mds.push_back(*typed_pd->diff_src_md(0));
             }
+            break;
+        }
+        case primitive_kind::prelu: {
+            break;
+        }
+        case primitive_kind::reduction: {
             break;
         }
         case primitive_kind::reorder: {
@@ -139,8 +143,41 @@ bool key_t::operator==(const key_t &rhs) const {
         && mds.size() == rhs.mds.size()
         && impl_id_ == rhs.impl_id_
         && impl_nthr_ == rhs.impl_nthr_
-        && attr_ == rhs.attr_
-        && op_desc_ == rhs.op_desc_;
+        && (*attr_) == (*rhs.attr_);
+
+    if (!ret) return false;
+
+#define CASE(pkind) \
+    case primitive_kind::pkind: \
+        ret = cast_to_desc<pkind##_desc_t>(op_desc_) \
+                == cast_to_desc<pkind##_desc_t>(rhs.op_desc_); \
+        break;
+
+        switch ((int)primitive_kind_) {
+            CASE(batch_normalization)
+            CASE(binary)
+            CASE(concat)
+            CASE(convolution)
+            CASE(deconvolution)
+            CASE(eltwise)
+            CASE(gemm)
+            CASE(inner_product)
+            CASE(layer_normalization)
+            CASE(lrn)
+            CASE(matmul)
+            CASE(pooling_v2)
+            CASE(prelu)
+            CASE(reduction)
+            CASE(reorder)
+            CASE(resampling)
+            CASE(rnn)
+            CASE(shuffle)
+            CASE(softmax)
+            CASE(sum)
+            CASE(zero_pad)
+            default: assert(!"unknown primitive kind");
+        }
+#undef CASE
     // clang-format on
 
     if (!ret) return false;
@@ -215,12 +252,17 @@ size_t get_md_hash(const memory_desc_t &md) {
         seed = hash_combine(seed, md.extra.flags);
         if (md.extra.flags
                 & (dnnl_memory_extra_flag_compensation_conv_s8s8
-                        | dnnl_memory_extra_flag_gpu_rnn_u8s8_compensation)) {
+                        | dnnl_memory_extra_flag_rnn_u8s8_compensation)) {
             seed = hash_combine(seed, md.extra.compensation_mask);
         }
 
         if (md.extra.flags & dnnl_memory_extra_flag_scale_adjust) {
             seed = hash_combine(seed, md.extra.scale_adjust);
+        }
+
+        if (md.extra.flags
+                & dnnl_memory_extra_flag_compensation_conv_asymmetric_src) {
+            seed = hash_combine(seed, md.extra.asymm_compensation_mask);
         }
     }
     // Combined hash for a memory descriptor
@@ -251,9 +293,20 @@ size_t get_attr_hash(const primitive_attr_t &attr) {
     }
     // zero_points
     for (int arg : {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST})
-        seed = hash_combine(seed, *attr.zero_points_.get(arg));
+        if (!attr.zero_points_.has_default_values(arg)) {
+            dim_t count = 0;
+            int mask = 0;
+            const int *zero_points = nullptr;
+            attr.zero_points_.get(arg, &count, &mask, &zero_points);
+            // zero_points: count
+            seed = hash_combine(seed, count);
+            // zero_points: mask
+            seed = hash_combine(seed, mask);
+            // zero_points: zero_points[:]
+            seed = get_array_hash(seed, zero_points, count);
+        }
     // post_ops: entry[:]
-    for (int i = 0; i < attr.post_ops_.len_; i++) {
+    for (int i = 0; i < attr.post_ops_.len(); i++) {
         const auto &entry = attr.post_ops_.entry_[i];
         switch (entry.kind) {
             case primitive_kind::eltwise:
@@ -282,6 +335,11 @@ size_t get_attr_hash(const primitive_attr_t &attr) {
                     seed = get_array_hash(seed, entry.depthwise_conv.scales,
                             entry.depthwise_conv.count);
                 }
+                break;
+            case primitive_kind::binary:
+                seed = hash_combine(
+                        seed, static_cast<size_t>(entry.binary.alg));
+                seed = hash_combine(seed, get_md_hash(entry.binary.src1_desc));
                 break;
             default: assert(!"unknown post_op");
         }
@@ -399,30 +457,12 @@ size_t get_desc_hash(const gemm_desc_t &desc) {
     size_t seed = 0;
     // Kinds
     seed = hash_combine(seed, static_cast<size_t>(desc.primitive_kind));
-    // Trans
-    seed = hash_combine(seed, static_cast<size_t>(desc.transa));
-    seed = hash_combine(seed, static_cast<size_t>(desc.transb));
-    // M, N, K
-    seed = hash_combine(seed, desc.batch);
-    seed = hash_combine(seed, desc.m);
-    seed = hash_combine(seed, desc.n);
-    seed = hash_combine(seed, desc.k);
-    // Strides
-    seed = hash_combine(seed, desc.stride_a);
-    seed = hash_combine(seed, desc.stride_b);
-    seed = hash_combine(seed, desc.stride_c);
-    // LDA, LDB, LDC
-    seed = hash_combine(seed, desc.lda);
-    seed = hash_combine(seed, desc.ldb);
-    seed = hash_combine(seed, desc.ldc);
-    // bias mask
-    seed = hash_combine(seed, static_cast<size_t>(desc.bias_mask));
-    // a_type, b_type, c_type, acc_type, bias_type
-    seed = hash_combine(seed, static_cast<size_t>(desc.a_type));
-    seed = hash_combine(seed, static_cast<size_t>(desc.b_type));
-    seed = hash_combine(seed, static_cast<size_t>(desc.c_type));
+    seed = hash_combine(seed, get_md_hash(desc.a_desc));
+    seed = hash_combine(seed, get_md_hash(desc.b_desc));
+    seed = hash_combine(seed, get_md_hash(desc.c_desc));
+    seed = hash_combine(seed, get_md_hash(desc.bias_desc));
+    // Accumulator type
     seed = hash_combine(seed, static_cast<size_t>(desc.acc_type));
-    seed = hash_combine(seed, static_cast<size_t>(desc.bias_type));
     // Combined hash for gemm desc
     return seed;
 }
@@ -502,7 +542,7 @@ size_t get_desc_hash(const matmul_desc_t &desc) {
     return seed;
 }
 
-size_t get_desc_hash(const pooling_desc_t &desc) {
+size_t get_desc_hash(const pooling_v2_desc_t &desc) {
     size_t seed = 0;
     // Kinds
     seed = hash_combine(seed, static_cast<size_t>(desc.primitive_kind));
@@ -516,11 +556,41 @@ size_t get_desc_hash(const pooling_desc_t &desc) {
     // Strides, dilates, padding
     seed = get_array_hash(seed, desc.strides, DNNL_MAX_NDIMS);
     seed = get_array_hash(seed, desc.kernel, DNNL_MAX_NDIMS);
+    seed = get_array_hash(seed, desc.dilation, DNNL_MAX_NDIMS);
     seed = get_array_hash(seed, desc.padding[0], DNNL_MAX_NDIMS);
     seed = get_array_hash(seed, desc.padding[1], DNNL_MAX_NDIMS);
     // Accumulator type
     seed = hash_combine(seed, static_cast<size_t>(desc.accum_data_type));
     // Combined hash for pooling desc
+    return seed;
+}
+
+size_t get_desc_hash(const prelu_desc_t &desc) {
+    size_t seed = 0;
+    // Kinds
+    seed = hash_combine(seed, static_cast<size_t>(desc.primitive_kind));
+    seed = hash_combine(seed, static_cast<size_t>(desc.prop_kind));
+    // Memory descriptors
+    seed = hash_combine(seed, get_md_hash(desc.data_desc));
+    seed = hash_combine(seed, get_md_hash(desc.diff_data_desc));
+    seed = hash_combine(seed, get_md_hash(desc.weights_desc));
+    seed = hash_combine(seed, get_md_hash(desc.diff_weights_desc));
+    // Combined hash for pooling desc
+    return seed;
+}
+
+size_t get_desc_hash(const reduction_desc_t &desc) {
+    size_t seed = 0;
+    // Kinds
+    seed = hash_combine(seed, static_cast<size_t>(desc.primitive_kind));
+    seed = hash_combine(seed, static_cast<size_t>(desc.alg_kind));
+    // Memory descriptors
+    seed = hash_combine(seed, get_md_hash(desc.src_desc));
+    seed = hash_combine(seed, get_md_hash(desc.dst_desc));
+    // P, eps
+    seed = hash_combine(seed, desc.p);
+    seed = hash_combine(seed, desc.eps);
+    // Combined hash for reduction desc
     return seed;
 }
 

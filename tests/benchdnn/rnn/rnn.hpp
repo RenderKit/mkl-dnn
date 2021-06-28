@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -208,7 +208,7 @@ struct settings_t {
 
     desc_t desc {};
 
-    std::vector<dir_t> prop {FWD_D};
+    std::vector<dir_t> prop {FWD_I};
     std::vector<std::string> cfg {"f32"};
     std::vector<alg_t> alg {VANILLA_RNN};
     std::vector<dnnl_rnn_direction_t> direction {
@@ -218,18 +218,22 @@ struct settings_t {
     std::vector<bool> trivial_strides {false};
     std::vector<bool> with_peephole {false};
     std::vector<bool> with_projection {false};
-    std::vector<int64_t> mb {0};
+    std::vector<int64_t> n_layer {0}, n_iter {0}, mb {0};
     std::vector<policy_t> scale_policy {policy_t::COMMON};
+    std::vector<policy_t> scale_proj_policy {policy_t::COMMON};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
     unsigned int flags = 0x0;
     float alpha = 0.9f, beta = 0.0f;
 
     const char *perf_template_csv
-            = "perf,%engine%,%name%,%prop%,%cfg%,%alg%,%activation%,%direction%"
+            = "perf,%engine%,%impl%,%name%,%prop%,%cfg%,%alg%,%activation%,%"
+              "direction%"
               ","
               "%DESC%,%Gops%,%Gfreq%,%-time%,%-Gflops%,%0time%,%0Gflops%";
     const char *perf_template_def
-            = "perf,%engine%,%name%,%prb%,%Gops%,%Gfreq%,%-time%,%-Gflops%,"
-              "%0time%,%0Gflops%";
+            = "perf,%engine%,%impl%,%name%,%prb%,%Gops%,%Gfreq%,%-time%,%-"
+              "Gflops%,%0time%,%0Gflops%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -239,8 +243,10 @@ struct prb_t : public desc_t {
     prb_t(const desc_t &desc, const dt_conf_t &cfg, dir_t prop, alg_t alg,
             bool with_peephole, bool with_projection,
             dnnl_rnn_direction_t direction, policy_t scale_policy,
-            unsigned int flags, activation_t activation, float alpha,
-            float beta, bool skip_nonlinear, bool trivial_strides, int mb = 0)
+            policy_t scale_proj_policy, unsigned int flags,
+            activation_t activation, const attr_t &attr, float alpha,
+            float beta, bool skip_nonlinear, bool trivial_strides,
+            int64_t n_layer, int64_t n_iter, int64_t mb = 0)
         : desc_t(desc)
         , cfg(cfg)
         , prop(prop2prop_kind(prop))
@@ -248,21 +254,26 @@ struct prb_t : public desc_t {
         , with_peephole(with_peephole)
         , with_projection(with_projection)
         , direction(direction)
+        , wei_scales_policy(scale_policy)
+        , wei_proj_scales_policy(scale_proj_policy)
         , flags(flags)
         , activation(activation)
+        , attr(attr)
+        , user_mb(mb)
         , alpha(alpha)
         , beta(beta)
-        , ops(0.0)
-        , wei_scales_policy(scale_policy)
         , skip_nonlinear(skip_nonlinear)
         , trivial_strides(trivial_strides)
+        , ops(0.0)
         , linear_cscale(0.0f) {
 
+        if (n_layer) this->n_layer = n_layer;
+        if (n_iter) this->n_iter = n_iter;
         if (mb) this->mb = mb;
         count_ops();
-        wc = MAX2(MAX2(sic, slc), MAX2(dic, dhc));
 
         wei_scales = nullptr;
+        wei_proj_scales = nullptr;
         linear_scales = nullptr;
 
         // We always allocate linear scales. Even if they are not
@@ -282,12 +293,29 @@ struct prb_t : public desc_t {
                 break;
             default: assert(!"unsupported scaling policy");
         }
-
         wei_scales = (float *)zmalloc(sizeof(float) * wei_nscales, 64);
+
+        if (with_projection) {
+            switch (wei_proj_scales_policy) {
+                case policy_t::PER_OC:
+                    wei_proj_scales_mask = 0x8;
+                    wei_proj_nscales = dic;
+                    break;
+                case policy_t::COMMON:
+                    wei_proj_scales_mask = 0x0;
+                    wei_proj_nscales = 1;
+                    break;
+                default: assert(!"unsupported scaling policy");
+            }
+            wei_proj_scales
+                    = (float *)zmalloc(sizeof(float) * wei_proj_nscales, 64);
+        }
+
         set_qparams(-1., 1.);
     }
     ~prb_t() {
         if (wei_scales) zfree(wei_scales);
+        if (wei_proj_scales) zfree(wei_proj_scales);
         if (linear_scales) zfree(linear_scales);
     }
 
@@ -295,16 +323,8 @@ struct prb_t : public desc_t {
         return wei_scales[MIN2(idx, wei_nscales - 1)];
     }
 
-    bool maybe_skip() const {
-        bool skip = false;
-        // TODO: remove early exit when int8 weights reorder supports non
-        // trivial strides
-        skip = skip || (is_int8() && !trivial_strides);
-
-        // TODO: remove early exit when other cells will support int8
-        skip = skip || (is_int8() && alg != VANILLA_LSTM);
-
-        return skip;
+    inline float get_wei_proj_scale(int idx) const {
+        return wei_proj_scales[MIN2(idx, wei_proj_nscales - 1)];
     }
 
     void count_ops() {
@@ -350,21 +370,28 @@ struct prb_t : public desc_t {
     alg_t alg;
     bool with_peephole, with_projection;
     dnnl_rnn_direction_t direction;
+    policy_t wei_scales_policy;
+    policy_t wei_proj_scales_policy;
     unsigned int flags;
     activation_t activation;
+    attr_t attr;
+    int64_t user_mb;
     float alpha;
     float beta;
-    double ops;
 
     float data_scale, data_shift;
 
-    policy_t wei_scales_policy;
     float *wei_scales;
     int wei_nscales;
     int wei_scales_mask;
 
+    float *wei_proj_scales;
+    int wei_proj_nscales;
+    int wei_proj_scales_mask;
+
     bool skip_nonlinear;
     bool trivial_strides;
+    double ops;
     float *linear_scales;
     float linear_cscale;
 
@@ -375,14 +402,14 @@ private:
     prb_t(const prb_t &) = delete;
     prb_t &operator=(const prb_t &) = delete;
 };
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
-        base_report(r, prb_str);
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
+        base_report(res, prb_str);
     }
 
     void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
@@ -407,6 +434,7 @@ struct perf_report_t : public base_perf_report_t {
     }
 
     double ops() const override { return p_->ops; }
+    const int64_t *user_mb() const override { return &p_->user_mb; }
     const char *name() const override { return p_->name; }
     const dnnl_prop_kind_t *prop() const override { return &p_->prop; }
 
@@ -414,11 +442,11 @@ private:
     const prb_t *p_ = nullptr;
 };
 
-void prepare_ws_fwd(const prb_t &p, std::vector<float> &ws_fwd_buffer,
+void prepare_ws_fwd(const prb_t &prb, std::vector<float> &ws_fwd_buffer,
         AOC<float> &ws_src_layer, AOC<float> &ws_src_iter,
         AOC<float> &ws_src_iter_c, AOC<float> &ws_gates, AOC<float> &ws_ht);
 
-void rnn_linear_fwd(const prb_t &p, const float *src_layer_,
+void rnn_linear_fwd(const prb_t &prb, const float *src_layer_,
         const float *src_iter_, const float *src_iter_c_,
         const float *weights_layer_, const float *weights_iter_,
         const float *weights_peephole_, const float *weights_projection_,
@@ -427,14 +455,14 @@ void rnn_linear_fwd(const prb_t &p, const float *src_layer_,
         const AOC<float> &ws_src_iter, const AOC<float> &ws_src_iter_c,
         const AOC<float> &ws_gates, const AOC<float> &ws_ht);
 
-void compute_ref_fwd(const prb_t &p, dnn_mem_t &src_layer_m,
+void compute_ref_fwd(const prb_t &prb, dnn_mem_t &src_layer_m,
         dnn_mem_t &src_iter_m, dnn_mem_t &src_iter_c_m,
         dnn_mem_t &weights_layer_m, dnn_mem_t &weights_iter_m,
         dnn_mem_t &weights_peephole_m, dnn_mem_t &weights_projection_m,
         dnn_mem_t &bias_m, dnn_mem_t &dst_layer_m, dnn_mem_t &dst_iter_m,
         dnn_mem_t &dst_iter_c_m);
 
-void compute_ref_bwd(const prb_t &p, dnn_mem_t &src_layer_m,
+void compute_ref_bwd(const prb_t &prb, dnn_mem_t &src_layer_m,
         dnn_mem_t &src_iter_m, dnn_mem_t &src_iter_c_m,
         dnn_mem_t &diff_dst_layer_m, dnn_mem_t &diff_dst_iter_m,
         dnn_mem_t &diff_dst_iter_c_m, dnn_mem_t &weights_layer_m,
@@ -446,7 +474,7 @@ void compute_ref_bwd(const prb_t &p, dnn_mem_t &src_layer_m,
         dnn_mem_t &diff_weights_iter_m, dnn_mem_t &diff_weights_peephole_m,
         dnn_mem_t &diff_weights_projection_m, dnn_mem_t &diff_bias_m);
 
-int doit(const prb_t &p, res_t *res);
+int doit(const prb_t &prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace rnn

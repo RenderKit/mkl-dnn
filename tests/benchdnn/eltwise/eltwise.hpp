@@ -19,7 +19,7 @@
 
 #include <iostream>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common.hpp"
 #include "dnn_types.hpp"
@@ -48,10 +48,15 @@ struct settings_t {
     std::vector<float> scales {0, 0.25, -0.25}, alpha {scales}, beta {scales};
     std::vector<int64_t> mb {0};
     std::vector<bool> inplace {false};
+    std::vector<attr_t::post_ops_t> post_ops {attr_t::post_ops_t()};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
 
     const char *perf_template_csv
-            = "perf,%engine%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%0time%";
-    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+            = "perf,%engine%,%impl%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%"
+              "0time%";
+    const char *perf_template_def
+            = "perf,%engine%,%impl%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -60,7 +65,7 @@ struct settings_t {
 struct prb_t {
     prb_t(const dims_t &dims, dir_t dir, dnnl_data_type_t dt,
             const std::string &tag, alg_t alg, float alpha, float beta,
-            bool inplace, int64_t mb = 0)
+            bool inplace, const attr_t &attr, int64_t mb = 0)
         : dims(dims)
         , dir(dir)
         , dt(dt)
@@ -69,6 +74,8 @@ struct prb_t {
         , alpha(alpha)
         , beta(beta)
         , inplace(inplace)
+        , attr(attr)
+        , user_mb(mb)
         , ndims((int)dims.size()) {
         if (mb) this->dims[0] = mb;
     }
@@ -81,22 +88,26 @@ struct prb_t {
     alg_t alg;
     float alpha, beta;
     bool inplace;
+    attr_t attr;
+    int64_t user_mb;
     int ndims;
 
     bool use_dst() const {
         return alg == alg_t::RELU_DST || alg == alg_t::TANH_DST
                 || alg == alg_t::ELU_DST || alg == alg_t::SQRT_DST
-                || alg == alg_t::LOGISTIC_DST || alg == alg_t::EXP_DST;
+                || alg == alg_t::LOGISTIC_DST || alg == alg_t::EXP_DST
+                || alg == alg_t::CLIP_V2_DST;
     }
 };
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
-        base_report(r, prb_str);
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
+        tag_ = normalize_tag(p_->tag, p_->ndims);
+        base_report(res, prb_str);
     }
 
     void dump_alg(std::ostream &s) const override { s << p_->alg; }
@@ -107,18 +118,21 @@ struct perf_report_t : public base_perf_report_t {
 
     const dir_t *dir() const override { return &p_->dir; }
     const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    const std::string *tag() const override { return &p_->tag; }
+    const int64_t *user_mb() const override { return &p_->user_mb; }
+    const std::string *tag() const override { return &tag_; }
 
 private:
     const prb_t *p_ = NULL;
+    std::string tag_;
 };
 
-bool check_extreme_values(const float &a, const float &b, alg_t alg);
-void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &dst);
-void compute_ref_bwd(const prb_t *p, const dnn_mem_t &src,
+float get_eltwise_threshold(dnnl_data_type_t dt, alg_t alg, bool is_fwd = true);
+void compute_ref_fwd(const prb_t *prb, const dnn_mem_t &src,
+        const std::vector<dnn_mem_t> &binary_po, dnn_mem_t &dst);
+void compute_ref_bwd(const prb_t *prb, const dnn_mem_t &src,
         const dnn_mem_t &diff_dst, dnn_mem_t &diff_src);
 
-int doit(const prb_t *p, res_t *res);
+int doit(const prb_t *prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace eltwise

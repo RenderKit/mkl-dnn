@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
 
+#include "cpu/cpu_primitive.hpp"
+
 #include "cpu/x64/jit_avx512_core_amx_1x1_convolution.hpp"
 
 namespace dnnl {
@@ -32,11 +34,16 @@ using namespace dnnl::impl::utils;
 
 using namespace nstl;
 
-using jit_conv_ker_t = void (*)(jit_conv_call_s *);
-
 #define wht_blk_off(d, g, ...) \
     (pd()->with_groups() ? (d).blk_off((g), __VA_ARGS__) \
                          : (d).blk_off(__VA_ARGS__))
+
+#define md_blk_off(md, n, c, d, h, w) \
+    (pd()->ndims() == 3 \
+                    ? (md).blk_off((n), (c), (w)) \
+                    : (pd()->ndims() == 4 \
+                                    ? (md).blk_off((n), (c), (h), (w)) \
+                                    : (md).blk_off((n), (c), (d), (h), (w))))
 
 template <data_type_t src_type, data_type_t wei_type, data_type_t dst_type>
 void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
@@ -55,16 +62,22 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
 }
 
 template <data_type_t src_type, data_type_t wei_type, data_type_t dst_type>
-void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
+status_t jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
         dst_type>::execute_forward(const exec_ctx_t &ctx) const {
 
     auto src = CTX_IN_MEM(const char *, DNNL_ARG_SRC);
     auto weights = CTX_IN_MEM(const char *, DNNL_ARG_WEIGHTS);
     auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
     auto dst = CTX_OUT_MEM(char *, DNNL_ARG_DST);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector::prepare_binary_args(pd()->jcp_.post_ops, ctx);
+
+    DEFINE_ZERO_POINTS_BUFFER(src_zero_point, DNNL_ARG_SRC);
+    DEFINE_ZERO_POINTS_BUFFER(dst_zero_point, DNNL_ARG_DST);
 
     const memory_desc_wrapper src_d(pd()->src_md());
     const memory_desc_wrapper dst_d(pd()->dst_md());
+    const memory_desc_wrapper weights_d(pd()->weights_md(0));
     const memory_desc_wrapper bias_d(pd()->weights_md(1));
 
     const size_t bia_dt_size = pd()->with_bias()
@@ -82,11 +95,14 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
     const auto &jcp = pd()->jcp_;
     assert(jcp.nb_oc % jcp.nb_oc_blocking == 0);
 
+    const size_t offset = weights_d.size() - weights_d.additional_buffer_size();
+    const int32_t *zp_compensation = jcp.src_zero_point
+            ? reinterpret_cast<const int32_t *>(&weights[offset])
+            : nullptr;
+
     const float *oscales = pd()->attr()->output_scales_.scales_;
 
-    const bool is_1d = pd()->ndims() == 3;
-
-    const bool is_ic_tail = jcp.ic_without_padding % jcp.ic_block_int;
+    const bool is_ic_tail = jcp.ic_without_padding % jcp.ic_block_int_np;
     auto wsp = ctx.get_scratchpad_grantor().template get<int32_t>(
             key_conv_amx_wsp_buffer);
     int32_t *wsp_tile = (is_ic_tail)
@@ -96,8 +112,9 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
     auto tcfg = ctx.get_scratchpad_grantor().template get<char>(
             key_conv_amx_tilecfg);
 
-    const size_t wei_oc_shift = (size_t)jcp.nb_ic_int * jcp.ic_block_int
-            * jcp.oc_block * jcp.nb_oc_blocking;
+    const size_t wei_oc_shift = static_cast<size_t>(
+            utils::rnd_up(jcp.ic_without_padding, jcp.ic_block_int)
+            * jcp.oc_block * jcp.nb_oc_blocking);
 
     int nb_os = (jcp.tile_tail) ? jcp.nb_os + 1 : jcp.nb_os;
     int os_step = jcp.nb_os2_blocking * jcp.nb_os_blocking;
@@ -105,18 +122,19 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
 
     int oc_chunks = jcp.nb_oc / jcp.nb_oc_blocking;
 
-    int work_amount = jcp.mb * jcp.ngroups * os_chunks * oc_chunks;
+    const size_t work_amount
+            = (size_t)jcp.mb * jcp.ngroups * os_chunks * oc_chunks;
     kernel_->tile_configure(tcfg);
 
     parallel(0, [&](const int ithr, const int nthr) {
-        int start {0}, end {0};
+        size_t start {0}, end {0};
         balance211(work_amount, nthr, ithr, start, end);
 
         auto p = jit_conv_call_s();
         p.tile_cfg = tcfg;
         p.tile_cfg_tail = tcfg + 64;
 
-        kernel_->jit_tilecfg(tcfg);
+        amx_tile_configure(tcfg);
 
         int mb {0}, g {0}, _osb {0}, _ocb {0};
         nd_iterator_init(start, mb, jcp.mb, g, jcp.ngroups, _osb, os_chunks,
@@ -127,7 +145,7 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
             int ocb = _ocb * jcp.nb_oc_blocking;
             auto bias_w = bias
                     ? bias + (bias_d.blk_off(ocb * jcp.oc_block) * bia_dt_size)
-                    : 0;
+                    : nullptr;
 
             int oc = g * jcp.oc_without_padding + ocb * jcp.oc_block;
             int ic = g * jcp.ic_without_padding;
@@ -139,6 +157,15 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
             p.scales = &oscales[jcp.is_oc_scale * oc];
             p.oc_blocks = ocb;
 
+            p.zp_compensation
+                    = jcp.src_zero_point ? zp_compensation + oc : nullptr;
+            p.src_zero_point = jcp.src_zero_point ? src_zero_point : nullptr;
+            p.dst_zero_point = jcp.dst_zero_point ? dst_zero_point : nullptr;
+
+            p.oc_l_off = oc;
+            p.post_ops_binary_rhs_arg_vec = post_ops_binary_rhs_arg_vec.data();
+            p.dst_orig = dst;
+
             const bool check_last_sp = is_ic_tail && !(nb_os % 2);
             const bool is_overflow = (osb + os_step >= nb_os);
             if (is_overflow
@@ -146,47 +173,48 @@ void jit_avx512_core_amx_1x1_convolution_fwd_t<src_type, wei_type,
                 int step = (check_last_sp) ? 1 : jcp.nb_os_blocking;
                 for (int osi = 0; osi < nb_os - osb; osi += step) {
                     int osb_i = osi + osb;
-                    int oh = (osb_i * jcp.tile_width) / jcp.ow;
-                    int ow = (osb_i * jcp.tile_width) % jcp.ow;
-                    size_t dst_offset = (is_1d) ? dst_d.blk_off(mb, oc, ow)
-                                                : dst_d.blk_off(mb, oc, oh, ow);
+                    int od {0}, oh {0}, ow {0};
+                    nd_iterator_init(osb_i * jcp.tile_width, od, jcp.od, oh,
+                            jcp.oh, ow, jcp.ow);
+                    size_t dst_offset = md_blk_off(dst_d, mb, oc, od, oh, ow);
                     p.dst = dst + dst_dt_size * dst_offset;
 
+                    int id = od * jcp.stride_d;
                     int ih = oh * jcp.stride_h;
                     int iw = ow * jcp.stride_w;
-                    size_t inp_offset = (is_1d) ? src_d.blk_off(mb, ic, iw)
-                                                : src_d.blk_off(mb, ic, ih, iw);
+                    size_t inp_offset = md_blk_off(src_d, mb, ic, id, ih, iw);
                     p.src = src + src_dt_size * inp_offset;
 
                     bool l_overflow = osb_i + jcp.nb_os_blocking >= nb_os;
                     p.last_h = (check_last_sp || (nb_os % 2 && l_overflow)) ? 1
                                                                             : 0;
                     p.is_osb = 0;
-                    kernel_->jit_ker(&p);
+                    (*kernel_)(&p);
                 }
             } else {
-                int oh = (osb * jcp.tile_width) / jcp.ow;
-                int ow = (osb * jcp.tile_width) % jcp.ow;
-                size_t dst_offset = (is_1d) ? dst_d.blk_off(mb, oc, ow)
-                                            : dst_d.blk_off(mb, oc, oh, ow);
+                int od {0}, oh {0}, ow {0};
+                nd_iterator_init(osb * jcp.tile_width, od, jcp.od, oh, jcp.oh,
+                        ow, jcp.ow);
+                size_t dst_offset = md_blk_off(dst_d, mb, oc, od, oh, ow);
                 p.dst = dst + dst_dt_size * dst_offset;
 
+                int id = od * jcp.stride_d;
                 int ih = oh * jcp.stride_h;
                 int iw = ow * jcp.stride_w;
-                size_t inp_offset = (is_1d) ? src_d.blk_off(mb, ic, iw)
-                                            : src_d.blk_off(mb, ic, ih, iw);
+                size_t inp_offset = md_blk_off(src_d, mb, ic, id, ih, iw);
                 p.src = src + src_dt_size * inp_offset;
 
                 p.last_h = 0;
                 p.is_osb = 1;
 
-                kernel_->jit_ker(&p);
+                (*kernel_)(&p);
             }
             ++start;
             nd_iterator_step(mb, jcp.mb, g, jcp.ngroups, _osb, os_chunks, _ocb,
                     oc_chunks);
         }
     });
+    return status::success;
 }
 
 template struct jit_avx512_core_amx_1x1_convolution_fwd_t<data_type::s8,

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -31,49 +31,76 @@ static status_t init_conf_common(pool_conf_t &conf, offsets_t &off,
     auto is_c_dense = [](const memory_desc_wrapper &mdw) {
         return mdw.blocking_desc().strides[1] == 1;
     };
-    auto is_16c = [](const memory_desc_wrapper &mdw) {
-        auto &blk = mdw.blocking_desc();
-        if (blk.inner_nblks == 0) return false;
-        return (blk.inner_idxs[blk.inner_nblks - 1] == 1)
-                && (blk.inner_blks[blk.inner_nblks - 1] == 16);
-    };
-    if (!is_16c(src_mdw) && !is_c_dense(src_mdw)) return status::unimplemented;
+    auto is_c_blocked_by
+            = [](const memory_desc_wrapper &mdw, const int blockSize) {
+                  auto &blk = mdw.blocking_desc();
+                  if (blk.inner_nblks == 0) return false;
+                  return (blk.inner_idxs[blk.inner_nblks - 1] == 1)
+                          && (blk.inner_blks[blk.inner_nblks - 1] == blockSize);
+              };
 
-    if (!is_16c(dst_mdw) && !is_c_dense(dst_mdw)) return status::unimplemented;
+    if (!is_c_blocked_by(src_mdw, 16) && !is_c_blocked_by(src_mdw, 32)
+            && !is_c_dense(src_mdw))
+        return status::unimplemented;
+
+    if (!is_c_blocked_by(dst_mdw, 16) && !is_c_blocked_by(dst_mdw, 32)
+            && !is_c_dense(dst_mdw))
+        return status::unimplemented;
+
+    int c_block_size = 1, n_block_size = 1;
+    auto &src_blk = src_mdw.blocking_desc();
+    if (src_blk.inner_nblks > 0) {
+        // C is the last blocked dimension as it was checked in is_c_blocked_by
+        c_block_size = src_blk.inner_blks[src_blk.inner_nblks - 1];
+        // if there is NC blocking (N is the blocked dimension before C) use N blocks as well
+        if (src_blk.inner_nblks > 1
+                && src_blk.inner_idxs[src_blk.inner_nblks - 2] == 0) {
+            n_block_size = src_blk.inner_blks[src_blk.inner_nblks - 2];
+        }
+    }
 
     set_default_pool_conf(conf, *pd->desc(), *pd->invariant_src_md(),
-            *pd->invariant_dst_md());
+            *pd->invariant_dst_md(), *pd->attr());
 
     set_offsets(src_mdw, off.src_off);
     set_offsets(dst_mdw, off.dst_off);
 
     conf.sub_group_size = 16;
-    conf.use_mb_block = false;
-    conf.use_c_block = false;
-    int c_padded = utils::rnd_up(conf.c, conf.sub_group_size);
+    conf.use_mb_c_block = false;
+    conf.use_only_c_block = false;
+    int c_padded = utils::rnd_up(conf.c_padded, conf.sub_group_size);
 
-    if (src_mdw.matches_one_of_tag(NCw16n16c, NChw16n16c, NCdhw16n16c)) {
-        conf.use_mb_block = true;
+    if (c_block_size >= 16 && n_block_size >= 16) {
+        c_padded = utils::rnd_up(conf.c_padded, c_block_size);
+        conf.use_mb_c_block = true;
         conf.vect_dt_n = 8;
-        conf.nvect = 2;
+        conf.nvect = 1;
+        conf.chunks_per_c_block = c_block_size / conf.sub_group_size;
+        conf.chunks_per_mb_block
+                = conf.vect_dt_n * conf.nvect / conf.chunks_per_c_block;
+    } else if (c_block_size == 16 && n_block_size == 1) {
+        conf.use_only_c_block = true;
+        conf.vect_dt_n = 1;
+        conf.nvect = 1;
+        conf.chunks_per_c_block = conf.nvect * conf.vect_dt_n;
+        conf.chunks_per_mb_block = 1;
     } else {
-        conf.use_c_block = true;
+        conf.use_only_c_block = true;
         const size_t num_c_blocks = c_padded / conf.sub_group_size;
         conf.vect_dt_n = 8;
         while (num_c_blocks % conf.vect_dt_n != 0) {
             conf.vect_dt_n /= 2;
         }
         conf.nvect = 1;
+        conf.chunks_per_c_block = conf.nvect * conf.vect_dt_n;
+        conf.chunks_per_mb_block = 1;
     }
     auto *compute_engine = utils::downcast<compute::compute_engine_t *>(engine);
     conf.dispatch = compute_engine->create_dispatch(
             conf.is_backward ? src_mdw.md_ : dst_mdw.md_);
 
-    int vect_block = conf.nvect * conf.vect_dt_n;
-    conf.dispatch.define_dim(
-            "MB", 0, conf.mb, conf.use_mb_block ? vect_block : 1);
-    conf.dispatch.define_dim(
-            "C", 1, c_padded, conf.use_c_block ? vect_block : 1);
+    conf.dispatch.define_dim("MB", 0, conf.mb_padded, conf.chunks_per_mb_block);
+    conf.dispatch.define_dim("C", 1, c_padded, conf.chunks_per_c_block);
 
     int ndims = conf.ndims;
     if (!conf.is_backward) {
@@ -97,6 +124,7 @@ static status_t init_kernel_ctx_common(compute::kernel_ctx_t &kernel_ctx,
 
     kernel_ctx.define_int("NDIMS", conf.ndims);
     kernel_ctx.define_int("MB", conf.mb);
+    kernel_ctx.define_int("C_W_PADDING", conf.c_padded);
     kernel_ctx.define_int("C_WO_PADDING", conf.c);
     kernel_ctx.define_int("ID", conf.id);
     kernel_ctx.define_int("IH", conf.ih);
@@ -126,11 +154,17 @@ static status_t init_kernel_ctx_common(compute::kernel_ctx_t &kernel_ctx,
 
     kernel_ctx.define_int("VECT_DT_N", conf.vect_dt_n);
     kernel_ctx.define_int("NVECT", conf.nvect);
-    kernel_ctx.define_int("USE_C_BLOCK", conf.use_c_block);
-    kernel_ctx.define_int("USE_MB_BLOCK", conf.use_mb_block);
+    kernel_ctx.define_int("USE_ONLY_C_BLOCK", conf.use_only_c_block);
+    kernel_ctx.define_int("USE_MB_C_BLOCK", conf.use_mb_c_block);
+    kernel_ctx.define_int("CHUNKS_PER_C_BLOCK", conf.chunks_per_c_block);
+    kernel_ctx.define_int("CHUNKS_PER_MB_BLOCK", conf.chunks_per_mb_block);
+
+    kernel_ctx.add_option("-Dcl_intel_subgroups_char");
 
     def_offsets(off.src_off, kernel_ctx, "SRC", conf.ndims);
     def_offsets(off.dst_off, kernel_ctx, "DST", conf.ndims);
+
+    def_attr_info(kernel_ctx, conf.attr_info);
 
     def_dispatch(kernel_ctx, conf.dispatch);
 
@@ -148,6 +182,8 @@ status_t gen9_pooling_fwd_t::pd_t::init_kernel_ctx(
 
 status_t gen9_pooling_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
 
+    status_t status = status::success;
+
     auto &src = CTX_IN_STORAGE(DNNL_ARG_SRC);
     auto &dst = CTX_OUT_STORAGE(DNNL_ARG_DST);
     auto &ws = CTX_OUT_STORAGE(DNNL_ARG_WORKSPACE);
@@ -156,10 +192,12 @@ status_t gen9_pooling_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     arg_list.set(0, src);
     arg_list.set(1, ws);
     arg_list.set(2, dst);
+    append_post_ops_to_arg_list(
+            ctx, arg_list, 3, pd()->conf.attr_info.all_post_ops);
 
     auto nd_range = pd()->conf.dispatch.nd_range();
 
-    status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
+    status = parallel_for(ctx, nd_range, kernel_, arg_list);
 
     return status;
 }
@@ -175,7 +213,9 @@ status_t gen9_pooling_bwd_t::pd_t::init_kernel_ctx(
 
 status_t gen9_pooling_bwd_t::execute_backward(const exec_ctx_t &ctx) const {
 
+    status_t status = status::success;
     auto &diff_src = CTX_OUT_STORAGE(DNNL_ARG_DIFF_SRC);
+    CHECK(status);
     auto &diff_dst = CTX_IN_STORAGE(DNNL_ARG_DIFF_DST);
     auto &ws = CTX_IN_STORAGE(DNNL_ARG_WORKSPACE);
 
@@ -186,7 +226,7 @@ status_t gen9_pooling_bwd_t::execute_backward(const exec_ctx_t &ctx) const {
 
     auto nd_range = pd()->conf.dispatch.nd_range();
 
-    status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
+    status = parallel_for(ctx, nd_range, kernel_, arg_list);
 
     return status;
 }

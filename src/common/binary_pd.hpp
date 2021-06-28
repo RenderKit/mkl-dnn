@@ -19,7 +19,7 @@
 
 #include <assert.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "primitive_desc.hpp"
@@ -88,7 +88,7 @@ struct binary_pd_t : public primitive_desc_t {
         return index == 0 ? &dst_md_ : &glob_zero_md;
     }
 
-    int n_inputs() const override { return 2; }
+    int n_inputs() const override { return 2 + n_binary_po_inputs(); }
     int n_outputs() const override { return 1; }
 
     const dims_t &broadcast_dims() const { return broadcast_dims_; }
@@ -130,7 +130,7 @@ protected:
     bool attr_post_ops_ok() const {
         using namespace primitive_kind;
         const auto &p = attr()->post_ops_;
-        switch (p.len_) {
+        switch (p.len()) {
             case 0: return true;
             case 1: return p.contain(sum, 0) || p.contain(eltwise, 0);
             case 2: return p.contain(sum, 0) && p.contain(eltwise, 1);

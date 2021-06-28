@@ -42,7 +42,7 @@ struct jit_uni_lstm_cell_postgemm_fwd : public jit_uni_rnn_postgemm {
         delete tanh_injector_;
     }
 
-    void init(data_type_t sdt) override {
+    status_t init(data_type_t sdt) override {
         jit_uni_rnn_postgemm::init(src_data_t);
         // we use rax for both constant tables and load correspondent label
         // into it when calling correspondent injector.
@@ -50,8 +50,7 @@ struct jit_uni_lstm_cell_postgemm_fwd : public jit_uni_rnn_postgemm {
                 this, alg_kind::eltwise_logistic, 0.0f, 0.0f, 1.0f, true, rax);
         tanh_injector_ = new injector_t(
                 this, alg_kind::eltwise_tanh, 0.0f, 0.0f, 1.0f, true, rax);
-        generate();
-        kernel_ = (kernel_t)this->getCode();
+        return create_kernel();
     }
 
 protected:
@@ -71,11 +70,14 @@ protected:
     size_t weights_peephole_dt_size = sizeof(float);
     size_t bias_dt_size = sizeof(float);
 
-    void generate() {
+    void generate() override {
         using namespace Xbyak;
 
         auto is_training
                 = (pd_->desc()->prop_kind == prop_kind::forward_training);
+
+        int mask = pd_->attr()->rnn_weights_qparams_.mask_;
+        float *weights_scales = pd_->attr()->rnn_weights_qparams_.scales_;
 
         // Labels declaration
         Label vector_loop_start_label, vector_loop_inc_regs,
@@ -85,10 +87,12 @@ protected:
         // Register map
         Reg64 loop_cnt(rbx); // loop counter
         // We skip vmm0 as it can be used by the injector for masks on sse4.1
-        Vmm G0(1), G1(2), G2(3), G3(4), tmp1_vmm(5), tmp2_vmm(6), zero_vmm(7);
+        Vmm G0(1), G1(2), G2(3), G3(4), tmp1_vmm(5), tmp2_vmm(6);
 
         // We start code generations here
         preamble();
+
+        Reg64 n_step_reg(rbp);
 
         // extract addresses passed as parameter
         auto addr_ws_gates_reg = abi_param1;
@@ -108,6 +112,7 @@ protected:
         mov(addr_c_states_tm1_l_reg, ptr[base_args + 8]);
         mov(addr_c_states_t_l_reg, ptr[base_args + 16]);
         mov(addr_weights_peephole_reg, ptr[base_args + 24]);
+        mov(n_step_reg, ptr[base_args + 40]);
 #else
         auto addr_states_t_l_copy_reg = abi_param5;
         auto addr_c_states_tm1_l_reg = abi_param6;
@@ -115,6 +120,7 @@ protected:
         auto base_args = get_stack_params_address();
         mov(addr_c_states_t_l_reg, ptr[base_args]);
         mov(addr_weights_peephole_reg, ptr[base_args + 8]);
+        mov(n_step_reg, ptr[base_args + 24]);
 #endif
 
         // helper lambda to address the gates and biases
@@ -134,16 +140,18 @@ protected:
         };
 
         // initialize registers with addresses and constants
-        init_regs(vlen);
+        init_regs(weights_scales, vlen);
 
         sigmoid_injector_->load_table_addr();
         tanh_injector_->load_table_addr();
-
-        mov(loop_cnt, rnn_.dhc * scratch_dt_size);
+        if (rnn_.is_brgemm && !rnn_.unfused_post_gemm)
+            mov(loop_cnt, n_step_reg);
+        else
+            mov(loop_cnt, rnn_.dhc * scratch_dt_size);
         cmp(loop_cnt, vlen);
         jl(vector_loop_end_label, Xbyak::CodeGenerator::T_NEAR);
 
-        L(vector_loop_start_label);
+        L_aligned(vector_loop_start_label, 64);
         {
             // load G0 G1 G2 G3
             uni_vmovups(G0, sg_addr(0));
@@ -152,12 +160,10 @@ protected:
             uni_vmovups(G3, sg_addr(3));
 
             // dequantize the gates from s32 to f32 if needed
-            if (src_data_t == data_type::u8) {
-                deq_w(G0, tmp1_vmm, tmp2_vmm, 0, true);
-                deq_w(G1, tmp1_vmm, tmp2_vmm, 1, true);
-                deq_w(G2, tmp1_vmm, tmp2_vmm, 2, true);
-                deq_w(G3, tmp1_vmm, tmp2_vmm, 3, true);
-            }
+            deq_w(src_data_t, G0, tmp1_vmm, tmp2_vmm, 0 * rnn_.dhc, mask, true);
+            deq_w(src_data_t, G1, tmp1_vmm, tmp2_vmm, 1 * rnn_.dhc, mask, true);
+            deq_w(src_data_t, G2, tmp1_vmm, tmp2_vmm, 2 * rnn_.dhc, mask, true);
+            deq_w(src_data_t, G3, tmp1_vmm, tmp2_vmm, 3 * rnn_.dhc, mask, true);
 
             // add biases
             uni_vmovups(tmp1_vmm, B_addr(0));
@@ -220,34 +226,34 @@ protected:
             // downconvert and write back the state
             to_src<src_data_t>(ptr[addr_states_t_l_reg], tmp1_vmm, vlen);
             // if states_t_l_copy is a non null ptr, we write the output to it too
-            cmp(addr_states_t_l_copy_reg, rnn_.dhc * hstate_dt_size);
-            jle(vector_loop_inc_regs);
+            cmp(addr_states_t_l_copy_reg, 0);
+            je(vector_loop_inc_regs);
             to_src<src_data_t>(
                     ptr[addr_states_t_l_copy_reg], tmp1_vmm, vlen, true);
+            add(addr_states_t_l_copy_reg, vlen_dst);
 
             // increment address pointers
-            L(vector_loop_inc_regs);
+            L_aligned(vector_loop_inc_regs);
             add(addr_scratch_gates_reg, vlen);
             if (rnn_.is_lstm_peephole) add(addr_weights_peephole_reg, vlen);
             add(addr_bias_reg, vlen);
             add(addr_states_t_l_reg, vlen_dst);
-            add(addr_states_t_l_copy_reg, vlen_dst);
             add(addr_c_states_tm1_l_reg, vlen);
             add(addr_c_states_t_l_reg, vlen);
             if (is_training) add(addr_ws_gates_reg, vlen_dst);
-            inc_regs(vlen);
+            inc_regs(mask, vlen);
 
             // increment loop counter
             sub(loop_cnt, vlen);
             cmp(loop_cnt, vlen);
             jge(vector_loop_start_label);
         }
-        L(vector_loop_end_label);
+        L_aligned(vector_loop_end_label);
 
         cmp(loop_cnt, 0);
         je(rem_loop_end_label, Xbyak::CodeGenerator::T_NEAR);
         // Same code as above, we just use vmovss for accessing inputs
-        L(rem_loop_start_label);
+        L_aligned(rem_loop_start_label, 64);
         {
             // load G0 G1 G2 G3
             uni_vmovss(G0, sg_addr(0));
@@ -256,12 +262,14 @@ protected:
             uni_vmovss(G3, sg_addr(3));
 
             // dequantize the gates from s32 to f32 if needed
-            if (src_data_t == data_type::u8) {
-                deq_w(G0, tmp1_vmm, tmp2_vmm, 0, false);
-                deq_w(G1, tmp1_vmm, tmp2_vmm, 1, false);
-                deq_w(G2, tmp1_vmm, tmp2_vmm, 2, false);
-                deq_w(G3, tmp1_vmm, tmp2_vmm, 3, false);
-            }
+            deq_w(src_data_t, G0, tmp1_vmm, tmp2_vmm, 0 * rnn_.dhc, mask,
+                    false);
+            deq_w(src_data_t, G1, tmp1_vmm, tmp2_vmm, 1 * rnn_.dhc, mask,
+                    false);
+            deq_w(src_data_t, G2, tmp1_vmm, tmp2_vmm, 2 * rnn_.dhc, mask,
+                    false);
+            deq_w(src_data_t, G3, tmp1_vmm, tmp2_vmm, 3 * rnn_.dhc, mask,
+                    false);
 
             // add biases
             uni_vmovss(tmp1_vmm, B_addr(0));
@@ -328,30 +336,30 @@ protected:
             to_src<src_data_t>(
                     ptr[addr_states_t_l_reg], tmp1_vmm, scratch_dt_size);
             // if states_t_l_copy is a non null ptr, we write the output to it too
-            cmp(addr_states_t_l_copy_reg, rnn_.dhc * hstate_dt_size);
-            jle(rem_loop_inc_regs);
+            cmp(addr_states_t_l_copy_reg, 0);
+            je(rem_loop_inc_regs);
             to_src<src_data_t>(ptr[addr_states_t_l_copy_reg], tmp1_vmm,
                     scratch_dt_size, true);
+            add(addr_states_t_l_copy_reg, hstate_dt_size);
 
             // increment address pointers
-            L(rem_loop_inc_regs);
+            L_aligned(rem_loop_inc_regs);
             add(addr_scratch_gates_reg, scratch_dt_size);
             if (rnn_.is_lstm_peephole)
                 add(addr_weights_peephole_reg, weights_peephole_dt_size);
             add(addr_bias_reg, bias_dt_size);
             add(addr_states_t_l_reg, hstate_dt_size);
-            add(addr_states_t_l_copy_reg, hstate_dt_size);
             add(addr_c_states_tm1_l_reg, cstate_dt_size);
             add(addr_c_states_t_l_reg, cstate_dt_size);
             if (is_training) add(addr_ws_gates_reg, gate_dt_size);
-            inc_regs(qscale_dt_size);
+            inc_regs(mask, qscale_dt_size);
 
             // increment loop counter
             sub(loop_cnt, scratch_dt_size);
             cmp(loop_cnt, 0);
             jg(rem_loop_start_label);
         }
-        L(rem_loop_end_label);
+        L_aligned(rem_loop_end_label);
 
         postamble();
 

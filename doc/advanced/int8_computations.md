@@ -1,5 +1,5 @@
-Int8 Computation Aspects {#dev_guide_int8_computations}
-=======================================================
+Nuances of int8 Computations {#dev_guide_int8_computations}
+===========================================================
 
 > This document uses **int8** to denote 8-bit integer no matter whether it is
 > signed or unsigned. To emphasize the signedness of the data type
@@ -40,7 +40,7 @@ int8 values. These primitives are:
  * [Convolution](@ref dev_guide_convolution)
  * Int8 GEMMs: dnnl_gemm_s8s8s32() and dnnl_gemm_u8s8s32()
  * [Inner Product](@ref dev_guide_inner_product)
- * [LSTM](@ref dev_guide_rnn)
+ * [RNN](@ref dev_guide_rnn) with LSTM or GRU cell functions
 
 Ideally, the semantics of these operations should be as follows:
  1. **Convert all inputs to s32 data type**.
@@ -50,6 +50,9 @@ Ideally, the semantics of these operations should be as follows:
  4. (Optionally) Down-convert the result to the destination data type.
 
 Depending on the hardware, the first step might vary slightly.
+
+The data type of computations within a primitive is defined based on the type 
+of the input tensors. 
 
 This document focuses on the first two steps (since the last two steps are
 independent from the hardware used), and describes the behaviors on different
@@ -137,13 +140,13 @@ u7 `[0, 127]` instead of u8 for the unsigned input, or s7 `[-64, 63]` instead
 of the s8 one. It is worth mentioning that this is required only when the Intel
 AVX2 or Intel AVX512 Instruction Set is used.
 
-The **LSTM** primitive behaves slightly differently than the convolution and
+The **RNN** primitive behaves slightly differently than the convolution and
 inner product primitives, or u8/s8 GEMM. Even though its hidden state is
 represented by the u8 data type, the non-symmetric quantization is assumed.
 Namely, the formula is:
 - \f$data_{f32}[:] = \frac{1}{scale}(data_{u8}[:] - shift)\f$.
 
-But similarly to the other primitives, the LSTM primitive does not handle
+But similarly to the other primitives, the RNN primitive does not handle
 potential overflows automatically. It is up to the user to specify the
 appropriate quantization parameters (see
 dnnl::primitive_attr::set_rnn_data_qparams() and
@@ -276,27 +279,27 @@ the implementations are given below:
    behavior of the latter. The user should consider using the appropriate
    scaling factors to avoid potential issues.
 
-4. The **LSTM** primitive does not support s8/s8 inputs.
+4. The **RNN** primitive does not support s8/s8 inputs.
 
 
 ## GPU
 
-int8 data types are not supported on GPU (see @ref dev_guide_data_types).
+See @ref dev_guide_data_types for details of int8 data type support on GPU.
 
 ## References
 
 @anchor dg_i8_ref_sdm
 [1] [Intel(R) 64 and IA-32 Architectures Software Developer's Manual Combined
-    Volumes 2A, 2B, 2C, and 2D: Instruction Set Reference, A-Z](https://software.intel.com/en-us/articles/intel-sdm).
+    Volumes 2A, 2B, 2C, and 2D: Instruction Set Reference, A-Z](https://software.intel.com/content/www/us/en/develop/articles/intel-sdm.html).
     325383-070US May 2019.
 
 @anchor dg_i8_ref_isa_ext
 [2] [Intel(R) Architecture Instruction Set Extensions and Future Features
-    Programming Reference](https://software.intel.com/en-us/download/intel-architecture-instruction-set-extensions-and-future-features-programming-reference).
+    Programming Reference](https://software.intel.com/content/www/us/en/develop/download/intel-architecture-instruction-set-extensions-and-future-features-programming-reference.html).
     319433-037 May 2019.
     *Chapter 2.1. VPDPBUSD — Multiply and Add Unsigned and Signed Bytes*.
 
 @anchor dg_i8_ref_wp
 [3] Rodriguez, Andres, et al.
-    ["Lower numerical precision deep learning inference and training."](https://software.intel.com/en-us/articles/lower-numerical-precision-deep-learning-inference-and-training)
+    ["Lower numerical precision deep learning inference and training."](https://software.intel.com/content/www/us/en/develop/articles/lower-numerical-precision-deep-learning-inference-and-training)
     Intel White Paper (2018).

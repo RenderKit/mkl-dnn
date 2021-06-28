@@ -127,17 +127,18 @@ update.
 When executed, the inputs and outputs should be mapped to an execution
 argument index as specified by the following table.
 
-| Primitive input/output | Execution argument index |
-| ---                    | ---                      |
-| \src                   | DNNL_ARG_SRC             |
-| \weights               | DNNL_ARG_WEIGHTS         |
-| \bias                  | DNNL_ARG_BIAS            |
-| \dst                   | DNNL_ARG_DST             |
-| \diffsrc               | DNNL_ARG_DIFF_SRC        |
-| \diffweights           | DNNL_ARG_DIFF_WEIGHTS    |
-| \diffbias              | DNNL_ARG_DIFF_BIAS       |
-| \diffdst               | DNNL_ARG_DIFF_DST        |
-| \f$depthwise\f$        | DNNL_ARG_ATTR_POST_OP_DW |
+| Primitive input/output      | Execution argument index                                                  |
+| ---                         | ---                                                                       |
+| \src                        | DNNL_ARG_SRC                                                              |
+| \weights                    | DNNL_ARG_WEIGHTS                                                          |
+| \bias                       | DNNL_ARG_BIAS                                                             |
+| \dst                        | DNNL_ARG_DST                                                              |
+| \diffsrc                    | DNNL_ARG_DIFF_SRC                                                         |
+| \diffweights                | DNNL_ARG_DIFF_WEIGHTS                                                     |
+| \diffbias                   | DNNL_ARG_DIFF_BIAS                                                        |
+| \diffdst                    | DNNL_ARG_DIFF_DST                                                         |
+| \f$depthwise\f$             | DNNL_ARG_ATTR_POST_OP_DW                                                  |
+| \f$\text{binary post-op}\f$ | DNNL_ARG_ATTR_MULTIPLE_POST_OP(binary_post_op_position) \| DNNL_ARG_SRC_1 |
 
 ## Implementation Details
 
@@ -152,11 +153,12 @@ source, destination, and weights memory objects:
 
 | Propagation        | Source    | Weights   | Destination       | Bias             |
 | :--                | :--       | :--       | :--               | :--              |
-| forward / backward | f32       | f32       | f32               | f32              |
-| forward            | f16       | f16       | f16               | f16              |
+| forward            | f32       | f32       | f32, s8           | f32              |
+| forward            | f16       | f16       | f16, f32, s8      | f16, f32         |
 | forward            | u8, s8    | s8        | u8, s8, s32, f32  | u8, s8, s32, f32 |
 | forward            | bf16      | bf16      | f32, bf16         | f32, bf16        |
 | backward           | f32, bf16 | bf16      | bf16              |                  |
+| backward           | f32       | f32       | f32               | f32              |
 | weights update     | bf16      | f32, bf16 | bf16              | f32, bf16        |
 
 @warning
@@ -193,13 +195,13 @@ the convolution primitive is optimized for.
 | :--        | :--              | :--                           | :--
 | 1D, 2D, 3D |                  | `any`                         | *optimized*
 | 1D         | f32, bf16        | NCW / OIW, GOIW               | #dnnl_ncw (#dnnl_abc) / #dnnl_oiw (#dnnl_abc), #dnnl_goiw (#dnnl_abcd)
-| 1D         | "                | "                             | #dnnl_nwc (#dnnl_acb) / #dnnl_wio (#dnnl_cba), #dnnl_wigo (#dnnl_dcab)
+| 1D         | \"               | \"                            | #dnnl_nwc (#dnnl_acb) / #dnnl_wio (#dnnl_cba), #dnnl_wigo (#dnnl_dcab)
 | 1D         | int8             | NCW / OIW                     | #dnnl_nwc (#dnnl_acb) / #dnnl_wio (#dnnl_cba)
 | 2D         | f32, bf16        | NCHW / OIHW, GOIHW            | #dnnl_nchw (#dnnl_abcd) / #dnnl_oihw (#dnnl_abcd), #dnnl_goihw (#dnnl_abcde)
-| 2D         | "                | "                             | #dnnl_nhwc (#dnnl_acdb) / #dnnl_hwio (#dnnl_cdba), #dnnl_hwigo (#dnnl_decab)
+| 2D         | \"               | \"                            | #dnnl_nhwc (#dnnl_acdb) / #dnnl_hwio (#dnnl_cdba), #dnnl_hwigo (#dnnl_decab)
 | 2D         | int8             | NCHW / OIHW, GOIHW            | #dnnl_nhwc (#dnnl_acdb) / #dnnl_hwio (#dnnl_cdba), #dnnl_hwigo (#dnnl_decab)
 | 3D         | f32, bf16        | NCDHW / OIDHW, GOIDHW         | #dnnl_ncdhw (#dnnl_abcde) / #dnnl_oidhw (#dnnl_abcde), #dnnl_goidhw (#dnnl_abcdef)
-| 3D         | "                | "                             | #dnnl_ndhwc (#dnnl_acdeb) / #dnnl_dhwio (#dnnl_cdeba), #dnnl_dhwigo (#dnnl_defcab)
+| 3D         | \"               | \"                            | #dnnl_ndhwc (#dnnl_acdeb) / #dnnl_dhwio (#dnnl_cdeba), #dnnl_dhwigo (#dnnl_defcab)
 | 3D         | int8             | NCDHW / OIDHW                 | #dnnl_ndhwc (#dnnl_acdeb) / #dnnl_dhwio (#dnnl_cdeba)
 
 ### Post-ops and Attributes
@@ -209,11 +211,13 @@ primitive by applying the output scale to the result of the primitive and by
 chaining certain operations after the primitive. The following attributes and
 post-ops are supported:
 
-| Propagation | Type      | Operation                                                    | Description                                                                   | Restrictions           |
-| :--         | :--       | :--                                                          | :--                                                                           | :--                    |
-| forward     | attribute | [Output scale](@ref dnnl::primitive_attr::set_output_scales) | Scales the result of convolution by given scale factor(s)                     | int8 convolutions only |
-| forward     | post-op   | [eltwise](@ref dnnl::post_ops::append_eltwise)               | Applies an @ref dnnl_api_eltwise operation to the result                      |                        |
-| forward     | post-op   | [sum](@ref dnnl::post_ops::append_sum)                       | Adds the operation result to the destination tensor instead of overwriting it |                        |
+| Propagation | Type      | Operation                                                    | Description                                                                   | Restrictions                        |
+| :--         | :--       | :--                                                          | :--                                                                           | :--                                 |
+| forward     | attribute | [Output scale](@ref dnnl::primitive_attr::set_output_scales) | Scales the result of convolution by given scale factor(s)                     | int8 convolutions only              |
+| forward     | attribute | [Zero points](@ref dnnl::primitive_attr::set_zero_points)    | Sets zero point(s) for the corresponding tensors                              | int8 convolutions only              |
+| forward     | post-op   | [Eltwise](@ref dnnl::post_ops::append_eltwise)               | Applies an @ref dnnl_api_eltwise operation to the result                      |                                     |
+| forward     | post-op   | [Sum](@ref dnnl::post_ops::append_sum)                       | Adds the operation result to the destination tensor instead of overwriting it |                                     |
+| forward     | post-op   | [Binary](@ref dnnl::post_ops::append_binary)                 | Applies a @ref dnnl_api_binary operation to the result                        | General binary post-op restrictions |
 
 To facilitate dynamic quantization, the primitive supports run-time output
 scales. That means a user could configure attributes with output scales set to
@@ -222,6 +226,20 @@ if the scales are not known at the primitive descriptor creation stage.
 In this case, the user must provide the scales as an additional input memory
 object with argument `DNNL_ARG_ATTR_OUTPUT_SCALES` during the execution stage.
 
+Similarly to run-time output scales, the primitive supports run-time zero
+points. The wildcard value for zero points is #DNNL_RUNTIME_S32_VAL. The
+following masks are supported by the primitive:
+- 0, which applies one zero point value to an entire tensor, and
+- 2, which applies a zero point value per each element in a `IC` or `OC`
+  dimension for `DNNL_ARG_SRC` or `DNNL_ARG_DST` arguments respectively.
+
+During the execution stage, the corresponding memory object must be passed as an
+argument with its index set to
+(`DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_${MEMORY_INDEX}`). Possible
+`${MEMORY_INDEX}` values are `DNNL_ARG_SRC` and `DNNL_ARG_DST`.
+- For instance, a source tensor zero points memory argument would be passed with
+  index (`DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC`).
+
 @note The library does not prevent using post-ops in training, but note that
 not all post-ops are feasible for training usage. For instance, using ReLU
 with non-zero negative slope parameter as a post-op would not produce an
@@ -229,7 +247,8 @@ additional output `workspace` that is required to compute backward propagation
 correctly. Hence, in this particular case one should use separate convolution
 and eltwise primitives for training.
 
-The following post-ops chaining is supported by the library:
+The library supports any number and order of post operations, but only the
+following sequences deploy optimized code:
 
 | Type of convolutions      | Post-ops sequence supported
 | :--                       | :--
@@ -237,8 +256,10 @@ The following post-ops chaining is supported by the library:
 | int8 convolution          | eltwise, sum, sum -> eltwise, eltwise -> sum
 
 The attributes and post-ops take effect in the following sequence:
+- Source zero point attribute,
 - Output scale attribute,
-- Post-ops, in order they were attached.
+- Post-ops, in the order they were attached,
+- Destination zero point attribute.
 
 The operations during attributes and post-ops applying are done in single
 precision floating point data type. The conversion to the actual destination
@@ -246,17 +267,17 @@ data type happens just before the actual storing.
 
 #### Example 1
 
-Consider the following pseudo code:
+Consider the following pseudo-code:
 
 ~~~
-    attribute attr;
-    attr.set_output_scale(alpha);
+    primitive_attr attr;
+    attr.set_output_scale(mask=0, alpha);
     attr.set_post_ops({
             { sum={scale=beta} },
-            { eltwise={scale=gamma, type=tanh, alpha=ignore, beta=ignored }
+            { eltwise={scale=gamma, type=tanh, alpha=ignore, beta=ignored } }
         });
 
-    convolution_forward(src, weights, dst, attr)
+    convolution_forward(src, weights, dst, attr);
 ~~~
 
 The would lead to the following:
@@ -271,17 +292,17 @@ The would lead to the following:
 
 #### Example 2
 
-The following pseudo code:
+The following pseudo-code:
 
 ~~~
-    attribute attr;
-    attr.set_output_scale(alpha);
+    primitive_attr attr;
+    attr.set_output_scale(mask=0, alpha);
     attr.set_post_ops({
-            { eltwise={scale=gamma, type=relu, alpha=eta, beta=ignored }
-            { sum={scale=beta} },
+            { eltwise={scale=gamma, type=relu, alpha=eta, beta=ignored } },
+            { sum={scale=beta} }
         });
 
-    convolution_forward(src, weights, dst, attr)
+    convolution_forward(src, weights, dst, attr);
 ~~~
 
 That would lead to the following:
@@ -293,6 +314,32 @@ That would lead to the following:
             \alpha \cdot conv(\src, \weights),
             \eta
         \right)
+\f]
+
+#### Example 3
+
+The following pseudo-code:
+
+~~~
+    primitive_attr attr;
+    attr.set_output_scale(mask=0, alpha);
+    attr.set_zero_point(src, mask=0, shift_src);
+    attr.set_zero_point(dst, mask=0, shift_dst);
+    attr.set_post_ops({
+            { eltwise={scale=gamma, type=relu, alpha=eta, beta=ignored } }
+        });
+
+    convolution_forward(src, weights, dst, attr);
+~~~
+
+That would lead to the following:
+
+\f[
+    \dst(\overline{x}) =
+        \gamma \cdot ReLU \left(
+            \alpha \cdot conv(\src - shift_{src}, \weights),
+            \eta
+        \right) + shift_{dst}
 \f]
 
 ## Algorithms
@@ -411,9 +458,8 @@ the convolution.)
    - Winograd are implemented only for processors with Intel AVX-512 and
      Intel DL Boost instruction sets
    - Run-time output scales are not supported
-
-3. **GPU**
-    - No support for Winograd algorithm
+   - Integer \dst is not supported for floating point \src and \weights
+   - backward convolution with bias is not supported
 
 ## Performance Tips
 

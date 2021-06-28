@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -76,14 +76,18 @@ struct jit_avx512_core_bf16_convolution_fwd_t : public primitive_t {
         jit_conv_conf_t jcp_;
     };
 
-    jit_avx512_core_bf16_convolution_fwd_t(const pd_t *apd) : primitive_t(apd) {
-        kernel_ = new jit_avx512_core_bf16_fwd_kernel(
-                pd()->jcp_, *pd()->attr());
-    }
-    ~jit_avx512_core_bf16_convolution_fwd_t() { delete kernel_; }
+    jit_avx512_core_bf16_convolution_fwd_t(const pd_t *apd)
+        : primitive_t(apd) {}
 
     typedef typename prec_traits<data_type::bf16>::type src_data_t;
     typedef typename prec_traits<data_type::bf16>::type wei_data_t;
+
+    status_t init(engine_t *engine) override {
+        CHECK(safe_ptr_assign(kernel_,
+                new jit_avx512_core_bf16_fwd_kernel(
+                        pd()->jcp_, *pd()->attr(), *pd()->dst_md(0))));
+        return kernel_->create_kernel();
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         if (pd()->ndims() == 3)
@@ -95,9 +99,7 @@ struct jit_avx512_core_bf16_convolution_fwd_t : public primitive_t {
         else
             return status::unimplemented;
 
-        if (pd()->wants_zero_pad_dst())
-            ctx.memory(DNNL_ARG_DST)->zero_pad(ctx.stream());
-
+        if (pd()->wants_zero_pad_dst()) ctx.zero_pad_output(DNNL_ARG_DST);
         return status::success;
     }
 
@@ -109,7 +111,7 @@ private:
     void execute_forward_3d(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 
-    jit_avx512_core_bf16_fwd_kernel *kernel_;
+    std::unique_ptr<jit_avx512_core_bf16_fwd_kernel> kernel_;
 };
 
 struct jit_avx512_core_bf16_convolution_bwd_data_t : public primitive_t {
@@ -144,13 +146,16 @@ struct jit_avx512_core_bf16_convolution_bwd_data_t : public primitive_t {
     };
 
     jit_avx512_core_bf16_convolution_bwd_data_t(const pd_t *apd)
-        : primitive_t(apd) {
-        kernel_ = new jit_avx512_core_bf16_bwd_data_kernel(pd()->jcp_);
-    }
-    ~jit_avx512_core_bf16_convolution_bwd_data_t() { delete kernel_; };
+        : primitive_t(apd) {}
 
     typedef typename prec_traits<data_type::bf16>::type diff_dst_data_t;
     typedef typename prec_traits<data_type::bf16>::type wei_data_t;
+
+    status_t init(engine_t *engine) override {
+        CHECK(safe_ptr_assign(
+                kernel_, new jit_avx512_core_bf16_bwd_data_kernel(pd()->jcp_)));
+        return kernel_->create_kernel();
+    }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         if (pd()->ndims() < 5)
@@ -167,7 +172,7 @@ private:
     void execute_backward_data(const exec_ctx_t &ctx) const;
     void execute_backward_data_3d(const exec_ctx_t &ctx) const;
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
-    jit_avx512_core_bf16_bwd_data_kernel *kernel_;
+    std::unique_ptr<jit_avx512_core_bf16_bwd_data_kernel> kernel_;
 };
 
 struct jit_avx512_core_bf16_convolution_bwd_weights_t : public primitive_t {
@@ -211,16 +216,13 @@ struct jit_avx512_core_bf16_convolution_bwd_weights_t : public primitive_t {
         jit_conv_conf_t jcp_;
     };
 
-    jit_avx512_core_bf16_convolution_bwd_weights_t(const pd_t *apd);
-    ~jit_avx512_core_bf16_convolution_bwd_weights_t() {
-        delete kernel_;
-        delete trans_kernel_;
-        delete trans_dst_kernel_;
-        delete acc_ker_;
-    }
+    jit_avx512_core_bf16_convolution_bwd_weights_t(const pd_t *apd)
+        : primitive_t(apd) {}
 
     typedef typename prec_traits<data_type::bf16>::type src_data_t;
     typedef typename prec_traits<data_type::bf16>::type diff_dst_data_t;
+
+    status_t init(engine_t *engine) override;
 
     status_t execute(const exec_ctx_t &ctx) const override {
         execute_backward_weights(ctx);
@@ -252,14 +254,14 @@ private:
             dim_t spatial_start_offset, int ocb_start, dim_t chb_stride,
             int my_work) const;
 
-    int nthr_, nthr_mb_, nthr_g_, nthr_oc_b_, nthr_ic_b_;
+    int nthr_ = 0, nthr_mb_ = 0, nthr_g_ = 0, nthr_oc_b_ = 0, nthr_ic_b_ = 0;
 
-    jit_avx512_core_bf16_conv_bwd_weights_kernel_f32 *kernel_;
+    std::unique_ptr<jit_avx512_core_bf16_conv_bwd_weights_kernel_f32> kernel_;
 
-    cpu_accumulator_1d_t<data_type::f32> *acc_ker_;
+    std::unique_ptr<cpu_accumulator_1d_t<data_type::f32>> acc_ker_;
 
-    jit_trans_src_t *trans_kernel_;
-    jit_trans_dst_t *trans_dst_kernel_;
+    std::unique_ptr<jit_trans_src_t> trans_kernel_;
+    std::unique_ptr<jit_trans_dst_t> trans_dst_kernel_;
 };
 
 } // namespace x64

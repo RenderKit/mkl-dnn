@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,30 +46,29 @@ struct ref_resampling_fwd_t : public gpu_primitive_t {
         status_t init(engine_t *engine) {
             using namespace data_type;
             assert(engine->kind() == engine_kind::gpu);
+            using sm = primitive_attr_t::skip_mask_t;
+            const auto attr_skip_mask = sm::post_ops;
+
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine);
-            bool ok = is_fwd() && src_md()->data_type == dst_md()->data_type
-                    && set_default_params() == status::success
-                    && attr()->has_default_values();
+            bool ok = is_fwd() && set_default_params() == status::success
+                    && attr()->has_default_values(attr_skip_mask)
+                    && post_ops_with_binary_ok(attr(), dst_md()->data_type, 5);
             if (!ok) return status::unimplemented;
-
-            auto blocking = src_md()->format_desc.blocking;
-            bool only_c_blocked
-                    = blocking.inner_nblks == 1 && blocking.inner_idxs[0] == 1;
-            c_block = only_c_blocked ? blocking.inner_blks[0] : 1;
 
             dispatch = compute_engine->create_dispatch(dst_md());
             dispatch.define_dim("MB", 0, MB());
-            dispatch.define_dim("C", 1, C(), c_block);
+            dispatch.define_dim("C", 1, C());
             dispatch.define_dim("OD", nstl::max(2, dst_md()->ndims - 3), OD());
             dispatch.define_dim("OH", nstl::max(2, dst_md()->ndims - 2), OH());
             dispatch.define_dim("OW", nstl::max(2, dst_md()->ndims - 1), OW());
             dispatch.generate();
+            attr_info = attr_info_t::create(attr());
 
             return status::success;
         }
-        int c_block;
         compute::dispatch_t dispatch;
+        attr_info_t attr_info;
     };
 
     ref_resampling_fwd_t(const pd_t *apd) : gpu_primitive_t(apd) {}
@@ -87,8 +86,12 @@ struct ref_resampling_fwd_t : public gpu_primitive_t {
         kernel_ctx.define_int("IS_FWD", 1);
 
         switch (desc->alg_kind) {
-            case resampling_nearest: kernel_ctx.define_int("NEAREST", 1); break;
-            case resampling_linear: kernel_ctx.define_int("LINEAR", 1); break;
+            case resampling_nearest:
+                kernel_ctx.define_int("RESAMPLING_ALG_NEAREST", 1);
+                break;
+            case resampling_linear:
+                kernel_ctx.define_int("RESAMPLING_ALG_LINEAR", 1);
+                break;
             default: status = status::unimplemented;
         }
         if (status != status::success) return status;
@@ -100,10 +103,12 @@ struct ref_resampling_fwd_t : public gpu_primitive_t {
         kernel_ctx.define_int("NDIMS", ndims);
         kernel_ctx.define_int("MB", pd()->MB());
         kernel_ctx.define_int("C", pd()->C());
-        kernel_ctx.define_int("C_BLOCK", pd()->c_block);
         kernel_ctx.define_int("ID", pd()->ID());
         kernel_ctx.define_int("IH", pd()->IH());
         kernel_ctx.define_int("IW", pd()->IW());
+        kernel_ctx.define_int("OD", pd()->OD());
+        kernel_ctx.define_int("OH", pd()->OH());
+        kernel_ctx.define_int("OW", pd()->OW());
         kernel_ctx.define_float("FD", pd()->FD());
         kernel_ctx.define_float("FH", pd()->FH());
         kernel_ctx.define_float("FW", pd()->FW());
@@ -113,7 +118,9 @@ struct ref_resampling_fwd_t : public gpu_primitive_t {
         set_offsets(dst_d, off.dst_off);
         def_offsets(off.src_off, kernel_ctx, "SRC", ndims);
         def_offsets(off.dst_off, kernel_ctx, "DST", ndims);
+        def_data_type(kernel_ctx, dst_d.data_type(), "DST");
 
+        def_attr_info(kernel_ctx, pd()->attr_info);
         def_dispatch(kernel_ctx, pd()->dispatch);
 
         create_kernel(engine, &kernel_, "ref_resampling_fwd", kernel_ctx);
@@ -146,10 +153,7 @@ struct ref_resampling_bwd_t : public gpu_primitive_t {
             assert(engine->kind() == engine_kind::gpu);
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine);
-            bool ok = !is_fwd()
-                    && utils::one_of(diff_src_md()->data_type, f32, bf16)
-                    && diff_src_md()->data_type == diff_dst_md()->data_type
-                    && set_default_params() == status::success
+            bool ok = !is_fwd() && set_default_params() == status::success
                     && attr()->has_default_values();
             if (!ok) return status::unimplemented;
 
@@ -184,8 +188,12 @@ struct ref_resampling_bwd_t : public gpu_primitive_t {
         kernel_ctx.define_int("IS_BWD", 1);
 
         switch (desc->alg_kind) {
-            case resampling_nearest: kernel_ctx.define_int("NEAREST", 1); break;
-            case resampling_linear: kernel_ctx.define_int("LINEAR", 1); break;
+            case resampling_nearest:
+                kernel_ctx.define_int("RESAMPLING_ALG_NEAREST", 1);
+                break;
+            case resampling_linear:
+                kernel_ctx.define_int("RESAMPLING_ALG_LINEAR", 1);
+                break;
             default: status = status::unimplemented;
         }
         if (status != status::success) return status;
@@ -212,6 +220,7 @@ struct ref_resampling_bwd_t : public gpu_primitive_t {
         set_offsets(diff_dst_d, off.dst_off);
         def_offsets(off.src_off, kernel_ctx, "SRC", ndims);
         def_offsets(off.dst_off, kernel_ctx, "DST", ndims);
+        def_data_type(kernel_ctx, diff_dst_d.data_type(), "DST");
 
         def_dispatch(kernel_ctx, pd()->dispatch);
 

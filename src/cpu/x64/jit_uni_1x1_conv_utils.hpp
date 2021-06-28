@@ -26,6 +26,7 @@
 #include "common/utils.hpp"
 
 #include "cpu/x64/jit_generator.hpp"
+#include "cpu/x64/jit_primitive_conf.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -53,7 +54,8 @@ inline void rtus_prepare(conv_pd_t *self, const convolution_desc_t *&conv_d,
     const bool with_groups
             = memory_desc_wrapper(weights_d).ndims() == ndims + 1;
 
-    bool rtus_applicable = utils::one_of(ndims, 3, 4) && !with_groups;
+    bool rtus_applicable = utils::one_of(ndims, 3, 4)
+            && IMPLICATION(with_groups, weights_d->dims[0] == 1);
     if (ndims == 3)
         rtus_applicable = rtus_applicable && conv_d->strides[0] != 1
                 && conv_d->src_desc.data_type != data_type::s32;
@@ -76,7 +78,7 @@ inline void rtus_prepare(conv_pd_t *self, const convolution_desc_t *&conv_d,
 
     const bool is_nspc
             = utils::one_of(dat_tag, format_tag::nwc, format_tag::nhwc);
-    if (is_nspc && !mayiuse(avx2)) return;
+    if (is_nspc && !mayiuse(sse41)) return;
 
     // rtus is applicable, configure it.
     self->rtus_.reduce_src_ = true;
@@ -133,8 +135,6 @@ struct rtus_driver_t : public jit_generator {
         size_t iw_start;
     };
 
-    void (*ker_)(const call_params_t *p);
-
     DECLARE_CPU_JIT_AUX_FUNCTIONS(rtus_driver_t)
 
     Xbyak::Reg64 reg_ws = r12;
@@ -169,7 +169,8 @@ struct rtus_driver_t : public jit_generator {
     rtus_driver_t(int iw, int stride_w, int src_step_h, int src_step_icb,
             int ws_step_icb, bool src_to_ws, size_t typesize, int ic,
             bool is_nspc = false)
-        : iw_(iw)
+        : jit_generator(nullptr, MAX_CODE_SIZE, true, isa)
+        , iw_(iw)
         , stride_w_(stride_w)
         , src_step_h_(src_step_h)
         , src_step_icb_(src_step_icb)
@@ -192,6 +193,7 @@ struct rtus_driver_t : public jit_generator {
             Xmm res;
             if (is_nspc_) {
                 switch (isa) {
+                    case sse41: res = Xmm(idx); break;
                     case avx2: res = Ymm(idx); break;
                     case avx512_common:
                     case avx512_core:
@@ -201,6 +203,12 @@ struct rtus_driver_t : public jit_generator {
                 return res;
             }
             switch (isa) {
+                case sse41:
+                    switch (typesize) {
+                        case 2: res = Xmm(idx); break;
+                        default: assert(!"Not supported typesize");
+                    }
+                    break;
                 case avx2:
                     switch (typesize) {
                         case 4: res = Ymm(idx); break;
@@ -239,8 +247,6 @@ struct rtus_driver_t : public jit_generator {
 
         const int simd_w = vlen_ / sizeof(float);
         ic_tail_ = ic_ % simd_w;
-
-        generate();
     }
 
     void loop_is() {
@@ -371,7 +377,9 @@ struct rtus_driver_t : public jit_generator {
         shl(reg_icb, vlen_shift_);
 
         const size_t w_step_factor = ic_ * typesize_;
-        const size_t max_load_store_bytes = typesize_ == 4 ? 32 : 16;
+        const size_t max_load_store_bytes = isa == sse41
+                ? typesize_ == 4 ? 16 : 8
+                : typesize_ == 4 ? 32 : 16;
         const size_t load_store_size
                 = isa == avx512_common ? vlen_ : max_load_store_bytes;
         size_t load_store_tail_size = (typesize_ == 1 ? max_load_store_bytes
@@ -485,10 +493,10 @@ struct rtus_driver_t : public jit_generator {
         }
     }
 
-    void generate() {
+    void generate() override {
         using namespace Xbyak;
-        assert(isa == avx2 || isa == avx512_common || isa == avx512_core
-                || isa == avx512_mic);
+        assert(utils::one_of(
+                isa, sse41, avx2, avx512_common, avx512_core, avx512_mic));
 
         preamble();
 #define READ_PARAM(what) \
@@ -537,15 +545,13 @@ struct rtus_driver_t : public jit_generator {
 
         uni_vzeroupper();
         ret();
-        this->ker_ = reinterpret_cast<decltype(ker_)>(
-                const_cast<uint8_t *>(this->getCode()));
     }
 };
 
 template <cpu_isa_t isa, typename conv_t>
-inline void init_rtus_driver(conv_t *self) {
+inline status_t init_rtus_driver(conv_t *self) {
     const auto &conf = *self->pd();
-    if (!conf.rtus_.reduce_src_) return;
+    if (!conf.rtus_.reduce_src_) return status::success;
 
     const auto &cd = *conf.desc();
     const int ndims = conf.ndims();
@@ -569,8 +575,11 @@ inline void init_rtus_driver(conv_t *self) {
     const size_t typesize
             = types::data_type_size(self->pd()->invariant_src_md()->data_type);
 
-    self->rtus_driver_ = new rtus_driver_t<isa>(iw, stride_w, src_step_h,
-            src_step_icb, ws_step_icb, src_to_ws, typesize, ic, is_nspc);
+    CHECK(safe_ptr_assign(self->rtus_driver_,
+            new rtus_driver_t<isa>(iw, stride_w, src_step_h, src_step_icb,
+                    ws_step_icb, src_to_ws, typesize, ic, is_nspc)));
+
+    return self->rtus_driver_->create_kernel();
 }
 
 inline int best_divider(int value, int min_divider, int max_divider,

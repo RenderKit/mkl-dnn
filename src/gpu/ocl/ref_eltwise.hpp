@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -42,8 +42,10 @@ struct ref_eltwise_fwd_t : public gpu_primitive_t {
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine);
 
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::post_ops;
+
             using namespace alg_kind;
-            bool ok = true
+            const bool ok = true
                     && utils::one_of(desc()->prop_kind,
                             prop_kind::forward_training,
                             prop_kind::forward_inference)
@@ -51,23 +53,23 @@ struct ref_eltwise_fwd_t : public gpu_primitive_t {
                             eltwise_linear, eltwise_bounded_relu, eltwise_abs,
                             eltwise_tanh, eltwise_elu, eltwise_square,
                             eltwise_sqrt, eltwise_soft_relu, eltwise_logistic,
-                            eltwise_exp, eltwise_gelu_tanh, eltwise_swish,
-                            eltwise_log, eltwise_clip, eltwise_pow,
-                            eltwise_gelu_erf, eltwise_round,
+                            eltwise_logsigmoid, eltwise_mish, eltwise_exp,
+                            eltwise_gelu_tanh, eltwise_hardswish, eltwise_swish,
+                            eltwise_log, eltwise_clip, eltwise_clip_v2,
+                            eltwise_pow, eltwise_gelu_erf, eltwise_round,
                             eltwise_relu_use_dst_for_bwd,
                             eltwise_logistic_use_dst_for_bwd,
                             eltwise_tanh_use_dst_for_bwd,
                             eltwise_elu_use_dst_for_bwd,
                             eltwise_sqrt_use_dst_for_bwd,
-                            eltwise_exp_use_dst_for_bwd)
+                            eltwise_exp_use_dst_for_bwd,
+                            eltwise_clip_v2_use_dst_for_bwd)
                     && utils::one_of(desc()->data_desc.data_type,
                             data_type::f32, data_type::f16, data_type::bf16,
                             data_type::s32, data_type::s8, data_type::u8)
-                    && attr()->has_default_values()
-                    && IMPLICATION(utils::one_of(desc()->data_desc.data_type,
-                                           data_type::s32, data_type::s8),
-                            desc()->alg_kind == eltwise_relu
-                                    && desc()->alpha == 0)
+                    && attr()->has_default_values(attr_skip_mask)
+                    && post_ops_with_binary_ok(
+                            attr(), dst_md()->data_type, MAX_NDIMS)
                     && IMPLICATION(
                             desc()->data_desc.data_type == data_type::f16,
                             compute_engine->mayiuse(
@@ -122,19 +124,22 @@ struct ref_eltwise_bwd_t : public gpu_primitive_t {
             assert(engine->kind() == engine_kind::gpu);
 
             using namespace alg_kind;
-            bool ok = desc()->prop_kind == backward_data
+            const bool ok = desc()->prop_kind == backward_data
                     && utils::one_of(desc()->alg_kind, eltwise_relu,
                             eltwise_linear, eltwise_bounded_relu, eltwise_abs,
                             eltwise_tanh, eltwise_elu, eltwise_square,
-                            eltwise_sqrt, eltwise_soft_relu, eltwise_logistic,
-                            eltwise_exp, eltwise_gelu_tanh, eltwise_swish,
-                            eltwise_log, eltwise_clip, eltwise_pow,
-                            eltwise_gelu_erf, eltwise_relu_use_dst_for_bwd,
+                            eltwise_sqrt, eltwise_soft_relu, eltwise_logsigmoid,
+                            eltwise_mish, eltwise_logistic, eltwise_exp,
+                            eltwise_gelu_tanh, eltwise_hardswish, eltwise_swish,
+                            eltwise_log, eltwise_clip, eltwise_clip_v2,
+                            eltwise_pow, eltwise_gelu_erf,
+                            eltwise_relu_use_dst_for_bwd,
                             eltwise_logistic_use_dst_for_bwd,
                             eltwise_tanh_use_dst_for_bwd,
                             eltwise_elu_use_dst_for_bwd,
                             eltwise_sqrt_use_dst_for_bwd,
-                            eltwise_exp_use_dst_for_bwd)
+                            eltwise_exp_use_dst_for_bwd,
+                            eltwise_clip_v2_use_dst_for_bwd)
                     && utils::one_of(desc()->data_desc.data_type,
                             data_type::f32, data_type::bf16)
                     && set_default_formats_common()

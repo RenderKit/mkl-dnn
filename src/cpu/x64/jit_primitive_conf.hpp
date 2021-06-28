@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "common/primitive_attr.hpp"
+#include "cpu/x64/brgemm/brgemm_types.hpp"
 #include "cpu/x64/cpu_isa_traits.hpp"
 
 namespace dnnl {
@@ -84,7 +85,7 @@ enum {
                                     pass */
 };
 
-enum jit_pool_tag_kind_t { jptg_blocked, jptg_ncsp, jptg_nspc };
+enum class jit_memory_tag_kind_t { ncsp, nspc, blocked, undef };
 
 struct jit_conv_conf_t {
     prop_kind_t prop_kind;
@@ -106,10 +107,13 @@ struct jit_conv_conf_t {
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
+    bool with_binary;
+
     bool is_fused_conv;
     int dw_conv_buffer_oc;
 
     post_ops_t::entry_t::eltwise_t eltwise;
+    post_ops_t post_ops;
 
     int nthr, nthr_mb, nthr_g, nthr_oc_b, nthr_ic_b;
 
@@ -118,9 +122,9 @@ struct jit_conv_conf_t {
     int nb_oc, oc_block;
     int nb_iw, iw_block;
     int nb_ow, ow_block;
-    int nb_oc_blocking; /* used in jit kernels for nb_oc work bloking taking
+    int nb_oc_blocking; /* used in jit kernels for nb_oc work blocking taking
                            into account vector registers distribution */
-    int nb_oc_blocking_thr_chunk; /* used for distibution of nb_oc work
+    int nb_oc_blocking_thr_chunk; /* used for distribution of nb_oc work
                                       within threads */
     int nb_ic_blocking, nb_ic_blocking_max; // blocking of nb_ic work
     int nb_ic_L2;
@@ -128,7 +132,7 @@ struct jit_conv_conf_t {
     int nb_oc_L2;
     int ic_tail, oc_tail;
     int ur_h, ur_w;
-    int ur_w_tail;
+    int ur_w_tail, ur_w_blocks;
     int ur_ic, ur_kw;
     bool is_1stconv;
     int nonblk_group_off;
@@ -163,25 +167,43 @@ struct jit_conv_conf_t {
     data_type_t src_dt;
     /* bf16 weights update */
     data_type_t wei_dt;
+    data_type_t ddst_dt;
     data_type_t dsrc_dt;
     data_type_t dwei_dt;
-    /* avx512: max possible value is nregs(32) - aux_regs(4) */
-    int src_offsets[28];
-    int src_count;
     bool expl_bcast;
     bool large_spatial, large_w_filter;
-    int is_oc_scale;
+    int is_ic_scale, is_oc_scale;
     int max_regs_ur; // maximum accumulation registers
     // dw conv
     int nb_ch, ch_block, nb_ch_blocking;
     bool is_depthwise, is_fast_depthwise, is_resrc_depthwise;
     int aligned_threads;
     // large spatial
-    int oh_blk_size;
+    int ih_blk_size, oh_blk_size;
     // s8s8 convolution
     bool signed_input;
     bool need_saturation;
     float wei_adj_scale;
+    // zero-point compensation
+    bool src_zero_point;
+    int zp_pbuff_size;
+    bool dst_zero_point;
+    bool zp_src_is_common; // common, otherwise (TODO) per-channel
+    bool req_zero_point_buffer; // used for calculating padding compensation
+    bool zp_pbuff_outer_compute; // indicates if zp_bbuff is computed in
+    // a separate parallel region
+    int ow_pad, oh_pad; // output elements with padding & filter overlap
+
+    //output elements requiring zero-point padding compensation
+    int t_pad_output, b_pad_output;
+    int l_pad_output, r_pad_output;
+    // The number of output blocks corresponding to {l_pad, no_pad, r_pad}
+    int l_pad_blk, no_pad_w_blk, r_pad_blk;
+
+    bool oh_mid, ow_mid; // indicate if there is overlap between the width and
+            // height padded regions
+
+    size_t h_blk_limits[5]; // pre-computed limits for output height block
 
     bool uses_permw_transposition;
     bool transpose_src;
@@ -192,27 +214,37 @@ struct jit_conv_conf_t {
     // bf16 bwdw conv
     int tr_ow;
     bool is_hw_transp; // spatial dim height-width transposed
+    int spatial_blk_size; // Height/depth block size inside the driver
+    bool global_transpose; // diff_dst & src tensors are transposed in one go
+    bool use_nt_stores_ddst; // Use non temporal stores in diff_dst transform
 
     // Needed for Intel(R) Advanced Matrix Extensions (Intel(R) AMX) kernels
     bool is_nspc; // activations in nwc, nhwc, or ndhwc layout
-    bool is_small_ic; // probably the same as is_1stconv, but maybe not
+    bool is_relo; // reduced lowering optimization
+    int nreduce; // used with is_relo
     bool is_pbuffer_strided; // does pbuffer have strided sectors?
     int n_stride_sets; // number of stride sectors (or sets) in pbuffer
     int kw_step; // usually stride_w, unless !is_pbuffer_strided
     int kw_per_tile; // mostly for 1st convs
-    int ic_block_int, ic_block_int_np;
-    int nb_ic_int;
-    int nb_oh_blocking;
+    // The suffix _int refers to the block sizes of the src and diff_dst tiles,
+    // as opposed to the vector registers. This distinction is needed due to
+    // support for blocked layout (ie nChw16c) with bf16 data type.
+    int ic_block_int, ic_block_int_np, oc_block_int;
+    int nb_ic_int, nb_oc_int;
+    int nb_ih_blocking, nb_oh_blocking;
 
+    int full_tile_width;
+    int max_tiles;
     int tile_width;
     int tile_tail;
     int oh_per_tile;
-    int ow_blocks;
+    int iw_blocks, ow_blocks;
 
     int per_one_pstore;
 
-    int inp_buffer_size;
-    int wsp_buffer_size;
+    size_t inp_buffer_size;
+    size_t wei_buffer_size;
+    size_t wsp_buffer_size;
 
     int nb_os;
     int nb_os_blocking;
@@ -220,6 +252,8 @@ struct jit_conv_conf_t {
     int os_tail;
     int os_blocked;
     int max_width;
+
+    bool transform_to_vnni;
 };
 
 // calculates filter size taking into account dilation
@@ -309,8 +343,8 @@ struct jit_conv_conf_2x3_wino_t {
    t: tile_block
    e: element in tile
 
-   Note: 'i' and 'o' are omited if
-   i. not comblined with t or
+   Note: 'i' and 'o' are omitted if
+   i. not combined with t or
    ii. with discrete transforms
 
    Current policies supported:
@@ -383,8 +417,24 @@ struct jit_conv_call_s {
     const void *scales;
     const void *acc_s32;
     const void *compensation;
+    const int32_t *zp_compensation;
+    const int32_t *src_zero_point;
+    const int32_t *zero_point_pbuff;
+    const int32_t *dst_zero_point;
     const void *tile_cfg;
     const void *tile_cfg_tail;
+
+    // ptr to table of void * elements that are pointers to
+    // post_op binary src1 tensors
+    const void *post_ops_binary_rhs_arg_vec;
+    // logical (# of elems) offset to the processed output channel
+    // (for broadcasting [1,OC,1,1])
+    size_t oc_l_off;
+    const void *dst_orig; // pointer to dst memory (no offset)
+
+    size_t oc_l_off_prf;
+    const void *dst_orig_prf;
+
     size_t kd_offset;
     size_t kd_offset_prf;
     size_t kh_offset;
@@ -401,9 +451,11 @@ struct jit_conv_call_s {
     size_t iwb_prf;
     size_t owb;
     size_t owb_prf;
+    size_t ohb;
     size_t kw_padding;
     size_t channel;
     size_t channel_prf;
+    size_t ic_blocks;
     size_t oc_blocks;
     size_t ur_w;
     size_t ur_str_w;
@@ -413,6 +465,8 @@ struct jit_conv_call_s {
     size_t reduce_work_prf;
     size_t load_work;
     size_t load_work_prf;
+    size_t l_overflow;
+    size_t r_overflow;
     size_t t_overflow;
     size_t b_overflow;
     size_t f_overflow;
@@ -423,6 +477,9 @@ struct jit_conv_call_s {
     size_t is_osb;
     int flags;
     int flags_prf;
+    int oc_flag;
+    size_t last_ic_block;
+    size_t last_oc_block;
 };
 
 struct jit_deconv_call_s {
@@ -432,6 +489,16 @@ struct jit_deconv_call_s {
     const void *bias; /* hack, non-const for backward_bias */
     const void *scales;
     const void *compensation;
+    /*
+     * ptr to table of void * elements that are pointers to post_op binary
+     * src1 tensors
+     */
+    const void *post_ops_binary_rhs_arg_vec;
+    /*
+     * logical (# of elems) offset to the processed output channel
+     * (for broadcasting [1,OC,1,1])
+     */
+    size_t oc_l_off;
     size_t t_overflow;
     size_t b_overflow;
     size_t f_overflow;
@@ -474,6 +541,7 @@ struct jit_1x1_conv_conf_t {
     prop_kind_t prop_kind;
     conv_version_t ver;
 
+    int ndims;
     int mb;
     int ngroups, ic, oc, oc_without_padding, ic_without_padding;
     int id, ih, iw, od, oh, ow;
@@ -484,9 +552,10 @@ struct jit_1x1_conv_conf_t {
     bool with_bias;
     bool with_sum;
     bool with_eltwise;
+    bool with_binary;
     bool with_dw_conv;
 
-    post_ops_t::entry_t::eltwise_t eltwise;
+    post_ops_t post_ops;
 
     int is, os;
     int ic_block, oc_block;
@@ -524,6 +593,10 @@ struct jit_1x1_conv_conf_t {
     data_type_t dst_dt;
     bool signed_input;
     float wei_adj_scale;
+    // zero-point compensation
+    bool src_zero_point;
+    bool dst_zero_point;
+    bool zp_src_is_common; // common, otherwise (TODO) per-channel
 
     cpu_isa_t isa;
     bool uses_permw_transposition;
@@ -538,6 +611,20 @@ struct jit_1x1_conv_call_s {
     const void *scales;
     const void *compensation;
     const void *store_buffer;
+    const int32_t *zp_compensation;
+    const int32_t *src_zero_point;
+    const int32_t *dst_zero_point;
+
+    // ptr to table of void * elements that are pointers to
+    // post_op binary src1 tensors
+    const void *post_ops_binary_rhs_arg_vec;
+    // logical (# of elems) offset to the processed output channel
+    // (for broadcasting [1,OC,1,1])
+    size_t oc_l_off;
+    // logical (# of elems) offset to the processed pixel
+    // (for non-broadcasting policy)
+    size_t dst_l_off;
+    const void *dst_orig; // pointer to dst memory (no offset)
 
     size_t load_dim;
     size_t bcast_dim;
@@ -560,6 +647,7 @@ struct jit_pool_conf_t {
     bool pad_w_is_null;
     bool is_backward;
     bool simple_alg;
+    bool is_c_padded;
     data_type_t ind_dt;
 
     int c_block, c_tail, nb_c;
@@ -573,12 +661,17 @@ struct jit_pool_conf_t {
 
     int dt_size;
     bool is_bf16;
-    jit_pool_tag_kind_t tag_kind;
+    jit_memory_tag_kind_t tag_kind;
     bool is_plain() const {
-        return (tag_kind == jptg_ncsp || tag_kind == jptg_nspc);
+        return (tag_kind == jit_memory_tag_kind_t::ncsp
+                || tag_kind == jit_memory_tag_kind_t::nspc);
     }
 
     cpu_isa_t isa;
+    post_ops_t post_ops;
+    bool with_postops;
+    bool with_eltwise;
+    bool with_binary;
 };
 
 struct jit_pool_call_s {
@@ -588,6 +681,8 @@ struct jit_pool_call_s {
     const void *src_prf;
     const void *dst_prf;
     const void *indices_prf;
+    const void *post_ops_binary_rhs_arg_vec;
+    size_t c_elem_off;
     size_t zero_ih;
     size_t zero_id;
     const void *zero_ptr;
@@ -598,8 +693,172 @@ struct jit_pool_call_s {
     size_t kw_padding;
     const void *init_value;
     float ker_area_h;
-    size_t ur_bc;
-    size_t padded_mask;
+    size_t ur_bc; // contains number of channel blocks to processing
+    size_t b_c; // contains number of channel blocks already processed
+};
+
+struct jit_resampling_conf_t {
+    unsigned ndims = 0;
+
+    unsigned id = 0, ih = 0, iw = 0;
+    unsigned od = 0, oh = 0, ow = 0;
+
+    unsigned stride_d = 0;
+    unsigned stride_h = 0;
+    unsigned stride_w = 0;
+    unsigned inner_stride = 0;
+
+    unsigned tail = 0;
+    unsigned simd_w = 0;
+
+    // The linear algorithm is an approximation of the point
+    // value based on the limit values. For one dimension,
+    // the approximation is based on the line, for two
+    // dimensions it will be a rectangle, and for three
+    // dimensions it will be a cuboid. Therefore,
+    // the possible variants for the number of corners are 2, 4, 8.
+    unsigned number_of_corners = 0;
+
+    bool is_data_size_bigger_than_L3 = false;
+    data_type_t data_type = data_type::undef;
+    size_t dt_size = 0;
+    size_t el_size_of_indices = 0;
+
+    jit_memory_tag_kind_t tag_kind = jit_memory_tag_kind_t::undef;
+    alg_kind_t alg = alg_kind::undef;
+
+    cpu_isa_t isa = isa_any;
+};
+
+struct jit_resampling_call_s {
+    size_t batch_of_sp_points_to_process = 0;
+
+    const void *src = nullptr;
+    const void *dst = nullptr;
+    const void *indices = nullptr;
+    const void *weights = nullptr;
+
+    size_t src_offset_top = 0;
+    size_t src_offset_bottom = 0;
+    size_t src_offset_front = 0;
+    size_t src_offset_back = 0;
+
+    float weight_top = 0.0f;
+    float weight_bottom = 0.0f;
+    float weight_front = 0.0f;
+    float weight_back = 0.0f;
+};
+
+enum conv_brgemm_loop_order_t {
+    loop_ndhwgc,
+    loop_ngcdhw,
+};
+
+enum conv_brgemm_exec_type_t {
+    exec_undefined = 0,
+    exec_base,
+    exec_trans,
+    exec_vpad,
+};
+
+struct jit_brgemm_conv_conf_t {
+    prop_kind_t prop_kind;
+    conv_version_t ver;
+    conv_brgemm_loop_order_t loop_order;
+    conv_harness_t harness;
+    int simd_w;
+    int ndims;
+    int mb;
+    int ngroups, ic, oc, oc_without_padding, ic_without_padding;
+
+    int od_blk_size, oh_blk_size, nb_od,
+            nb_oh; // blocking  - included in parallelization
+    dim_t inp_buffer_size, inp_buffer_mask_size;
+    conv_brgemm_exec_type_t exec_type;
+
+    int id, ih, iw, od, oh, ow, os, idp, ihp, iwp;
+    int f_pad, l_pad, t_pad;
+    int back_pad, r_pad, b_pad;
+    int kd, kh, kw;
+    int kd_block, kh_block, kw_block, kd_block_pad, kh_block_pad, kw_block_pad;
+    int stride_d, stride_h, stride_w;
+    int dilate_d, dilate_h, dilate_w;
+    format_tag_t src_tag, wei_tag, dst_tag; // temporary workaround
+    bool with_bias;
+    bool with_sum;
+    bool with_eltwise;
+    bool is_fused_conv;
+    post_ops_t::entry_t::eltwise_t eltwise;
+    bool is_os_blocking;
+    int nb_ic, ic_block;
+    int nb_oc, oc_block;
+    int nb_iw, iw_block;
+    int nb_ow, ow_block;
+    int nb_os, os_block;
+    int nb_oc_blocking;
+    int nb_ic_blocking;
+    int nb_os_blocking;
+
+    data_type_t src_dt;
+    data_type_t dst_dt;
+    data_type_t wei_dt;
+    data_type_t acc_dt;
+    data_type_t bia_dt;
+    size_t src_dsz;
+    size_t wei_dsz;
+    size_t dst_dsz;
+    size_t acc_dsz;
+    size_t bia_dsz;
+
+    bool use_buffer;
+    dim_t buffer_size;
+
+    int is_oc_scale;
+
+    int LDA, LDB, LDC, LDD;
+    int M, N, K, M_tail, N_tail, K_tail;
+    int gemm_batch_size, adjusted_batch_size;
+    brgemm_batch_kind_t brg_type;
+    // strides for brg_type == brgemm_strd
+    dim_t brg_stride_a, brg_stride_b;
+    int nthr;
+
+    int max_batch;
+    int max_vpad;
+
+    bool wei_plain;
+};
+
+struct jit_shuffle_conf_t {
+    unsigned ndims = 0;
+
+    unsigned mb = 0, c = 0, d = 0, h = 0, w = 0, sp = 0;
+
+    unsigned stride_mb = 0;
+    unsigned blk_size = 0;
+    unsigned group_size = 0;
+    unsigned axis = 0;
+    unsigned axis_size = 0;
+    unsigned simd_tail = 0;
+    unsigned simd_w = 0;
+
+    jit_memory_tag_kind_t tag_kind = jit_memory_tag_kind_t::undef;
+    data_type_t data_type = data_type::undef;
+    size_t dt_size = 0;
+    unsigned el_size_of_indices = 0;
+    dim_t c_split_size = 0;
+    dim_t sp_split_size = 0;
+
+    cpu_isa_t isa = isa_any;
+};
+
+struct jit_shuffle_call_s {
+    const void *src = nullptr;
+    void *dst = nullptr;
+    const void *input_off_ptr = nullptr;
+
+    dim_t cb_loop_size
+            = 0; // number of loop iterations over corresponding C batches
 };
 
 } // namespace x64

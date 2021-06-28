@@ -17,14 +17,14 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
 using tag = memory::format_tag;
 
 template <typename data_t>
-struct logsoftmax_test_params {
+struct logsoftmax_test_params_t {
     prop_kind aprop_kind;
     tag memory_format;
     tag diff_memory_format;
@@ -35,34 +35,46 @@ struct logsoftmax_test_params {
 };
 
 template <typename data_t>
-class logsoftmax_test
-    : public ::testing::TestWithParam<logsoftmax_test_params<data_t>> {
+class logsoftmax_test_t
+    : public ::testing::TestWithParam<logsoftmax_test_params_t<data_t>> {
 private:
-    logsoftmax_test_params<data_t> p;
-    std::shared_ptr<memory> dst, workspace;
+    logsoftmax_test_params_t<data_t> p;
+    memory::data_type data_dt;
+    memory dst, workspace;
+
     std::shared_ptr<logsoftmax_forward::primitive_desc> pd_fwd_hint;
 
 protected:
-    virtual void SetUp() {
+    void SetUp() override {
+        data_dt = data_traits<data_t>::data_type;
+
         p = ::testing::TestWithParam<
-                logsoftmax_test_params<data_t>>::GetParam();
+                logsoftmax_test_params_t<data_t>>::GetParam();
+        SKIP_IF(unsupported_data_type(data_dt),
+                "Engine does not support this data type.");
+        SKIP_IF_CUDA(!cuda_check_format_tag(p.memory_format),
+                "Unsupported format tag");
+        SKIP_IF_CUDA(p.axis != 1, "Unsupported axis values for CUDA");
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
+    }
+    bool cuda_check_format_tag(memory::format_tag tag) {
+        return (tag != memory::format_tag::aBcd8b
+                && tag != memory::format_tag::aBc16b);
     }
 
     void Forward() {
         // logsoftmax specific types and values
         using op_desc_t = logsoftmax_forward::desc;
         using pd_t = logsoftmax_forward::primitive_desc;
-        allows_attr_t aa {0}; // doesn't support anything
+        allows_attr_t aa {false}; // doesn't support anything
 
         auto eng = get_test_engine();
         auto strm = make_stream(eng);
         prop_kind pk = p.aprop_kind == prop_kind::backward_data
                 ? prop_kind::forward_training
                 : p.aprop_kind;
-        auto prec = data_traits<data_t>::data_type;
-        auto mem_desc = memory::desc(p.dims, prec, p.memory_format);
+        auto mem_desc = memory::desc(p.dims, data_dt, p.memory_format);
 
         // default op desc ctor
         auto op_desc = op_desc_t();
@@ -100,11 +112,9 @@ protected:
         ASSERT_TRUE(pd.diff_dst_desc().is_zero());
         ASSERT_TRUE(pd.diff_weights_desc().is_zero());
 
-        const auto test_engine = pd.get_engine();
-
-        auto src = memory(data_desc, test_engine);
-        dst.reset(new memory(data_desc, test_engine));
-        workspace.reset(new memory(workspace_desc, test_engine));
+        auto src = test::make_memory(data_desc, eng);
+        dst = test::make_memory(data_desc, eng);
+        workspace = test::make_memory(workspace_desc, eng);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
             fill_data<data_t>(
@@ -113,16 +123,16 @@ protected:
 
             // test out-place mode
             logsoftmax.execute(strm,
-                    {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, *dst},
-                            {DNNL_ARG_WORKSPACE, *workspace}});
+                    {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, dst},
+                            {DNNL_ARG_WORKSPACE, workspace}});
             strm.wait();
-            check_zero_tail<data_t>(0, *dst);
+            check_zero_tail<data_t>(0, dst);
 
             // test in-place mode
             if (p.aprop_kind != prop_kind::backward_data) {
                 logsoftmax.execute(strm,
                         {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, src},
-                                {DNNL_ARG_WORKSPACE, *workspace}});
+                                {DNNL_ARG_WORKSPACE, workspace}});
                 strm.wait();
                 check_zero_tail<data_t>(0, src);
             }
@@ -136,11 +146,13 @@ protected:
         using op_desc_t = logsoftmax_backward::desc;
         using pd_t = logsoftmax_backward::primitive_desc;
         using hint_pd_t = logsoftmax_forward::primitive_desc;
-        allows_attr_t aa {0}; // doesn't support anything
+        allows_attr_t aa {false}; // doesn't support anything
 
         auto eng = get_test_engine();
         auto strm = make_stream(eng);
         auto prec = data_traits<data_t>::data_type;
+        SKIP_IF_CUDA(prec == memory::data_type::bf16,
+                "Unsupported datatype for CUDA");
         auto mem_desc = memory::desc(p.dims, prec, p.memory_format);
         auto diff_mem_desc = memory::desc(p.dims, prec, p.diff_memory_format);
 
@@ -178,10 +190,8 @@ protected:
         ASSERT_TRUE(pd.weights_desc().is_zero());
         ASSERT_TRUE(pd.diff_weights_desc().is_zero());
 
-        const auto test_engine = pd.get_engine();
-
-        auto diff_src = memory(diff_data_desc, test_engine);
-        auto diff_dst = memory(diff_data_desc, test_engine);
+        auto diff_src = test::make_memory(diff_data_desc, eng);
+        auto diff_dst = test::make_memory(diff_data_desc, eng);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
             // Fill the logsoftmax backward diffs
@@ -190,9 +200,9 @@ protected:
             check_zero_tail<data_t>(1, diff_dst);
 
             logsoftmax.execute(strm,
-                    {{DNNL_ARG_DST, *dst}, {DNNL_ARG_DIFF_DST, diff_dst},
+                    {{DNNL_ARG_DST, dst}, {DNNL_ARG_DIFF_DST, diff_dst},
                             {DNNL_ARG_DIFF_SRC, diff_src},
-                            {DNNL_ARG_WORKSPACE, *workspace}});
+                            {DNNL_ARG_WORKSPACE, workspace}});
             strm.wait();
 
             check_zero_tail<data_t>(0, diff_src);
@@ -207,14 +217,14 @@ protected:
     }
 };
 
-using logsoftmax_forward_test_float = logsoftmax_test<float>;
-using logsoftmax_forward_test_half = logsoftmax_test<float16_t>;
-using logsoftmax_forward_test_bfloat16 = logsoftmax_test<bfloat16_t>;
+using logsoftmax_forward_test_float = logsoftmax_test_t<float>;
+using logsoftmax_forward_test_half = logsoftmax_test_t<float16_t>;
+using logsoftmax_forward_test_bfloat16 = logsoftmax_test_t<bfloat16_t>;
 
-using logsoftmax_backward_test_float = logsoftmax_test<float>;
+using logsoftmax_backward_test_float = logsoftmax_test_t<float>;
 
 template <typename dt>
-using test_params = logsoftmax_test_params<dt>;
+using test_params = logsoftmax_test_params_t<dt>;
 
 TEST_P(logsoftmax_forward_test_float, TestsLogSoftmax) {}
 INSTANTIATE_TEST_SUITE_P(TestLogSoftmaxForwardFloat,

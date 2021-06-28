@@ -23,7 +23,7 @@ Max pooling:
     \dst(n, c, oh, ow) =
         \max\limits_{kh, kw}
         \left(
-            \src(n, c, oh \cdot SH + kh - PH_L, ow \cdot SW +kw - PW_L)
+            \src(n, c, oh \cdot SH + kh \cdot (DH + 1) - PH_L, ow \cdot SW + kw \cdot (DW + 1) - PW_L)
         \right)
 \f]
 
@@ -33,7 +33,7 @@ Average pooling:
     \dst(n, c, oh, ow) =
         \frac{1}{DENOM}
         \sum\limits_{kh, kw}
-            \src(n, c, oh \cdot SH + kh - PH_L, ow \cdot SW +kw - PW_L)
+            \src(n, c, oh \cdot SH + kh \cdot (DH + 1) - PH_L, ow \cdot SW + kw \cdot (DW + 1) - PW_L)
 \f]
 
 Here output spatial dimensions are calculated similarly to how they are done in
@@ -61,13 +61,14 @@ case of max pooling) `workspace`.
 When executed, the inputs and outputs should be mapped to an execution
 argument index as specified by the following table.
 
-| Primitive input/output | Execution argument index |
-| ---                    | ---                      |
-| \src                   | DNNL_ARG_SRC             |
-| \dst                   | DNNL_ARG_DST             |
-| workspace              | DNNL_ARG_WORKSPACE       |
-| \diffsrc               | DNNL_ARG_DIFF_SRC        |
-| \diffdst               | DNNL_ARG_DIFF_DST        |
+| Primitive input/output      | Execution argument index                                                  |
+| ---                         | ---                                                                       |
+| \src                        | DNNL_ARG_SRC                                                              |
+| \dst                        | DNNL_ARG_DST                                                              |
+| workspace                   | DNNL_ARG_WORKSPACE                                                        |
+| \diffsrc                    | DNNL_ARG_DIFF_SRC                                                         |
+| \diffdst                    | DNNL_ARG_DIFF_DST                                                         |
+| \f$\text{binary post-op}\f$ | DNNL_ARG_ATTR_MULTIPLE_POST_OP(binary_post_op_position) \| DNNL_ARG_SRC_1 |
 
 ## Implementation Details
 
@@ -96,6 +97,8 @@ The pooling primitive supports the following combinations of data types:
 | forward / backward | f32, bf16            | f32
 | forward            | f16                  | f16
 | forward            | s8, u8, s32          | s32
+| forward inference  | s8, u8 / f32         | f32
+| forward inference  | f32 / s8, u8         | f32
 
 @warning
     There might be hardware and/or implementation specific restrictions.
@@ -127,15 +130,19 @@ of any preceding compute-intensive primitive.
 
 ### Post-ops and Attributes
 
-The pooling primitive does not support any post-ops or attributes.
-
+| Propagation | Type    | Operation                                    | Description                                            | Restrictions                        |
+| :--         | :--     | :--                                          | :--                                                    | :--                                 |
+| Forward     | Post-op | [Binary](@ref dnnl::post_ops::append_binary) | Applies a @ref dnnl_api_binary operation to the result | General binary post-op restrictions |
 
 @anchor dg_pool_impl_limits
 ## Implementation Limitations
 
-1. No primitive specific limitations. Refer to @ref dev_guide_data_types for
-   limitations related to data types support.
+1. Refer to @ref dev_guide_data_types for limitations related to data types
+   support.
 
+2. **CPU**
+    - Different data types of source and destination in forward inference
+      are not supported.
 
 ## Performance Tips
 

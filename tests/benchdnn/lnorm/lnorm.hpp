@@ -58,14 +58,16 @@ struct settings_t {
     std::vector<std::string> tag {tag::abx}, stat_tag {tag::any};
     std::vector<flags_t> flags {NONE};
     std::vector<bool> inplace {false};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
     check_alg_t check_alg = check_alg_t::ALG_AUTO;
     const char *pattern = NULL;
 
     const char *perf_template_csv
-            = "perf,%engine%,%dir%,%dt%,%tag%,%stat_tag%,%flags%,%DESC%,"
-              "%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+            = "perf,%engine%,%impl%,%dir%,%dt%,%tag%,%stat_tag%,%flags%,%DESC%,"
+              "%-time%,%0time%,";
     const char *perf_template_def
-            = "perf,%engine%,%prb%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+            = "perf,%engine%,%impl%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -74,7 +76,8 @@ struct settings_t {
 struct prb_t {
     prb_t(const dims_t &dims, const std::string &tag,
             const std::string &stat_tag, dir_t dir, dnnl_data_type_t dt,
-            flags_t flags, bool inplace, check_alg_t check_alg)
+            flags_t flags, const attr_t &attr, bool inplace,
+            check_alg_t check_alg)
         : check_alg(check_alg)
         , dims(dims)
         , tag(tag)
@@ -83,13 +86,12 @@ struct prb_t {
         , dt(dt)
         , flags(flags)
         , inplace(inplace)
-        , ops(0)
+        , attr(attr)
         , ndims((int)dims.size()) {
         n = std::accumulate(
                 dims.begin(), dims.end() - 1, 1, std::multiplies<int64_t>());
         c = dims[ndims - 1];
         eps = 1.f / 16;
-        count_ops();
     }
     ~prb_t() {}
 
@@ -101,32 +103,21 @@ struct prb_t {
     dnnl_data_type_t dt;
     flags_t flags;
     bool inplace;
+    attr_t attr;
     float eps;
-    double ops;
     int ndims;
-
-    void count_ops() {
-        if (ops > 0) return;
-        bool use_scaleshift = flags & USE_SCALESHIFT;
-        if (dir & FLAG_FWD) {
-            ops = sizeof_dt(dt)
-                    * ((2 - inplace) * n * c + 2 * n + use_scaleshift * 2 * c);
-        } else {
-            ops = sizeof_dt(dt)
-                    * ((3 - inplace) * n * c + 2 * n + use_scaleshift * 2 * c
-                            + 2 * c);
-        }
-    };
 };
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
-        base_report(r, prb_str);
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
+        tag_ = normalize_tag(p_->tag, p_->ndims);
+        stat_tag_ = normalize_tag(p_->stat_tag, p_->ndims - 1);
+        base_report(res, prb_str);
     }
 
     void dump_desc(std::ostream &s) const override { s << p_->dims; }
@@ -137,23 +128,23 @@ struct perf_report_t : public base_perf_report_t {
         s << flags2str(p_->flags);
     }
 
-    double ops() const override { return p_->ops; }
     const dir_t *dir() const override { return &p_->dir; }
     const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    const std::string *tag() const override { return &p_->tag; }
-    const std::string *stat_tag() const override { return &p_->stat_tag; }
+    const std::string *tag() const override { return &tag_; }
+    const std::string *stat_tag() const override { return &stat_tag_; }
 
 private:
     const prb_t *p_ = NULL;
+    std::string tag_, stat_tag_;
 };
 
-void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &mean,
+void compute_ref_fwd(const prb_t *prb, const dnn_mem_t &src, dnn_mem_t &mean,
         dnn_mem_t &var, const dnn_mem_t &ss, dnn_mem_t &dst);
-void compute_ref_bwd(const prb_t *p, const dnn_mem_t &src,
+void compute_ref_bwd(const prb_t *prb, const dnn_mem_t &src,
         const dnn_mem_t &mean, const dnn_mem_t &var, const dnn_mem_t &d_dst,
         const dnn_mem_t &ss, dnn_mem_t &d_src, dnn_mem_t &d_ss);
 
-int doit(const prb_t *p, res_t *res);
+int doit(const prb_t *prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace lnorm

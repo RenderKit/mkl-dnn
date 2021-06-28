@@ -17,11 +17,11 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
-#include "dnnl_debug.h"
+#include "oneapi/dnnl/dnnl.hpp"
+#include "oneapi/dnnl/dnnl_debug.h"
 namespace dnnl {
 using fmt = memory::format_tag;
-struct deconvolution_test_params {
+struct deconvolution_test_params_t {
     dnnl::algorithm aalgorithm;
     test_convolution_formats_t formats;
     test_convolution_attr_t attr;
@@ -106,8 +106,8 @@ void transpose_wei(const test_convolution_sizes_t &c,
 }
 
 template <typename data_t>
-class deconvolution_test
-    : public ::testing::TestWithParam<deconvolution_test_params> {
+class deconvolution_test_t
+    : public ::testing::TestWithParam<deconvolution_test_params_t> {
 private:
     std::shared_ptr<test_memory> src;
     std::shared_ptr<test_memory> weights;
@@ -130,16 +130,49 @@ private:
     memory::dims padR;
 
 protected:
-    virtual void SetUp() {
+    void SetUp() override {
+        memory::data_type data_type = data_traits<data_t>::data_type;
+        SKIP_IF(unsupported_data_type(data_type),
+                "Engine does not support this data type.");
+
         auto p = ::testing::TestWithParam<
-                deconvolution_test_params>::GetParam();
+                deconvolution_test_params_t>::GetParam();
+
+        SKIP_IF_CUDA(
+                !(cuda_check_format_tags(p.formats.src_format, data_type)
+                        && cuda_check_format_tags(
+                                p.formats.dst_format, data_type)
+                        && cuda_check_src_wei_format_tags(p.formats.src_format,
+                                p.formats.weights_format, p.sizes.ng > 1)),
+                "Format is not supported.");
+
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
 
+    bool cuda_check_format_tags(memory::format_tag tag, memory::data_type dt) {
+        return ((impl::utils::one_of(tag, memory::format_tag::ab,
+                        memory::format_tag::abc, memory::format_tag::abcd,
+                        memory::format_tag::abcde, memory::format_tag::abcdef,
+                        memory::format_tag::acb, memory::format_tag::acdb,
+                        memory::format_tag::acdeb))
+                || (dt == memory::data_type::s8
+                        && impl::utils::one_of(tag, memory::format_tag::aBcd4b,
+                                memory::format_tag::aBcde4b)));
+    }
+
+    bool cuda_check_src_wei_format_tags(
+            memory::format_tag src, memory::format_tag wei, bool is_grouped) {
+        if (src == memory::format_tag::abcd) return true;
+        if (src == memory::format_tag::acdb)
+            return wei
+                    != (is_grouped ? memory::format_tag::abcde
+                                   : memory::format_tag::abcd);
+    }
+
     void Test() {
         auto p = ::testing::TestWithParam<
-                deconvolution_test_params>::GetParam();
+                deconvolution_test_params_t>::GetParam();
 
         eng = get_test_engine();
         strm = make_stream(eng);
@@ -190,14 +223,16 @@ protected:
 
         padR = {right_padding(dd.oh, dd.ih, dd.kh, dd.padh, dd.strh, dd.dilh),
                 right_padding(dd.ow, dd.iw, dd.kw, dd.padw, dd.strw, dd.dilw)};
+        SKIP_IF_CUDA(p.sizes.padh < padR[0] || p.sizes.padw < padR[1],
+                "Padding not supported");
         Forward();
         BackwardData();
         BackwardWeights();
     }
     void Forward() {
         auto aprop_kind = prop_kind::forward;
-        deconvolution_test_params p = ::testing::TestWithParam<
-                deconvolution_test_params>::GetParam();
+        deconvolution_test_params_t p = ::testing::TestWithParam<
+                deconvolution_test_params_t>::GetParam();
         auto conv_src = test_memory(*con_src_desc, eng);
         auto conv_dst = src;
         test_convolution_sizes_t dd = p.sizes;
@@ -209,7 +244,7 @@ protected:
             fill_data<data_t>(bias->get_size() / sizeof(data_t), bias->get());
         }
 
-        auto weights_tr = memory(*con_weights_desc, eng);
+        auto weights_tr = test::make_memory(*con_weights_desc, eng);
         transpose_wei<data_t>(dd, weights->get(), weights_tr);
         auto deconv_desc = with_bias
                 ? deconvolution_forward::desc(aprop_kind,
@@ -276,7 +311,7 @@ protected:
 
     void BackwardData() {
         auto p = ::testing::TestWithParam<
-                deconvolution_test_params>::GetParam();
+                deconvolution_test_params_t>::GetParam();
         auto conv_src = dst;
         auto conv_dst = test_memory(*con_dst_desc, eng);
         test_convolution_sizes_t dd = p.sizes;
@@ -285,7 +320,7 @@ protected:
 
         fill_data<data_t>(dst->get_size() / sizeof(data_t), dst->get());
 
-        auto weights_tr = memory(*con_weights_desc, eng);
+        auto weights_tr = test::make_memory(*con_weights_desc, eng);
         transpose_wei<data_t>(dd, weights->get(), weights_tr);
 
         auto deconv_desc = deconvolution_forward::desc(
@@ -344,10 +379,10 @@ protected:
 
     void BackwardWeights() {
         auto p = ::testing::TestWithParam<
-                deconvolution_test_params>::GetParam();
+                deconvolution_test_params_t>::GetParam();
         auto conv_src = dst;
         auto conv_dst = src;
-        auto conv_weights = memory(*con_weights_desc, eng);
+        auto conv_weights = test::make_memory(*con_weights_desc, eng);
         test_convolution_sizes_t dd = p.sizes;
 
         fill_data<data_t>(src->get_size() / sizeof(data_t), src->get());
@@ -417,20 +452,20 @@ protected:
                                 {DNNL_ARG_DIFF_WEIGHTS, conv_weights}});
         strm.wait();
 
-        auto weights_tr = memory(*con_weights_desc, eng);
+        auto weights_tr = test::make_memory(*con_weights_desc, eng);
         transpose_wei<data_t>(dd, weights->get(), weights_tr);
 
         compare_data<data_t>(weights_tr, conv_weights);
 
         if (with_bias) {
-            auto ref_bias = memory(*dec_bias_desc, eng);
+            auto ref_bias = test::make_memory(*dec_bias_desc, eng);
             compute_bias_bwd<data_t>(dd, dst->get(), ref_bias);
             compare_data<data_t>(ref_bias, bias->get());
         }
     }
 };
 
-using deconvolution_test_float = deconvolution_test<float>;
+using deconvolution_test_float = deconvolution_test_t<float>;
 
 TEST_P(deconvolution_test_float, TestDeconvolution) {}
 
@@ -443,7 +478,7 @@ TEST_P(deconvolution_test_float, TestDeconvolution) {}
 #define ALGORITHM dnnl::algorithm::deconvolution_direct
 
 #define PARAMS(src, weights, bias, dst, ...) \
-    deconvolution_test_params { \
+    deconvolution_test_params_t { \
         ALGORITHM, EXPAND_FORMATS(src, weights, bias, dst), {}, { \
             __VA_ARGS__ \
         } \
@@ -522,8 +557,13 @@ GPU_INST_TEST_CASE(SimpleSmall_NCHW,
         PARAMS(nhwc, hwio, x, nhwc, 2, 1, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1),
         PARAMS(nhwc, hwio, x, nhwc, 2, 1, 6, 2, 2, 4, 4, 4, 3, 3, 0, 0, 1, 1),
         PARAMS(nhwc, goihw, x, nhwc, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 0, 0, 1, 1),
-        PARAMS(nhwc, hwigo, x, nhwc, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1)
+        PARAMS(nhwc, hwigo, x, nhwc, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1));
 
-);
-
+GPU_INST_TEST_CASE(SimpleSmall_NHWC,
+        PARAMS(nchw, oihw, x, nhwc, 2, 1, 6, 2, 2, 4, 4, 4, 3, 3, 0, 0, 1, 1),
+        PARAMS(nhwc, ohwi, x, nhwc, 2, 1, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1),
+        PARAMS(nhwc, ohwi, x, nhwc, 2, 1, 6, 2, 2, 4, 4, 4, 3, 3, 0, 0, 1, 1),
+        PARAMS(nchw, goihw, x, nchw, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1),
+        PARAMS(nchw, goihw, x, nhwc, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1),
+        PARAMS(nhwc, gohwi, x, nhwc, 2, 2, 6, 4, 4, 4, 4, 4, 3, 3, 1, 1, 1, 1));
 } // namespace dnnl

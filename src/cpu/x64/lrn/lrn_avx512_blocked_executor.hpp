@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -69,10 +69,20 @@ public:
 
     using data_t = typename prec_traits<d_type>::type;
 
+    status_t create_kernel() override {
+        CHECK(ker_->create_kernel());
+        if (ker_first_) CHECK(ker_first_->create_kernel());
+        if (ker_last_) CHECK(ker_last_->create_kernel());
+        return status::success;
+    }
+
     status_t execute(const exec_ctx_t &ctx) const override {
+        status_t status = status::success;
         const auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
-        const auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
-        const auto ws = CTX_OUT_MEM(data_t *, DNNL_ARG_WORKSPACE);
+        const auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+        CHECK(status);
+        const auto ws = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_WORKSPACE, status);
+        CHECK(status);
 
         const auto ker = ker_.get();
         const auto ker_first = ker_first_.get();
@@ -197,11 +207,21 @@ public:
 
     using data_t = typename prec_traits<d_type>::type;
 
+    status_t create_kernel() override {
+        CHECK(ker_->create_kernel());
+        if (ker_first_) CHECK(ker_first_->create_kernel());
+        if (ker_last_) CHECK(ker_last_->create_kernel());
+        return status::success;
+    }
+
     status_t execute(const exec_ctx_t &ctx) const override {
+        status_t status = status::success;
         const auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
         const auto diff_dst = CTX_IN_MEM(const data_t *, DNNL_ARG_DIFF_DST);
         const auto ws = CTX_IN_MEM(const data_t *, DNNL_ARG_WORKSPACE);
-        const auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
+        const auto diff_src
+                = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DIFF_SRC, status);
+        CHECK(status);
 
         const auto ker = ker_.get();
         const auto ker_first = ker_first_.get();

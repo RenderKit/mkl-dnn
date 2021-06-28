@@ -29,10 +29,11 @@ namespace impl {
 namespace gpu {
 
 namespace {
-inline bool dense_consitency_check(const memory_desc_wrapper &src_d,
+inline bool dense_consistency_check(const memory_desc_wrapper &src_d,
         const memory_desc_wrapper &wei_d, const memory_desc_wrapper &dst_d) {
     using namespace format_tag;
     using namespace utils;
+    // Why is dense_gemm_consistency_check not enough (other than dst check)?
     return IMPLICATION(src_d.matches_tag(ncw), wei_d.matches_tag(oiw))
             && IMPLICATION(src_d.matches_tag(nchw), wei_d.matches_tag(oihw))
             && IMPLICATION(src_d.matches_tag(ncdhw), wei_d.matches_tag(oidhw))
@@ -42,7 +43,7 @@ inline bool dense_consitency_check(const memory_desc_wrapper &src_d,
             && wei_d.is_dense(true);
 }
 
-inline bool dense_gemm_consitency_check(const memory_desc_wrapper &src_d,
+inline bool dense_gemm_consistency_check(const memory_desc_wrapper &src_d,
         const memory_desc_wrapper &wei_d, const memory_desc_wrapper &dst_d) {
     using namespace utils;
 
@@ -120,23 +121,6 @@ protected:
     status_t set_default_params(bool is_conv = false) {
         return template_set_default_params(
                 src_md_, weights_md_, dst_md_, &bias_md_, ndims(), is_conv);
-    }
-
-    bool post_ops_ok(const primitive_attr_t *attr) const {
-        const auto &p = attr->post_ops_;
-
-        auto is_eltwise
-                = [&](int idx) { return p.entry_[idx].is_eltwise(false); };
-        auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(false); };
-
-        switch (p.len_) {
-            case 0: return true; // no post_ops
-            case 1: return is_eltwise(0) || is_sum(0); // sum OR eltwise
-            case 2: return is_sum(0) && is_eltwise(1); // sum -> eltwise
-            default: return false;
-        }
-
-        return false;
     }
 };
 

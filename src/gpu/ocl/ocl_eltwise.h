@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -71,6 +71,13 @@ float soft_relu_bwd(float dd, float s) {
     return dd / (1 + exp(-s));
 }
 
+float logsigmoid_fwd(float s) {
+    return -soft_relu_fwd(-s);
+}
+float logsigmoid_bwd(float dd, float s) {
+    return soft_relu_bwd(dd, -s);
+}
+
 float logistic_fwd(float s) {
     return 1.0f / (1.0f + exp(-s));
 }
@@ -115,6 +122,16 @@ float tanh_bwd(float dd, float s) {
 }
 float tanh_bwd_use_dst(float dd, float d) {
     return dd * (1 - d) * (1 + d);
+}
+
+float mish_fwd(float s) {
+    return s * tanh_fwd(soft_relu_fwd(s));
+}
+float mish_bwd(float dd, float s) {
+    const float tanh = tanh_fwd(soft_relu_fwd(s));
+    const float srelu_bwd = soft_relu_bwd(1.0f, s);
+    const float derivative = tanh + s * srelu_bwd * (1 - pow(tanh, 2.0f));
+    return dd * derivative;
 }
 
 float elu_fwd(float s, float alpha) {
@@ -176,6 +193,17 @@ float clip_bwd(float dd, float s, float alpha, float beta) {
     return dd * (alpha < s && s <= beta ? 1 : 0);
 }
 
+float clip_v2_fwd(float s, float alpha, float beta) {
+    s = s > alpha ? s : alpha;
+    return s < beta ? s : beta;
+}
+float clip_v2_bwd(float dd, float s, float alpha, float beta) {
+    return dd * (alpha < s && s < beta ? 1 : 0);
+}
+float clip_v2_bwd_use_dst(float dd, float d, float alpha, float beta) {
+    return dd * (alpha < d && d < beta ? 1 : 0);
+}
+
 float pow_fwd(float s, float alpha, float beta) {
     return alpha * pow(s, beta);
 }
@@ -191,7 +219,6 @@ float gelu_erf_fwd(float s) {
     float v = s * sqrt_2_over_2;
     return 0.5f * s * (1.f + erf(v));
 }
-
 float gelu_erf_bwd(float dd, float s) {
     const float two_over_sqrt_pi = 1.12837922573089599609375f;
     const float sqrt_2_over_2 = 0.707106769084930419921875f;
@@ -203,6 +230,14 @@ float round_fwd(float s) {
     return rint(s);
 }
 
+float hardswish_fwd(float s) {
+    return (s / 6.f) * bounded_relu_fwd(s + 3.f, 6.f);
+}
+float hardswish_bwd(float dd, float s) {
+    return (s < 3.f && s > -3.f ? dd * (2 * s + 3.f) / 6.f
+                                : s >= 3.f ? dd : 0.f);
+}
+
 float fwd_eltwise_common(
         int eltwise_alg, float x, float alpha_, float beta_, float scale_) {
     switch (eltwise_alg) {
@@ -210,6 +245,8 @@ float fwd_eltwise_common(
         case LINEAR: return scale_ * linear_fwd(x, alpha_, beta_); break;
         case BOUNDED_RELU: return scale_ * bounded_relu_fwd(x, alpha_); break;
         case SOFT_RELU: return scale_ * soft_relu_fwd(x); break;
+        case LOGSIGMOID: return scale_ * logsigmoid_fwd(x); break;
+        case MISH: return scale_ * mish_fwd(x); break;
         case LOGISTIC: return scale_ * logistic_fwd(x); break;
         case TANH: return scale_ * tanh_fwd(x); break;
         case ELU: return scale_ * elu_fwd(x, alpha_); break;
@@ -221,6 +258,7 @@ float fwd_eltwise_common(
         case SWISH: return scale_ * swish_fwd(x, alpha_); break;
         case LOG: return scale_ * log_fwd(x); break;
         case CLIP: return scale_ * clip_fwd(x, alpha_, beta_); break;
+        case CLIP_V2: return scale_ * clip_v2_fwd(x, alpha_, beta_); break;
         case POW: return scale_ * pow_fwd(x, alpha_, beta_); break;
         case GELU_ERF: return scale_ * gelu_erf_fwd(x); break;
         case ROUND: return scale_ * round_fwd(x); break;
@@ -231,7 +269,8 @@ float fwd_eltwise_common(
         case ELU_DST: return scale_ * elu_fwd(x, alpha_); break;
         case SQRT_DST: return scale_ * sqrt_fwd(x); break;
         case EXP_DST: return scale_ * exp_fwd(x); break;
-
+        case CLIP_V2_DST: return scale_ * clip_v2_fwd(x, alpha_, beta_); break;
+        case HARDSWISH: return scale_ * hardswish_fwd(x); break;
         default: return x; break;
     }
 }
@@ -251,6 +290,8 @@ float bwd_eltwise(float x, float y, float alpha_, float beta_) {
         case LINEAR: return linear_bwd(x, alpha_); break;
         case BOUNDED_RELU: return bounded_relu_bwd(x, y, alpha_); break;
         case SOFT_RELU: return soft_relu_bwd(x, y); break;
+        case LOGSIGMOID: return logsigmoid_bwd(x, y); break;
+        case MISH: return mish_bwd(x, y); break;
         case LOGISTIC: return logistic_bwd(x, y); break;
         case TANH: return tanh_bwd(x, y); break;
         case ELU: return elu_bwd(x, y, alpha_); break;
@@ -262,8 +303,10 @@ float bwd_eltwise(float x, float y, float alpha_, float beta_) {
         case SWISH: return swish_bwd(x, y, alpha_); break;
         case LOG: return log_bwd(x, y); break;
         case CLIP: return clip_bwd(x, y, alpha_, beta_); break;
+        case CLIP_V2: return clip_v2_bwd(x, y, alpha_, beta_); break;
         case POW: return pow_bwd(x, y, alpha_, beta_); break;
         case GELU_ERF: return gelu_erf_bwd(x, y); break;
+        case HARDSWISH: return hardswish_bwd(x, y); break;
 
         case RELU_DST: return relu_bwd_use_dst(x, y, alpha_); break;
         case LOGISTIC_DST: return logistic_bwd_use_dst(x, y); break;
@@ -271,6 +314,9 @@ float bwd_eltwise(float x, float y, float alpha_, float beta_) {
         case ELU_DST: return elu_bwd_use_dst(x, y, alpha_); break;
         case SQRT_DST: return sqrt_bwd_use_dst(x, y); break;
         case EXP_DST: return exp_bwd_use_dst(x, y); break;
+        case CLIP_V2_DST:
+            return clip_v2_bwd_use_dst(x, y, alpha_, beta_);
+            break;
 
         default: return x; break;
     }

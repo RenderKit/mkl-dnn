@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <math.h>
 
 #include "common/c_types_map.hpp"
+#include "common/compiler_workarounds.hpp"
 #include "common/dnnl_thread.hpp"
 #include "common/type_helpers.hpp"
 
@@ -25,13 +26,6 @@
 #include "cpu/platform.hpp"
 
 #include "cpu/ncsp_batch_normalization.hpp"
-
-// clang 6 and 7 generate incorrect code with OMP_SIMD in some particular cases
-#if (defined __clang_major__) && (__clang_major__ >= 6)
-#define SAFE_TO_USE_OMP_SIMD 0
-#else
-#define SAFE_TO_USE_OMP_SIMD 1
-#endif
 
 namespace dnnl {
 namespace impl {
@@ -41,13 +35,14 @@ using namespace memory_tracking::names;
 using namespace data_type;
 
 template <data_type_t d_type>
-void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
+status_t ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
         const exec_ctx_t &ctx) const {
     const bool calculate_stats = !pd()->stats_is_src();
     const bool save_stats = pd()->is_training();
     const bool is_training = pd()->is_training();
     const bool fuse_norm_relu = pd()->fuse_norm_relu();
 
+    status_t status = status::success;
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
     auto scaleshift = CTX_IN_MEM(const acc_data_t *, DNNL_ARG_SCALE_SHIFT);
 
@@ -62,16 +57,21 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                 CTX_IN_MEM(const acc_data_t *, DNNL_ARG_VARIANCE));
     } else {
         if (save_stats) {
-            mean = CTX_OUT_MEM(acc_data_t *, DNNL_ARG_MEAN);
-            variance = CTX_OUT_MEM(acc_data_t *, DNNL_ARG_VARIANCE);
+            mean = CTX_OUT_CLEAN_MEM(acc_data_t *, DNNL_ARG_MEAN, status);
+            CHECK(status);
+            variance = CTX_OUT_CLEAN_MEM(
+                    acc_data_t *, DNNL_ARG_VARIANCE, status);
+            CHECK(status);
         } else {
             mean = scratchpad.template get<acc_data_t>(key_bnorm_tmp_mean);
             variance = scratchpad.template get<acc_data_t>(key_bnorm_tmp_var);
         }
     }
 
-    auto dst = CTX_OUT_MEM(data_t *, DNNL_ARG_DST);
-    auto ws = CTX_OUT_MEM(uint8_t *, DNNL_ARG_WORKSPACE);
+    auto dst = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DST, status);
+    CHECK(status);
+    auto ws = CTX_OUT_CLEAN_MEM(uint8_t *, DNNL_ARG_WORKSPACE, status);
+    CHECK(status);
     acc_data_t *bf16_src_cvt_wsp
             = scratchpad.template get<acc_data_t>(key_bnorm_bf16cvt);
 
@@ -176,7 +176,7 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                             = sum;
                 }
 
-                if (SP_N_nthr > 1) dnnl_thr_barrier();
+                if (dnnl_thr_syncable()) dnnl_thr_barrier();
 
                 for (dim_t c = C_blk_gl_s; c < C_blk_gl_e; c++) {
                     mean_blk[c] = 0.;
@@ -186,7 +186,7 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                     mean_blk[c] /= (N * SP);
                 }
 
-                if (SP_N_nthr > 1) dnnl_thr_barrier();
+                if (dnnl_thr_syncable()) dnnl_thr_barrier();
 
                 for (dim_t c = C_blk_s; c < C_blk_e; c++) {
                     size_t off = c + C_off;
@@ -219,7 +219,7 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                             = sum;
                 }
 
-                if (SP_N_nthr > 1) dnnl_thr_barrier();
+                if (dnnl_thr_syncable()) dnnl_thr_barrier();
 
                 for (dim_t c = C_blk_gl_s; c < C_blk_gl_e; c++) {
                     variance_blk[c] = 0.;
@@ -229,7 +229,7 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                     variance_blk[c] /= (N * SP);
                 }
 
-                if (SP_N_nthr > 1) dnnl_thr_barrier();
+                if (dnnl_thr_syncable()) dnnl_thr_barrier();
             }
 
             for (dim_t c = C_blk_s; c < C_blk_e; c++) {
@@ -263,7 +263,7 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
                         _src = reinterpret_cast<const acc_data_t *>(
                                 src + s_off);
                     }
-#if SAFE_TO_USE_OMP_SIMD
+#if CLANG_WA_02_SAFE_TO_USE_OMP_SIMD
                     PRAGMA_OMP_SIMD()
 #endif
                     for (dim_t sp = S_s; sp < S_e; ++sp) {
@@ -288,14 +288,17 @@ void ncsp_batch_normalization_fwd_t<d_type>::execute_forward(
             }
         }
     });
+
+    return status::success;
 }
 
 template struct ncsp_batch_normalization_fwd_t<f32>;
 template struct ncsp_batch_normalization_fwd_t<bf16>;
 
 template <data_type_t d_type>
-void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
+status_t ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
         const exec_ctx_t &ctx) const {
+    status_t status = status::success;
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
     auto mean = CTX_IN_MEM(const acc_data_t *, DNNL_ARG_MEAN);
     auto variance = CTX_IN_MEM(const acc_data_t *, DNNL_ARG_VARIANCE);
@@ -303,8 +306,11 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
     auto scaleshift = CTX_IN_MEM(const acc_data_t *, DNNL_ARG_SCALE_SHIFT);
     auto ws = CTX_IN_MEM(const uint8_t *, DNNL_ARG_WORKSPACE);
 
-    auto diff_src = CTX_OUT_MEM(data_t *, DNNL_ARG_DIFF_SRC);
-    auto diff_scaleshift = CTX_OUT_MEM(acc_data_t *, DNNL_ARG_DIFF_SCALE_SHIFT);
+    auto diff_src = CTX_OUT_CLEAN_MEM(data_t *, DNNL_ARG_DIFF_SRC, status);
+    CHECK(status);
+    auto diff_scaleshift = CTX_OUT_CLEAN_MEM(
+            acc_data_t *, DNNL_ARG_DIFF_SCALE_SHIFT, status);
+    CHECK(status);
 
     auto scratchpad = ctx.get_scratchpad_grantor();
     auto *ws_reduce = scratchpad.template get<acc_data_t>(key_bnorm_reduction);
@@ -411,7 +417,7 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
                         _src = reinterpret_cast<const acc_data_t *>(
                                 src + s_off);
                     }
-#if SAFE_TO_USE_OMP_SIMD
+#if CLANG_WA_02_SAFE_TO_USE_OMP_SIMD
                     PRAGMA_OMP_SIMD(reduction(+ : diff_gamma, diff_beta))
 #endif
                     for (dim_t sp = S_s; sp < S_e; ++sp) {
@@ -432,7 +438,7 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
                         = diff_beta;
             }
 
-            if (SP_N_nthr > 1) dnnl_thr_barrier();
+            if (dnnl_thr_syncable()) dnnl_thr_barrier();
 
             for (dim_t c = C_blk_gl_s; c < C_blk_gl_e; c++) {
                 acc_data_t sqrt_variance = static_cast<acc_data_t>(
@@ -449,7 +455,7 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
                 diff_gamma_blk[c] *= sqrt_variance;
             }
 
-            if (SP_N_nthr > 1) dnnl_thr_barrier();
+            if (dnnl_thr_syncable()) dnnl_thr_barrier();
 
             for (dim_t c = C_blk_s; c < C_blk_e; c++) {
                 size_t off = c + C_off;
@@ -489,7 +495,7 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
                         _src = reinterpret_cast<const acc_data_t *>(
                                 src + s_off);
                     }
-#if SAFE_TO_USE_OMP_SIMD
+#if CLANG_WA_02_SAFE_TO_USE_OMP_SIMD
                     PRAGMA_OMP_SIMD()
 #endif
                     for (dim_t sp = S_s; sp < S_e; ++sp) {
@@ -517,6 +523,7 @@ void ncsp_batch_normalization_bwd_t<d_type>::execute_backward(
             }
         }
     });
+    return status::success;
 }
 
 template struct ncsp_batch_normalization_bwd_t<f32>;

@@ -19,7 +19,7 @@
 
 #include <iostream>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common.hpp"
 #include "dnn_types.hpp"
@@ -51,11 +51,14 @@ struct settings_t {
     std::vector<int> axis {1};
     std::vector<int64_t> mb {0};
     std::vector<bool> inplace {false};
+    std::vector<dnnl_scratchpad_mode_t> scratchpad_mode {
+            dnnl_scratchpad_mode_library};
 
     const char *perf_template_csv
-            = "perf,%engine%,%dir%,%dt%,%tag%,%alg%,%axis%,%DESC%,%-time%,%"
-              "0time%";
-    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
+            = "perf,%engine%,%impl%,%dir%,%dt%,%tag%,%alg%,%axis%,%DESC%,%-"
+              "time%,%0time%";
+    const char *perf_template_def
+            = "perf,%engine%,%impl%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -64,7 +67,7 @@ struct settings_t {
 struct prb_t {
     prb_t(const dims_t &dims, dir_t dir, dnnl_data_type_t dt,
             const std::string &tag, alg_t alg, int axis, bool inplace,
-            int64_t mb = 0)
+            const attr_t &attr, int64_t mb = 0)
         : dims(dims)
         , dir(dir)
         , dt(dt)
@@ -72,6 +75,8 @@ struct prb_t {
         , alg(alg)
         , axis(axis)
         , inplace(inplace)
+        , attr(attr)
+        , user_mb(mb)
         , ndims((int)dims.size()) {
         if (mb) this->dims[0] = mb;
     }
@@ -84,16 +89,19 @@ struct prb_t {
     alg_t alg;
     int axis;
     bool inplace;
+    attr_t attr;
+    int64_t user_mb;
     int ndims;
 };
-std::ostream &operator<<(std::ostream &s, const prb_t &p);
+std::ostream &operator<<(std::ostream &s, const prb_t &prb);
 
 struct perf_report_t : public base_perf_report_t {
     using base_perf_report_t::base_perf_report_t;
 
-    void report(const prb_t *p, const res_t *r, const char *prb_str) {
-        p_ = p;
-        base_report(r, prb_str);
+    void report(const prb_t *prb, const res_t *res, const char *prb_str) {
+        p_ = prb;
+        tag_ = normalize_tag(p_->tag, p_->ndims);
+        base_report(res, prb_str);
     }
 
     void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
@@ -105,39 +113,41 @@ struct perf_report_t : public base_perf_report_t {
     const int *axis() const override { return &p_->axis; }
     const dir_t *dir() const override { return &p_->dir; }
     const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    const std::string *tag() const override { return &p_->tag; }
+    const int64_t *user_mb() const override { return &p_->user_mb; }
+    const std::string *tag() const override { return &tag_; }
 
 private:
     const prb_t *p_ = NULL;
+    std::string tag_;
 };
 
 inline void map_off_to_mb_ic(
-        const prb_t *p, int64_t off, int64_t &mb, int64_t &ic) {
-    for (int i = p->ndims - 1; i > 1; i--)
-        off /= p->dims[i];
+        const prb_t *prb, int64_t off, int64_t &mb, int64_t &ic) {
+    for (int i = prb->ndims - 1; i > 1; i--)
+        off /= prb->dims[i];
 
-    ic = off % p->dims[1];
-    off /= p->dims[1];
-    mb = off % p->dims[0];
-    off /= p->dims[0];
+    ic = off % prb->dims[1];
+    off /= prb->dims[1];
+    mb = off % prb->dims[0];
+    off /= prb->dims[0];
     assert(off == 0);
 }
 
-inline void get_sizes(const prb_t *p, int64_t &outer_size, int64_t &inner_size,
-        int64_t &axis_size) {
+inline void get_sizes(const prb_t *prb, int64_t &outer_size,
+        int64_t &inner_size, int64_t &axis_size) {
     outer_size = inner_size = axis_size = 1;
-    for (int i = 0; i < p->axis; i++)
-        outer_size *= p->dims[i];
-    for (int i = p->axis + 1; i < p->ndims; i++)
-        inner_size *= p->dims[i];
-    axis_size = p->dims[p->axis];
+    for (int i = 0; i < prb->axis; i++)
+        outer_size *= prb->dims[i];
+    for (int i = prb->axis + 1; i < prb->ndims; i++)
+        inner_size *= prb->dims[i];
+    axis_size = prb->dims[prb->axis];
 }
 
-void compute_ref_fwd(const prb_t *p, const dnn_mem_t &src, dnn_mem_t &dst);
-void compute_ref_bwd(const prb_t *p, const dnn_mem_t &dst,
+void compute_ref_fwd(const prb_t *prb, const dnn_mem_t &src, dnn_mem_t &dst);
+void compute_ref_bwd(const prb_t *prb, const dnn_mem_t &dst,
         const dnn_mem_t &diff_dst, dnn_mem_t &diff_src);
 
-int doit(const prb_t *p, res_t *res);
+int doit(const prb_t *prb, res_t *res);
 int bench(int argc, char **argv);
 
 } // namespace softmax

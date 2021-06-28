@@ -25,7 +25,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -65,8 +65,25 @@ class reorder_simple_test
 protected:
 #ifdef DNNL_TEST_WITH_ENGINE_PARAM
     void Test() {
+        using data_i_t = typename reorder_types::first_type;
+        using data_o_t = typename reorder_types::second_type;
+        memory::data_type prec_i = data_traits<data_i_t>::data_type;
+        memory::data_type prec_o = data_traits<data_o_t>::data_type;
+
+        SKIP_IF(unsupported_data_type(prec_i),
+                "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(prec_o),
+                "Engine does not support this data type.");
+
         test_simple_params<reorder_types> p
                 = ::testing::TestWithParam<decltype(p)>::GetParam();
+
+        SKIP_IF_CUDA(!((supported_format(p.fmt_i)
+                               || supported_blocking(prec_i, p.fmt_i))
+                             && (supported_format(p.fmt_o)
+                                     || supported_blocking(prec_o, p.fmt_o))),
+                "Unsupported cuda format tag/ data type");
+
         catch_expected_failures(
                 [=]() {
                     engine eng = get_test_engine();
@@ -75,10 +92,42 @@ protected:
                 p.expect_to_fail, p.expected_status);
     }
 #endif
+    bool supported_format(memory::format_tag fmt) {
+        return impl::utils::one_of(fmt, memory::format_tag::abcde,
+                memory::format_tag::acdeb, memory::format_tag::abcd,
+                memory::format_tag::acdb, memory::format_tag::abc,
+                memory::format_tag::acb, memory::format_tag::ab,
+                memory::format_tag::ba, memory::format_tag::a,
+                memory::format_tag::any);
+    }
+
+    bool supported_blocking(memory::data_type dt, memory::format_tag fmt) {
+        return (dt == dnnl_u8
+                && impl::utils::one_of(fmt, dnnl_aBcd4b, dnnl_aBcde4b));
+    }
 
     void Test(engine &eng_i, engine &eng_o) {
+        using data_i_t = typename reorder_types::first_type;
+        using data_o_t = typename reorder_types::second_type;
+        memory::data_type prec_i = data_traits<data_i_t>::data_type;
+        memory::data_type prec_o = data_traits<data_o_t>::data_type;
+
+        SKIP_IF(unsupported_data_type(prec_i, eng_i),
+                "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(prec_o, eng_o),
+                "Engine does not support this data type.");
+
         test_simple_params<reorder_types> p
                 = ::testing::TestWithParam<decltype(p)>::GetParam();
+
+#ifdef DNNL_SYCL_CUDA
+        SKIP_IF(!((supported_format(p.fmt_i)
+                          || supported_blocking(prec_i, p.fmt_i))
+                        && (supported_format(p.fmt_o)
+                                || supported_blocking(prec_o, p.fmt_o))),
+                "Unsupported cuda format tag/ data type");
+#endif
+
         catch_expected_failures([&]() { RunTest(eng_i, eng_o); },
                 p.expect_to_fail, p.expected_status);
     }
@@ -98,8 +147,8 @@ protected:
         auto md_i = memory::desc(p.dims, prec_i, p.fmt_i);
         auto md_o = memory::desc(p.dims, prec_o, p.fmt_o);
 
-        auto src = memory(md_i, eng_i);
-        auto dst = memory(md_o, eng_o);
+        auto src = test::make_memory(md_i, eng_i);
+        auto dst = test::make_memory(md_o, eng_o);
 
         /* initialize input data */
         const dnnl::impl::memory_desc_wrapper mdw_i(md_i.data);

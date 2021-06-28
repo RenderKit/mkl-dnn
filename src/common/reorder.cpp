@@ -15,7 +15,7 @@
 *******************************************************************************/
 
 #include <assert.h>
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
@@ -65,17 +65,16 @@ status_t dnnl_reorder_primitive_desc_create(
 
     if (!s_mdw.consistent_with(d_mdw)) return invalid_arguments;
 
-    if (attr == NULL) attr = &default_attr();
+    if (attr == nullptr) attr = &default_attr();
 
     auto e = get_reorder_engine(src_engine, dst_engine);
     for (auto r = e->get_reorder_implementation_list(src_md, dst_md); *r; ++r) {
         reorder_pd_t *reorder_pd = nullptr;
         if ((*r)(&reorder_pd, e, attr, src_engine, src_md, dst_engine, dst_md)
                 == success) {
-            auto status
-                    = safe_ptr_assign<primitive_desc_iface_t>(*reorder_pd_iface,
-                            new reorder_primitive_desc_iface_t(
-                                    reorder_pd, e, src_engine, dst_engine));
+            auto status = safe_ptr_assign(*reorder_pd_iface,
+                    new reorder_primitive_desc_iface_t(
+                            reorder_pd, e, src_engine, dst_engine));
             if (status != status::success) delete reorder_pd;
             return status;
         }

@@ -16,7 +16,7 @@
 
 #include <assert.h>
 
-#include "dnnl_types.h"
+#include "oneapi/dnnl/dnnl_types.h"
 
 #include "common/dnnl_thread.hpp"
 #include "common/nstl.hpp"
@@ -97,8 +97,8 @@ void reduce_balancer_t::balance() {
 using namespace Xbyak;
 
 template <impl::data_type_t data_type>
-struct reducer_2d_driver_t : public c_compatible {
-    typedef typename prec_traits<data_type>::type data_t;
+struct reducer_2d_driver_t : public jit_generator {
+    using data_t = typename prec_traits<data_type>::type;
 
     reducer_2d_driver_t(int n_src, size_t src_ld, size_t src_step,
             size_t dst_step, bool nullify_dst)
@@ -106,40 +106,42 @@ struct reducer_2d_driver_t : public c_compatible {
         , src_ld_(src_ld)
         , src_step_(src_step)
         , dst_step_(dst_step)
-        , nullify_dst_(nullify_dst)
-        , ker_(nullptr) {}
-    virtual ~reducer_2d_driver_t() {}
-    void operator()(data_t *dst, const data_t *srcs, size_t ny, size_t nx) {
-        assert(ker_);
-        ker_(dst, srcs, ny, nx);
-    }
+        , nullify_dst_(nullify_dst) {}
+    virtual void operator()(
+            data_t *dst, const data_t *srcs, size_t ny, size_t nx)
+            = 0;
 
 protected:
     int n_src_;
     size_t src_ld_, src_step_, dst_step_;
     bool nullify_dst_;
-    void (*ker_)(data_t *dst, const data_t *srcs, size_t ny, size_t nx);
 };
 
 template <impl::data_type_t data_type, cpu_isa_t isa>
-struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
-                                    public jit_generator {
+struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type> {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(reducer_2d_driver_f_s_32_t)
+
+    using data_t = typename prec_traits<data_type>::type;
+
+    void operator()(
+            data_t *dst, const data_t *srcs, size_t ny, size_t nx) override {
+        jit_generator::operator()(dst, srcs, ny, nx);
+    }
 
     /* cpu specific part */
     using Vmm = typename utils::conditional<isa == avx2, Ymm, Zmm>::type;
-    const AddressFrame &vmmword = (isa == avx2) ? yword : zword;
+    const AddressFrame &vmmword = (isa == avx2) ? this->yword : this->zword;
     void uni_vadd(const Xmm &x1, const Xmm &x2, const Operand &op) {
         if (data_type == data_type::f32)
-            vaddps(x1, x2, op);
+            this->vaddps(x1, x2, op);
         else
-            vpaddd(x1, x2, op);
+            this->vpaddd(x1, x2, op);
     }
     void uni_add(const Xmm &x1, const Operand &op) {
         if (data_type == data_type::f32)
-            addss(x1, op);
+            this->addss(x1, op);
         else
-            paddd(x1, op);
+            this->paddd(x1, op);
     }
 
     const int vlen = cpu_isa_traits<isa>::vlen;
@@ -150,30 +152,28 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
     Xbyak::Reg64 reg_ny = abi_param3;
     Xbyak::Reg64 reg_nx = abi_param4;
 
-    Xbyak::Reg64 reg_x = rax;
-    Xbyak::Reg64 reg_src_id = r10;
-    Xbyak::Reg64 reg_long_offt = r11;
+    Xbyak::Reg64 reg_x = this->rax;
+    Xbyak::Reg64 reg_src_id = this->r10;
+    Xbyak::Reg64 reg_long_offt = this->r11;
 
     reducer_2d_driver_f_s_32_t(int n_src, size_t src_ld, size_t src_step,
             size_t dst_step, bool nullify_dst)
         : reducer_2d_driver_t<data_type>(
-                n_src, src_ld, src_step, dst_step, nullify_dst) {
-        generate();
-    }
+                n_src, src_ld, src_step, dst_step, nullify_dst) {}
 
     void nullify_dst(int nloads, int load_len) {
         UNUSED(load_len);
         for (int i = 0; i < nloads; ++i)
-            uni_vpxor(Vmm(i), Vmm(i), Vmm(i));
+            this->uni_vpxor(Vmm(i), Vmm(i), Vmm(i));
         /* prefetches[dst] ? */
     }
 
     void load_dst(int nloads, int load_len) {
         for (int i = 0; i < nloads; ++i) {
             if (load_len == typesize)
-                movd(Xmm(i), ptr[reg_dst + i * load_len]);
+                this->movd(Xmm(i), this->ptr[reg_dst + i * load_len]);
             else if (load_len == vlen)
-                vmovups(Vmm(i), ptr[reg_dst + i * load_len]);
+                this->vmovups(Vmm(i), this->ptr[reg_dst + i * load_len]);
             else
                 assert(!"unsupported");
         }
@@ -182,9 +182,9 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
     void store_dst(int nloads, int load_len) {
         for (int i = 0; i < nloads; ++i) {
             if (load_len == typesize)
-                movd(ptr[reg_dst + i * load_len], Xmm(i));
+                this->movd(this->ptr[reg_dst + i * load_len], Xmm(i));
             else if (load_len == vlen)
-                vmovups(ptr[reg_dst + i * load_len], Vmm(i));
+                this->vmovups(this->ptr[reg_dst + i * load_len], Vmm(i));
             else
                 assert(!"unsupported");
         }
@@ -195,9 +195,9 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
             size_t off = base_off + i * load_len;
 
             if (load_len == typesize)
-                uni_add(Xmm(i), ptr[reg_src + off]);
+                this->uni_add(Xmm(i), this->ptr[reg_src + off]);
             else if (load_len == vlen)
-                uni_vadd(Vmm(i), Vmm(i), vmmword[reg_src + off]);
+                this->uni_vadd(Vmm(i), Vmm(i), vmmword[reg_src + off]);
             else
                 assert(!"unsupported");
         }
@@ -210,13 +210,13 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
         const int load_len[nbranches] = {vlen, vlen, typesize};
         Label loop_x_label[nbranches + 1];
 
-        mov(reg_x, reg_nx);
+        this->mov(reg_x, reg_nx);
 
         for (int id = 0; id < nbranches; ++id) {
-            L(loop_x_label[id]);
+            this->L(loop_x_label[id]);
 
-            cmp(reg_x, nloads[id] * load_len[id]);
-            jl(loop_x_label[id + 1], T_NEAR);
+            this->cmp(reg_x, nloads[id] * load_len[id]);
+            this->jl(loop_x_label[id + 1], this->T_NEAR);
 
             if (this->nullify_dst_)
                 nullify_dst(nloads[id], load_len[id]);
@@ -225,18 +225,18 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
 
             if (nloads[id] > 1) {
                 Label loop_srcs;
-                mov(reg_src_id, this->n_src_);
-                L(loop_srcs);
+                this->mov(reg_src_id, this->n_src_);
+                this->L(loop_srcs);
 
                 accumulate(nloads[id], load_len[id], 0);
-                add(reg_src, this->src_ld_ * typesize);
+                this->add(reg_src, this->src_ld_ * typesize);
 
-                dec(reg_src_id);
-                jnz(loop_srcs, T_NEAR);
+                this->dec(reg_src_id);
+                this->jnz(loop_srcs, this->T_NEAR);
 
                 size_t base_off
                         = (size_t)this->n_src_ * this->src_ld_ * typesize;
-                safe_sub(reg_src, base_off, reg_long_offt);
+                this->safe_sub(reg_src, base_off, reg_long_offt);
             } else {
                 for (int src_id = 0; src_id < this->n_src_; ++src_id) {
                     const size_t base_off
@@ -247,42 +247,40 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type>,
 
             store_dst(nloads[id], load_len[id]);
 
-            add(reg_src, nloads[id] * load_len[id]);
-            add(reg_dst, nloads[id] * load_len[id]);
+            this->add(reg_src, nloads[id] * load_len[id]);
+            this->add(reg_dst, nloads[id] * load_len[id]);
 
-            sub(reg_x, nloads[id] * load_len[id]);
+            this->sub(reg_x, nloads[id] * load_len[id]);
 
-            jmp(loop_x_label[id], T_NEAR);
+            this->jmp(loop_x_label[id], this->T_NEAR);
         }
 
-        L(loop_x_label[nbranches]);
+        this->L(loop_x_label[nbranches]);
 
         /* restore address registers */
-        sub(reg_src, reg_nx);
-        sub(reg_dst, reg_nx);
+        this->sub(reg_src, reg_nx);
+        this->sub(reg_dst, reg_nx);
     }
 
-    void generate() {
+    void generate() override {
         assert(isa == avx2 || isa == avx512_common || isa == avx512_mic);
 
-        preamble();
+        this->preamble();
 
-        shl(reg_nx, 2);
+        this->shl(reg_nx, 2);
 
         Label ny_loop;
-        L(ny_loop);
+        this->L(ny_loop);
 
         loop_x();
 
-        add(reg_dst, this->dst_step_ * typesize);
-        add(reg_src, this->src_step_ * typesize);
+        this->add(reg_dst, this->dst_step_ * typesize);
+        this->add(reg_src, this->src_step_ * typesize);
 
-        dec(reg_ny);
-        jnz(ny_loop, T_NEAR);
+        this->dec(reg_ny);
+        this->jnz(ny_loop, this->T_NEAR);
 
-        postamble();
-        this->ker_ = reinterpret_cast<decltype(this->ker_)>(
-                const_cast<uint8_t *>(this->getCode()));
+        this->postamble();
     }
 };
 
@@ -326,6 +324,11 @@ cpu_reducer_t<data_type>::cpu_reducer_t(const conf_t &conf)
 template <impl::data_type_t data_type>
 cpu_reducer_t<data_type>::~cpu_reducer_t() {
     delete drv_;
+}
+
+template <impl::data_type_t data_type>
+status_t cpu_reducer_t<data_type>::create_kernel() {
+    return (drv_) ? drv_->create_kernel() : status::success;
 }
 
 template <impl::data_type_t data_type>
@@ -418,6 +421,11 @@ cpu_reducer_2d_t<data_type>::cpu_reducer_2d_t(const conf_t &conf)
 template <impl::data_type_t data_type>
 cpu_reducer_2d_t<data_type>::~cpu_reducer_2d_t() {
     delete drv_;
+}
+
+template <impl::data_type_t data_type>
+status_t cpu_reducer_2d_t<data_type>::create_kernel() {
+    return (drv_) ? drv_->create_kernel() : status::success;
 }
 
 template <impl::data_type_t data_type>
@@ -550,6 +558,11 @@ cpu_accumulator_1d_t<data_type>::cpu_accumulator_1d_t() : drv_(nullptr) {
 template <impl::data_type_t data_type>
 cpu_accumulator_1d_t<data_type>::~cpu_accumulator_1d_t() {
     delete drv_;
+}
+
+template <impl::data_type_t data_type>
+status_t cpu_accumulator_1d_t<data_type>::create_kernel() {
+    return drv_->create_kernel();
 }
 
 template <impl::data_type_t data_type>

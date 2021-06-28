@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -45,7 +45,8 @@ static void fwd_compute_block_sizes(
     max_ow_block = nstl::min(conf.ow, max_ow_block);
 
     if (conf.ver == ver_16mb16c) {
-        conf.mb_block = (conf.src_data_type == data_type::f16)
+        conf.mb_block
+                = (conf.src_data_type == data_type::f16 && !conf.is_depthwise)
                 ? (conf.mb % 32 == 0 ? 32 : 16)
                 : 16;
     } else {
@@ -98,16 +99,18 @@ status_t gen9_convolution_fwd_t::pd_t::init_conf() {
     set_default_conf(conf, cd, *src_md(), *weights_md(), *dst_md(),
             *weights_md(1), *attr());
 
-    const bool is_nhwc
-            = src_mdw.matches_one_of_tag(nwc, nhwc, ndhwc) != format_tag::undef
-            || dst_mdw.matches_one_of_tag(nwc, nhwc, ndhwc)
-                    != format_tag::undef;
+    const bool int8_dst = conf.dst_data_type == data_type::s8;
+    const bool is_src_nhwc
+            = src_mdw.matches_one_of_tag(nwc, nhwc, ndhwc) != format_tag::undef;
+    const bool is_dst_nhwc
+            = dst_mdw.matches_one_of_tag(nwc, nhwc, ndhwc) != format_tag::undef;
+    const bool is_nhwc = is_src_nhwc || is_dst_nhwc;
 
     const bool is_1stconv = conf.ic_without_padding == 3;
     const bool is_depthwise = conf.with_groups && (conf.ic_without_padding == 1)
             && (conf.oc_without_padding == 1);
 
-    conf.is_nhwc = is_nhwc;
+    conf.is_nhwc = is_1stconv ? is_dst_nhwc : is_nhwc;
     conf.is_depthwise = is_depthwise;
 
     if (is_1stconv || (conf.with_groups && conf.ngroups > 1)) {
@@ -135,13 +138,16 @@ status_t gen9_convolution_fwd_t::pd_t::init_conf() {
     conf.omb = 1;
     conf.ocb = 1;
 
-    if (is_nhwc) {
+    if (conf.is_nhwc) {
         if (!utils::one_of(src_mdw.data_type(), f32, f16))
             return status::unimplemented;
+        if (conf.is_depthwise && conf.ngroups_without_padding % 16)
+            return status::unimplemented;
         // TODO: Add group convolution support in NHWC kernel.
-        if (conf.ngroups > 1 && !(is_16oc && is_16ic)) {
+        if (!conf.is_depthwise && conf.ngroups > 1 && !(is_16oc && is_16ic)) {
             return status::unimplemented;
         }
+        if (int8_dst) { return status::unimplemented; }
         conf.ver = ver_nhwc;
     } else if (is_1stconv) {
         if (!is_16oc) return status::unimplemented;
@@ -209,9 +215,9 @@ status_t gen9_convolution_fwd_t::pd_t::init_conf() {
             conf.lws_d[1] = 1;
             conf.lws_d[2] = 1;
             conf.gws_d[0] = conf.ngroups * conf.ocb / (conf.oc_block / 16);
-            conf.gws_d[1] = conf.od * conf.oh
-                    * utils::div_up(conf.ow, conf.ow_block)
-                    * (conf.omb / conf.mb_block);
+            conf.gws_d[1]
+                    = (conf.od * conf.oh * utils::div_up(conf.ow, conf.ow_block)
+                            * (conf.omb / conf.mb_block));
             conf.gws_d[2] = (conf.oc / conf.ocb) * (conf.mb / conf.omb);
             break;
         }
@@ -241,7 +247,10 @@ status_t gen9_convolution_fwd_t::pd_t::init_conf() {
             }
             break;
         case ver_1stconv:
-            src_tag = utils::pick(conf.ndims - 3, ncw, nchw, ncdhw);
+            if (is_src_nhwc)
+                src_tag = utils::pick(conf.ndims - 3, nwc, nhwc, ndhwc);
+            else
+                src_tag = utils::pick(conf.ndims - 3, ncw, nchw, ncdhw);
             dst_tag = conf.mb % 16 == 0
                     ? utils::pick(
                             conf.ndims - 3, NCw16n16c, NChw16n16c, NCdhw16n16c)
@@ -273,6 +282,16 @@ status_t gen9_convolution_fwd_t::pd_t::init_conf() {
                                                 OIhw16i16o, OIdhw16i16o));
             break;
         default: return status::unimplemented;
+    }
+    if (int8_dst) {
+        if (is_1stconv && conf.ic_without_padding < 4) {
+            dst_tag = utils::pick(conf.ndims - 3, ncw, nchw, ncdhw);
+        } else if (conf.mb % 16 == 0 || (conf.mb == 8 && !is_depthwise)) {
+            dst_tag = utils::pick(
+                    conf.ndims - 3, NCw32n32c, NChw32n32c, NCdhw32n32c);
+        } else {
+            dst_tag = utils::pick(conf.ndims - 3, nCw32c, nChw32c, nCdhw32c);
+        }
     }
 
     if (src_mdw.format_kind() == format_kind::any) {
@@ -357,6 +376,7 @@ status_t gen9_convolution_fwd_t::pd_t::init_kernel_ctx(
                 "SRC_SP_GROUP", conf.stride_w * (conf.lws_d[1] - 1) + conf.kw);
 
     kernel_ctx.set_data_type(conf.src_data_type);
+    def_data_type(kernel_ctx, conf.dst_data_type, "DST");
 
     kernel_ctx.define_int("VER_1STCONV", conf.ver == ver_1stconv);
     kernel_ctx.define_int("VER_8OW16C", conf.ver == ver_8ow16c);
@@ -383,6 +403,12 @@ status_t gen9_convolution_fwd_t::pd_t::init_kernel_ctx(
             utils::one_of(conf.dst_tag, NCw16n16c, NChw16n16c, NCdhw16n16c));
     kernel_ctx.define_int(
             "DST_W16C", utils::one_of(conf.dst_tag, nCw16c, nChw16c, nCdhw16c));
+    kernel_ctx.define_int("DST_32N32C",
+            utils::one_of(conf.dst_tag, NCw32n32c, NChw32n32c, NCdhw32n32c));
+    kernel_ctx.define_int(
+            "DST_W32C", utils::one_of(conf.dst_tag, nCw32c, nChw32c, nCdhw32c));
+    kernel_ctx.define_int(
+            "DST_NCHW", utils::one_of(conf.dst_tag, ncw, nchw, ncdhw));
 
     kernel_ctx.define_int("LWS_0", conf.lws_d[0]);
     kernel_ctx.define_int("LWS_1", conf.lws_d[1]);
@@ -418,7 +444,7 @@ status_t gen9_convolution_bwd_data_t::pd_t::init_conf() {
 
     if (is_nhwc && (is_depthwise || is_1stconv)) return status::unimplemented;
 
-    if (is_1stconv || (conf.with_groups && conf.ngroups > 1)) {
+    if (is_1stconv || (conf.with_groups && conf.ngroups > 1) || is_depthwise) {
         conf.ic = conf.ic_without_padding;
         conf.oc = is_1stconv ? utils::rnd_up(conf.oc_without_padding, 16)
                              : conf.oc_without_padding;
@@ -507,7 +533,8 @@ status_t gen9_convolution_bwd_data_t::pd_t::init_conf() {
             } else {
                 conf.icb = 64;
                 while (conf.icb > 16) {
-                    if (conf.ic % conf.icb == 0) break;
+                    if (utils::rnd_up(conf.ic, conf.ic_block) % conf.icb == 0)
+                        break;
                     conf.icb /= 2;
                 }
                 conf.lws_d[0] = 16;
@@ -516,7 +543,9 @@ status_t gen9_convolution_bwd_data_t::pd_t::init_conf() {
                 conf.gws_d[0] = conf.icb;
                 conf.gws_d[1] = conf.ih * utils::div_up(conf.iw, conf.iw_block)
                         * conf.id;
-                conf.gws_d[2] = conf.mb * (conf.ic / conf.icb) * conf.ngroups;
+                conf.gws_d[2] = conf.mb
+                        * (utils::rnd_up(conf.ic, conf.ic_block) / conf.icb)
+                        * conf.ngroups;
             }
             break;
         }
@@ -617,7 +646,8 @@ status_t gen9_convolution_bwd_data_t::pd_t::init_kernel_ctx(
     kernel_ctx.define_int("DD", conf.dilate_d);
     kernel_ctx.define_int("DH", conf.dilate_h);
     kernel_ctx.define_int("DW", conf.dilate_w);
-    kernel_ctx.define_int("OC_PADDED", conf.oc);
+    kernel_ctx.define_int("OC_PADDED", utils::rnd_up(conf.oc, conf.oc_block));
+    kernel_ctx.define_int("IC_PADDED", utils::rnd_up(conf.ic, conf.ic_block));
     kernel_ctx.define_int("G_WO_PADDING", conf.ngroups_without_padding);
     kernel_ctx.define_int("OC_WO_PADDING", conf.oc_without_padding);
     kernel_ctx.define_int("IC_WO_PADDING", conf.ic_without_padding);
@@ -828,7 +858,8 @@ status_t gen9_convolution_bwd_weights_t::pd_t::init_conf(engine_t *engine) {
     conf.is_nhwc = is_nhwc;
     conf.is_depthwise = is_depthwise;
 
-    if (is_1stconv || (conf.with_groups && conf.ngroups > 1) || is_nhwc) {
+    if (is_1stconv || (conf.with_groups && conf.ngroups > 1) || is_depthwise
+            || is_nhwc) {
         conf.ic = conf.ic_without_padding;
         conf.oc = is_1stconv ? utils::rnd_up(conf.oc_without_padding, 16)
                              : conf.oc_without_padding;
@@ -897,7 +928,9 @@ status_t gen9_convolution_bwd_weights_t::pd_t::init_conf(engine_t *engine) {
         conf.gws_d[0] = is_1stconv ? conf.ocb * conf.ngroups
                                    : conf.ocb * (conf.icb / 16) * conf.ngroups;
     }
-    conf.gws_d[1] = conf.kh * conf.kw * conf.kd;
+    conf.gws_d[1] = is_1stconv && !is_nhwc
+            ? utils::div_up(conf.kh * conf.kw * conf.kd * conf.ic, 16)
+            : conf.kh * conf.kw * conf.kd;
     conf.gws_d[2] = conf.nchunk * utils::div_up(conf.ic, conf.icb)
             * utils::div_up(conf.oc, conf.ocb);
 
@@ -980,6 +1013,53 @@ status_t gen9_convolution_bwd_weights_t::pd_t::init_conf(engine_t *engine) {
     conf.is_src_nchw = utils::one_of(src_tag, ncw, nchw, ncdhw);
     conf.is_src_nhwc = utils::one_of(src_tag, nwc, nhwc, ndhwc);
 
+    bool ok = set_default_formats_common(
+            conf.src_tag, conf.wei_tag, conf.dst_tag);
+    if (!ok) return status::unimplemented;
+    if (is_1stconv && !is_nhwc) {
+        if (data_type::bf16 == conf.weights_data_type) {
+            conf.reorder_wei = true;
+            auto temp_wei_md = *diff_weights_md();
+            temp_wei_md.data_type = data_type::f32;
+            auto r_impls = engine->get_reorder_implementation_list(
+                    &temp_wei_md, diff_weights_md());
+            primitive_attr_t r_attr(default_attr());
+            if (!r_attr.is_initialized()) return status::out_of_memory;
+            r_attr.set_scratchpad_mode(scratchpad_mode::user);
+            for (auto r = r_impls; *r; ++r) {
+                reorder_pd_t *r_pd = nullptr;
+                if ((*r)(&r_pd, engine, &r_attr, engine, &temp_wei_md, engine,
+                            diff_weights_md())
+                        == status::success) {
+                    rpd_wei_.reset((primitive_desc_t *)r_pd);
+                    break;
+                }
+            }
+            if (!rpd_wei_) return status::unimplemented;
+        }
+
+        if (conf.with_bias && data_type::bf16 == conf.bias_data_type) {
+            conf.reorder_bias = true;
+            auto temp_bias_md = *diff_weights_md(1);
+            temp_bias_md.data_type = data_type::f32;
+            auto r_impls = engine->get_reorder_implementation_list(
+                    &temp_bias_md, diff_weights_md(1));
+            primitive_attr_t r_attr(default_attr());
+            if (!r_attr.is_initialized()) return status::out_of_memory;
+            r_attr.set_scratchpad_mode(scratchpad_mode::user);
+            for (auto r = r_impls; *r; ++r) {
+                reorder_pd_t *r_pd = nullptr;
+                if ((*r)(&r_pd, engine, &r_attr, engine, &temp_bias_md, engine,
+                            diff_weights_md(1))
+                        == status::success) {
+                    rpd_bia_.reset((primitive_desc_t *)r_pd);
+                    break;
+                }
+            }
+            if (!rpd_bia_) return status::unimplemented;
+        }
+    }
+
     return status::success;
 }
 
@@ -1041,12 +1121,46 @@ status_t gen9_convolution_bwd_weights_t::pd_t::init_kernel_ctx(
 
     kernel_ctx.add_option("-cl-std=CL2.0");
 
+    kernel_ctx.set_data_type(data_type::f32);
+    def_data_type(kernel_ctx, src_md()->data_type, "SRC");
+
+    def_data_type(kernel_ctx, diff_dst_md()->data_type, "DST");
+
+    def_data_type(kernel_ctx,
+            diff_weights_md(conf.with_bias ? 1 : 0)->data_type, "BIA");
+
+    def_data_type(kernel_ctx, data_type::f32, "WEI");
+
     switch (conf.ver) {
         case ver_16mb16c: kernel_ctx.define_int("VER_16MB16C", 1); break;
         case ver_1stconv:
         case ver_8ow16c: kernel_ctx.define_int("VER_8OW16C", 1); break;
         default: break;
     }
+
+    return status::success;
+}
+
+status_t gen9_convolution_bwd_weights_t::pd_t::init_scratchpad() {
+    auto scratchpad = scratchpad_registry().registrar();
+    if (!conf.reorder_wei && !conf.reorder_bias) return status::success;
+    if (conf.reorder_wei) {
+        auto temp_wei_md = *diff_weights_md();
+        temp_wei_md.data_type = data_type::f32;
+        memory_desc_wrapper wei_md_d(temp_wei_md);
+        scratchpad.book(memory_tracking::names::key_conv_bwd_w_1st_wei_reorder,
+                wei_md_d.size(), 1, OCL_BUFFER_ALIGNMENT);
+        scratchpad.book(memory_tracking::names::key_nested_multiple,
+                rpd_wei_->scratchpad_registry());
+    }
+    if (!conf.reorder_bias) return status::success;
+    auto temp_bias_md = *diff_weights_md(1);
+    temp_bias_md.data_type = data_type::f32;
+    memory_desc_wrapper bia_md_d(temp_bias_md);
+    scratchpad.book(memory_tracking::names::key_conv_bwd_w_1st_bia_reorder,
+            bia_md_d.size(), 1, OCL_BUFFER_ALIGNMENT);
+    scratchpad.book(memory_tracking::names::key_nested_multiple + 1,
+            rpd_bia_->scratchpad_registry());
 
     return status::success;
 }
@@ -1066,17 +1180,14 @@ status_t gen9_convolution_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     arg_list.set(1, weights);
     arg_list.set(2, bias);
     arg_list.set(3, dst);
-    append_post_ops_to_arg_list(arg_list, 4, attr_info.all_post_ops);
+    append_post_ops_to_arg_list(ctx, arg_list, 4, attr_info.all_post_ops);
 
     auto nd_range = compute::nd_range_t(conf.gws_d, conf.lws_d);
 
     status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
 
-    if (attr_info.with_eltwise
-            && !gpu_eltwise_fwd_pd_t::eltwise_preserves_zero(
-                    attr_info.eltwise_alg, attr_info.eltwise_alpha,
-                    attr_info.eltwise_beta)) {
-        ctx.memory(DNNL_ARG_DST)->zero_pad(ctx.stream());
+    if (!post_ops_preserves_zeroes(ctx, attr_info.all_post_ops)) {
+        ctx.zero_pad_output(DNNL_ARG_DST);
     }
     return status;
 }
@@ -1093,25 +1204,77 @@ status_t gen9_convolution_bwd_weights_t::execute_backward_weights(
 
     const auto &conf = pd()->conf;
 
-    const float zero = 0;
-    memory_desc_wrapper wei_mdw(pd()->diff_weights_md());
+    const uint8_t zero = 0;
+    std::unique_ptr<memory_t> wspace_wei;
+    std::unique_ptr<memory_t> wspace_bia;
+    auto temp_wei_md = *pd()->diff_weights_md();
+    auto temp_bia_md = *pd()->diff_weights_md(1);
+    std::unique_ptr<memory_storage_t> wspace_ptr_wei;
+    std::unique_ptr<memory_storage_t> wspace_ptr_bia;
+    if (conf.reorder_wei) {
+        wspace_ptr_wei = ctx.get_scratchpad_grantor().get_memory_storage(
+                memory_tracking::names::key_conv_bwd_w_1st_wei_reorder);
+
+        temp_wei_md.data_type = data_type::f32;
+    }
+    if (conf.reorder_bias) {
+        wspace_ptr_bia = ctx.get_scratchpad_grantor().get_memory_storage(
+                memory_tracking::names::key_conv_bwd_w_1st_bia_reorder);
+
+        temp_bia_md.data_type = data_type::f32;
+    }
+
+    memory_desc_wrapper wei_mdw(temp_wei_md);
     CHECK(compute_stream->fill(
-            diff_weights, &zero, sizeof(zero), wei_mdw.size()));
+            conf.reorder_wei ? *wspace_ptr_wei : diff_weights, zero,
+            wei_mdw.size()));
     if (conf.with_bias) {
-        memory_desc_wrapper bia_mdw(pd()->diff_weights_md(1));
+        memory_desc_wrapper bia_mdw(temp_bia_md);
         CHECK(compute_stream->fill(
-                diff_bias, &zero, sizeof(zero), bia_mdw.size()));
+                conf.reorder_bias ? *wspace_ptr_bia : diff_bias, zero,
+                bia_mdw.size()));
     }
 
     compute::kernel_arg_list_t arg_list;
     arg_list.set(0, src);
-    arg_list.set(1, diff_weights);
-    arg_list.set(2, diff_bias);
+    arg_list.set(1, conf.reorder_wei ? *wspace_ptr_wei : diff_weights);
+    arg_list.set(2, conf.reorder_bias ? *wspace_ptr_bia : diff_bias);
     arg_list.set(3, diff_dst);
 
     status_t status = parallel_for(ctx,
             compute::nd_range_t(conf.gws_d, conf.lws_d), kernel_, arg_list);
     if (status != status::success) return status;
+    auto exec_reorder = [&](memory_t *in, memory_t *out,
+                                const std::shared_ptr<primitive_t> &prim,
+                                int r_num) -> status_t {
+        exec_args_t r_args;
+        r_args[DNNL_ARG_FROM] = memory_arg_t {in, true};
+        r_args[DNNL_ARG_TO] = memory_arg_t {out, false};
+        exec_ctx_t r_ctx(ctx, std::move(r_args));
+        nested_scratchpad_t ns(
+                ctx, memory_tracking::names::key_nested_multiple + r_num, prim);
+        r_ctx.set_scratchpad_grantor(ns.grantor());
+        return prim->execute(r_ctx);
+    };
+
+    if (conf.reorder_wei) {
+
+        CHECK(safe_ptr_assign(wspace_wei,
+                new memory_t(ctx.stream()->engine(), &temp_wei_md,
+                        memory_flags_t::use_runtime_ptr,
+                        wspace_ptr_wei->data_handle())));
+        CHECK(exec_reorder(wspace_wei.get(), ctx.output(DNNL_ARG_DIFF_WEIGHTS),
+                wei_reorder_, 0));
+    }
+    if (conf.reorder_bias) {
+
+        CHECK(safe_ptr_assign(wspace_bia,
+                new memory_t(ctx.stream()->engine(), &temp_bia_md,
+                        memory_flags_t::use_runtime_ptr,
+                        wspace_ptr_bia->data_handle())));
+        CHECK(exec_reorder(wspace_bia.get(), ctx.output(DNNL_ARG_DIFF_BIAS),
+                bia_reorder_, 1));
+    }
 
     return status::success;
 }

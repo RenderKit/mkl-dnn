@@ -46,6 +46,7 @@ struct ref_convolution_fwd_t : public gpu_primitive_t {
 
             const auto attr_skip_mask
                     = primitive_attr_t::skip_mask_t::oscale_runtime
+                    | primitive_attr_t::skip_mask_t::zero_points_runtime
                     | primitive_attr_t::skip_mask_t::post_ops
                     | primitive_attr_t::skip_mask_t::sum_dt;
 
@@ -62,7 +63,8 @@ struct ref_convolution_fwd_t : public gpu_primitive_t {
                     && this->set_default_formats()
                     && attr()->has_default_values(
                             attr_skip_mask, dst_md_.data_type)
-                    && post_ops_ok(attr())
+                    && post_ops_with_binary_ok(attr(), dst_md()->data_type, 5)
+                    && zero_points_ok(attr())
                     && IMPLICATION(!attr()->output_scales_.has_default_values(),
                             utils::one_of(src_md_.data_type, s8, u8)
                                     && utils::one_of(
@@ -137,7 +139,8 @@ protected:
 
         std::unique_ptr<memory_storage_t> tmp_mem_storage(tmp_mem_storage_ptr);
         void *scales_ptr = nullptr;
-        CHECK(tmp_mem_storage->map_data(&scales_ptr, nullptr));
+        CHECK(tmp_mem_storage->map_data(&scales_ptr, nullptr,
+                sizeof(float) * pd()->attr()->output_scales_.count_));
         utils::array_copy((float *)scales_ptr,
                 pd()->attr()->output_scales_.scales_,
                 pd()->attr()->output_scales_.count_);
@@ -160,11 +163,14 @@ struct ref_convolution_bwd_data_t : public gpu_primitive_t {
         DECLARE_COMMON_PD_T("ocl:ref:any", ref_convolution_bwd_data_t);
 
         status_t init(engine_t *engine) {
+            const auto attr_skip_mask = primitive_attr_t::skip_mask_t::post_ops;
+
             bool ok = set_default_alg_kind(alg_kind::convolution_direct)
                     && desc()->prop_kind == prop_kind::backward_data
                     && desc()->alg_kind == alg_kind::convolution_direct
                     && this->set_default_formats()
-                    && attr()->has_default_values();
+                    && attr()->has_default_values(attr_skip_mask)
+                    && post_ops_with_binary_ok(attr(), dst_md()->data_type);
             if (!ok) return status::unimplemented;
 
             return init_conf(engine);

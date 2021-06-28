@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,11 +21,11 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
-typedef float data_t;
+using data_t = float;
 
 struct params_t {
     memory::dims dims;
@@ -35,7 +35,7 @@ struct params_t {
 
 using params_w_engine_t = std::tuple<dnnl::engine::kind, params_t>;
 
-class memory_creation_test
+class memory_creation_test_t
     : public ::testing::TestWithParam<params_w_engine_t> {
 protected:
     void SetUp() override {
@@ -53,38 +53,42 @@ protected:
         dnnl::memory::desc md(p.dims, memory::data_type::f32, p.fmt_tag);
         dnnl::memory::dim phys_size = md.get_size() / sizeof(data_t);
 
+#ifdef DNNL_SYCL_CUDA
+        const dnnl::impl::memory_desc_wrapper mdw(md.data);
+        SKIP_IF(!mdw.is_plain() && !mdw.format_any(),
+                "Non-plain formats are not supported on CUDA backend");
+#endif
+
         // mem0
         // Initially spoiled by putting non-zero values in padded area.
-        // The test will manually fix it later.
-        dnnl::memory mem0(md, eng);
+        auto mem0 = test::make_memory(md, eng);
 
         // `runtime`-aware buffer for future mem1
-        dnnl::memory mem1_placeholder(md, eng);
+        auto mem1_placeholder = test::make_memory(md, eng);
 
         // Map-unmap section
         {
             // Put non-zeros even to the padded area
             auto mem0_ptr = map_memory<data_t>(mem0);
+            if (phys_size) GTEST_EXPECT_NE(mem0_ptr, nullptr);
             fill_data<data_t>(phys_size, mem0_ptr);
 
             // mem1_placeholder = copy(mem0)
             auto mem1_ph_ptr = map_memory<data_t>(mem1_placeholder);
+            if (phys_size) GTEST_EXPECT_NE(mem1_ph_ptr, nullptr);
             for (dnnl::memory::dim i = 0; i < phys_size; ++i)
                 mem1_ph_ptr[i] = mem0_ptr[i];
         }
 
-        // mem1
-        // A `corrected` version of mem0 (i.e. padded area should be filled with
-        // zeros) and with a buffer taken from mem1_placeholder.
-        dnnl::memory mem1(md, eng, mem1_placeholder.get_data_handle());
-
-        check_zero_tail<data_t>(0, mem1); // Check, if mem1 is indeed corrected
-        check_zero_tail<data_t>(1, mem0); // Manually correct mem0
+        auto mem1 = test::make_memory(md, eng, nullptr);
+        mem1.set_data_handle(mem1_placeholder.get_data_handle());
 
         // Map-unmap section
         {
             auto mem0_ptr = map_memory<data_t>(mem0);
+            if (phys_size) GTEST_EXPECT_NE(mem0_ptr, nullptr);
             auto mem1_ptr = map_memory<data_t>(mem1);
+            if (phys_size) GTEST_EXPECT_NE(mem1_ptr, nullptr);
 
             // Check if mem0 == mem1
             for (dnnl::memory::dim i = 0; i < phys_size; ++i)
@@ -96,7 +100,7 @@ protected:
     params_t p;
 };
 
-TEST_P(memory_creation_test, TestsMemoryCreation) {
+TEST_P(memory_creation_test_t, TestsMemoryCreation) {
     SKIP_IF(eng.get(true) == nullptr, "Engine is not supported");
     catch_expected_failures([=]() { Test(); },
             p.expected_status != dnnl_success, p.expected_status);
@@ -128,11 +132,20 @@ auto cases_generic = ::testing::Values(params_t {{2, 15, 3, 2}, fmt::nChw16c},
         params_t {{2, 9, 3, 2}, fmt::OIhw2i8o4i},
         params_t {{2, 9, 3, 2, 4}, fmt::OIdhw8o4i},
         params_t {{2, 17, 9, 2}, fmt::gOIw8o4i},
+        params_t {{2, 9, 3}, fmt::OwI16o4i},
+        params_t {{2, 9, 3, 2}, fmt::OhwI16o4i},
+        params_t {{2, 15, 9, 3, 2}, fmt::OdhwI16o4i},
+        params_t {{2, 15, 9, 3}, fmt::gOwI16o4i},
+        params_t {{2, 15, 9, 3, 2}, fmt::gOhwI16o4i},
+        params_t {{3, 18, 9, 3, 2, 3}, fmt::gOdhwI16o4i},
         params_t {{3, 18, 9, 3, 2, 3}, fmt::gOIdhw4i16o4i},
         params_t {{2, 18, 8, 4, 2, 3}, fmt::gOIdhw2i8o4i},
         params_t {{1, 2, 9, 3, 3, 2}, fmt::gOIdhw4o4i},
         params_t {{2, 9, 3, 2}, fmt::OIhw16i16o4i},
         params_t {{2, 9, 3, 2}, fmt::OIhw16i16o2i},
+        params_t {{2, 9, 3, 2}, fmt::OIhw16o16i2o},
+        params_t {{2, 9, 4, 3, 2}, fmt::OIdhw16i16o4i},
+        params_t {{2, 9, 4, 3, 2}, fmt::OIdhw16i16o2i},
         params_t {{2, 9, 4, 3, 2}, fmt::gOihw16o},
         params_t {{2, 17, 9, 3, 2}, fmt::gOIhw8o4i},
         params_t {{1, 2, 9, 3, 2}, fmt::gOIhw8o8i},
@@ -158,23 +171,30 @@ auto cases_generic = ::testing::Values(params_t {{2, 15, 3, 2}, fmt::nChw16c},
         params_t {{2, 17, 9, 3}, fmt::gOIw2i8o4i},
         params_t {{15, 16, 16, 3}, fmt::Goiw8g},
         params_t {{2, 17, 9, 3, 2}, fmt::gOIhw16i16o4i},
-        params_t {{2, 17, 9, 3, 2}, fmt::gOIhw16i16o2i});
+        params_t {{2, 17, 9, 3, 2}, fmt::gOIhw16i16o2i},
+        params_t {{2, 17, 9, 3, 2}, fmt::gOIhw16o16i2o},
+        params_t {{2, 15, 17, 9, 3, 2}, fmt::gOIdhw16i16o4i},
+        params_t {{2, 15, 17, 9, 3, 2}, fmt::gOIdhw16i16o2i});
 } // namespace
 
-INSTANTIATE_TEST_SUITE_P(TestMemoryCreationEF, memory_creation_test,
+INSTANTIATE_TEST_SUITE_P(TestMemoryCreationEF, memory_creation_test_t,
         ::testing::Combine(all_engine_kinds, cases_expect_to_fail));
 
-INSTANTIATE_TEST_SUITE_P(TestMemoryCreationZeroDim, memory_creation_test,
+INSTANTIATE_TEST_SUITE_P(TestMemoryCreationZeroDim, memory_creation_test_t,
         ::testing::Combine(all_engine_kinds, cases_zero_dim));
 
-INSTANTIATE_TEST_SUITE_P(TestMemoryCreationOK, memory_creation_test,
+INSTANTIATE_TEST_SUITE_P(TestMemoryCreationOK, memory_creation_test_t,
         ::testing::Combine(all_engine_kinds, cases_generic));
 
-class c_api_memory_test : public ::testing::Test {
-    virtual void SetUp() {}
+class c_api_memory_test_t : public ::testing::Test {
+    void SetUp() override {}
 };
 
-TEST_F(c_api_memory_test, TestZeroPadBoom) {
+TEST_F(c_api_memory_test_t, TestZeroPadBoom) {
+#ifdef DNNL_WITH_SYCL
+    SKIP_IF(true, "Test does not support SYCL.");
+#endif
+
     dnnl_memory_desc_t md;
     memset(&md, 0xcc, sizeof(md));
 
@@ -205,7 +225,7 @@ TEST_F(c_api_memory_test, TestZeroPadBoom) {
             dnnl_success == dnnl_memory_create(&m, &md, e, DNNL_MEMORY_NONE));
 
     void *p = malloc(dnnl_memory_desc_get_size(&md));
-    ASSERT_TRUE(p != NULL);
+    ASSERT_TRUE(p != nullptr);
     ASSERT_TRUE(dnnl_success == dnnl_memory_set_data_handle(m, p)); // Boom
 
     ASSERT_TRUE(dnnl_success == dnnl_memory_destroy(m));
@@ -214,6 +234,7 @@ TEST_F(c_api_memory_test, TestZeroPadBoom) {
     ASSERT_TRUE(dnnl_success == dnnl_engine_destroy(e));
 }
 
+#if DNNL_CPU_RUNTIME != DNNL_RUNTIME_DPCPP
 TEST(memory_test_cpp, TestSetDataHandleCPU) {
     engine eng = engine(engine::kind::cpu, 0);
     stream str = make_stream(eng);
@@ -221,10 +242,10 @@ TEST(memory_test_cpp, TestSetDataHandleCPU) {
     const memory::dim N = 1, C = 5, W = 7, H = 7;
     memory::desc data_md(
             {N, C, W, H}, memory::data_type::f32, memory::format_tag::nChw16c);
-    memory mem(data_md, eng, DNNL_MEMORY_NONE);
+    auto mem = test::make_memory(data_md, eng, DNNL_MEMORY_NONE);
 
     float *p = (float *)malloc(mem.get_desc().get_size());
-    ASSERT_TRUE(p != NULL);
+    ASSERT_TRUE(p != nullptr);
     mem.set_data_handle(p, str);
 
     ASSERT_TRUE(N == 1);
@@ -232,12 +253,9 @@ TEST(memory_test_cpp, TestSetDataHandleCPU) {
     ASSERT_TRUE(data_md.data.format_kind == dnnl_blocked);
     ASSERT_TRUE(data_md.data.format_desc.blocking.inner_nblks == 1);
     ASSERT_TRUE(data_md.data.format_desc.blocking.inner_blks[0] == 16);
-    for (int h = 0; h < H; h++)
-        for (int w = 0; w < W; w++)
-            for (int c = C; c < 16; c++)
-                ASSERT_TRUE(p[h * W * 16 + w * 16 + c] == 0.0f);
 
     free(p);
 }
+#endif
 
 } // namespace dnnl

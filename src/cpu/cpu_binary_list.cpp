@@ -34,21 +34,49 @@ namespace {
 using namespace dnnl::impl::data_type;
 
 // clang-format off
-static const pd_create_f impl_list[] = {
+const pd_create_f impl_list[] = {
         /* fp */
         CPU_INSTANCE_X64(jit_uni_binary_t<f32>)
         CPU_INSTANCE_X64(jit_uni_binary_t<bf16>)
         CPU_INSTANCE(ref_binary_t<f32>)
         CPU_INSTANCE(ref_binary_t<bf16>)
         /* int */
-        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, u8>)
-        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, s8>)
-        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, s8>)
-        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, u8>)
-        CPU_INSTANCE(ref_binary_t<s8, u8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, s8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, u8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, s8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, u8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, s8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, u8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, s8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, u8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, f32, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<s8, f32, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, f32, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<u8, f32, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, s8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, s8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, u8, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, u8, u8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, f32, s8>)
+        CPU_INSTANCE_X64(jit_uni_i8i8_binary_t<f32, f32, u8>)
         CPU_INSTANCE(ref_binary_t<s8, s8, s8>)
+        CPU_INSTANCE(ref_binary_t<s8, u8, s8>)
+        CPU_INSTANCE(ref_binary_t<u8, s8, s8>)
+        CPU_INSTANCE(ref_binary_t<u8, u8, s8>)
+        CPU_INSTANCE(ref_binary_t<s8, s8, u8>)
+        CPU_INSTANCE(ref_binary_t<s8, u8, u8>)
         CPU_INSTANCE(ref_binary_t<u8, s8, u8>)
         CPU_INSTANCE(ref_binary_t<u8, u8, u8>)
+        CPU_INSTANCE(ref_binary_t<s8, f32, s8>)
+        CPU_INSTANCE(ref_binary_t<s8, f32, u8>)
+        CPU_INSTANCE(ref_binary_t<u8, f32, s8>)
+        CPU_INSTANCE(ref_binary_t<u8, f32, u8>)
+        CPU_INSTANCE(ref_binary_t<f32, s8, s8>)
+        CPU_INSTANCE(ref_binary_t<f32, s8, u8>)
+        CPU_INSTANCE(ref_binary_t<f32, u8, s8>)
+        CPU_INSTANCE(ref_binary_t<f32, u8, u8>)
+        CPU_INSTANCE(ref_binary_t<f32, f32, s8>)
+        CPU_INSTANCE(ref_binary_t<f32, f32, u8>)
         /* eol */
         nullptr,
 };

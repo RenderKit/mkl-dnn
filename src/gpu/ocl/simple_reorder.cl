@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,16 +26,15 @@
 #undef SRC_OFF
 #undef DST_OFF
 
-#define SRC_OFF(x0, x1, x2, x3, x4, x5) OFF_MD(SRC, x0, x1, x2, x3, x4, x5)
-#define DST_OFF(x0, x1, x2, x3, x4, x5) OFF_MD(DST, x0, x1, x2, x3, x4, x5)
+#define SRC_OFF(x0, x1, x2, x3, x4, x5) \
+    OFF_MD(SRC, (x0), (x1), (x2), (x3), (x4), (x5))
+#define DST_OFF(x0, x1, x2, x3, x4, x5) \
+    OFF_MD(DST, (x0), (x1), (x2), (x3), (x4), (x5))
 
-#if WITH_GROUP
-#define SRC_OFF_G(gr, x0, x1, x2, x3, x4) OFF_MD(SRC, gr, x0, x1, x2, x3, x4)
-#define DST_OFF_G(gr, x0, x1, x2, x3, x4) OFF_MD(DST, gr, x0, x1, x2, x3, x4)
-#else
-#define SRC_OFF_G(gr, x0, x1, x2, x3, x4) OFF_MD(SRC, x0, x1, x2, x3, x4, 0)
-#define DST_OFF_G(gr, x0, x1, x2, x3, x4) OFF_MD(DST, x0, x1, x2, x3, x4, 0)
-#endif
+#define SRC_OFF_G(gr, x0, x1, x2, x3, x4) \
+    OFF_MD(SRC, gr, (x0), (x1), (x2), (x3), (x4))
+#define DST_OFF_G(gr, x0, x1, x2, x3, x4) \
+    OFF_MD(DST, gr, (x0), (x1), (x2), (x3), (x4))
 
 #if SRC_DT_S8
 #define SRC_BLOCK_READ(src) \
@@ -268,47 +267,408 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
 #if REF_REORDER
 
     const int d0 = GWS_GET_D0();
-    const int d1 = GWS_GET_D1();
+    const int d1_blk_start = GWS_GET_D1();
     const int d2_blk_start = GWS_GET_D2();
     const int d3_blk_start = GWS_GET_D3();
     const int d4_blk_start = GWS_GET_D4();
     const int d5_blk_start = GWS_GET_D5();
 
+    const int d1_blk_end = d1_blk_start + GWS_GET_D1_BLOCK();
     const int d2_blk_end = d2_blk_start + GWS_GET_D2_BLOCK();
     const int d3_blk_end = d3_blk_start + GWS_GET_D3_BLOCK();
     const int d4_blk_end = d4_blk_start + GWS_GET_D4_BLOCK();
     const int d5_blk_end = d5_blk_start + GWS_GET_D5_BLOCK();
 
-    for (int d2 = d2_blk_start; d2 < d2_blk_end; ++d2) {
-        for (int d3 = d3_blk_start; d3 < d3_blk_end; ++d3) {
-            for (int d4 = d4_blk_start; d4 < d4_blk_end; ++d4) {
-                for (int d5 = d5_blk_start; d5 < d5_blk_end; ++d5) {
-                    const int src_off = SRC_OFF(d0, d1, d2, d3, d4, d5);
-                    const int dst_off = DST_OFF(d0, d1, d2, d3, d4, d5);
+    for (int d1 = d1_blk_start; d1 < d1_blk_end; ++d1) {
+        for (int d2 = d2_blk_start; d2 < d2_blk_end; ++d2) {
+            for (int d3 = d3_blk_start; d3 < d3_blk_end; ++d3) {
+                for (int d4 = d4_blk_start; d4 < d4_blk_end; ++d4) {
+                    for (int d5 = d5_blk_start; d5 < d5_blk_end; ++d5) {
+                        const int src_off = SRC_OFF(d0, d1, d2, d3, d4, d5);
+                        const int dst_off = DST_OFF(d0, d1, d2, d3, d4, d5);
 #if PAD_FILL_ZERO == 1
-                    int pad_d0 = d0 >= SRC_D0;
-                    int pad_d1 = NDIMS > 1 && d1 >= SRC_D1;
-                    int pad_d2 = NDIMS > 2 && d2 >= SRC_D2;
-                    int pad_d3 = NDIMS > 3 && d3 >= SRC_D3;
-                    int pad_d4 = NDIMS > 4 && d4 >= SRC_D4;
-                    int pad_d5 = NDIMS > 5 && d5 >= SRC_D5;
-                    if (pad_d0 || pad_d1 || pad_d2 || pad_d3 || pad_d4
-                            || pad_d5) {
-                        dst[dst_off] = 0;
-                        continue;
-                    }
+                        int pad_d0 = d0 >= SRC_D0;
+                        int pad_d1 = NDIMS > 1 && d1 >= SRC_D1;
+                        int pad_d2 = NDIMS > 2 && d2 >= SRC_D2;
+                        int pad_d3 = NDIMS > 3 && d3 >= SRC_D3;
+                        int pad_d4 = NDIMS > 4 && d4 >= SRC_D4;
+                        int pad_d5 = NDIMS > 5 && d5 >= SRC_D5;
+                        if (pad_d0 || pad_d1 || pad_d2 || pad_d3 || pad_d4
+                                || pad_d5) {
+                            dst[dst_off] = 0;
+                            continue;
+                        }
 #endif
 #if SCALE_QUANT
-                    alpha = scales[SCALE_OFF(d0, d1, d2, d3, d4, d5)];
+                        alpha = scales[SCALE_OFF(d0, d1, d2, d3, d4, d5)];
 #endif
-                    REORDER(dst[dst_off], src[src_off], alpha, beta);
+                        REORDER(dst[dst_off], src[src_off], alpha, beta);
+                    }
                 }
             }
         }
     }
+#elif PLAIN_xFxE_TO_ABCDEF
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+    const int d2 = GWS_GET_D2();
+    const int d3 = GWS_GET_D3();
+    const int d4 = GWS_GET_D4();
+    const int d5 = GWS_GET_D5();
 
-#else // REF_REORDER == 0
-#if USE_DENSE_VECT
+#if WITH_SUM_AB
+#define SUM_OUTPUT 1
+#else
+#define SUM_OUTPUT 0
+#endif
+
+    const unsigned sglid = get_sub_group_local_id();
+
+#define REORDER_BLOCK(block_size, src_memory, src_swap, src_offset) \
+    { \
+        unroll_for(unsigned sidx = 0; sidx < block_size; ++sidx) { \
+            const unsigned src_off \
+                    = SRC_OFF(d0, d1, d2, d3, d4, sidx + src_offset); \
+            src_memory[sidx] = SRC_BLOCK_READ(&src[src_off]); \
+        } \
+        unroll_for(int j = 0; j < SUB_GROUP_SIZE; j++) \
+                unroll_for(int i = 0; i < block_size; i++) { \
+            unsigned x = (i + j * block_size) / SUB_GROUP_SIZE; \
+            unsigned y = (i + j * block_size) % SUB_GROUP_SIZE; \
+            unsigned sg_src = (i + j * block_size) / block_size; \
+            src_swap[x][y] = intel_sub_group_shuffle(src_mem[i], sg_src); \
+        } \
+\
+        DST_DATA_T dst_tmp; \
+        unsigned dst_off; \
+        if (block_size < 16) dst_off = DST_OFF(d0, d1, d2, d3, d4, 0); \
+\
+        unroll_for(unsigned sidx = 0; sidx < block_size; ++sidx) { \
+            if (block_size >= 16) \
+                dst_off = DST_OFF(d0, d1, d2, d3, d4 + sidx, src_offset); \
+            if (SUM_OUTPUT) dst_tmp = DST_BLOCK_READ(&dst[dst_off]); \
+            REORDER(dst_tmp, src_swap[sidx][sglid], alpha, beta); \
+            DST_BLOCK_WRITE(&dst[dst_off], dst_tmp); \
+            if (block_size < 16) dst_off += SUB_GROUP_SIZE; \
+        } \
+    }
+
+#if DST_D5 > 16
+    unsigned block_size = 16;
+#else
+    unsigned block_size = DST_D5;
+#endif
+
+    SRC_DATA_T src_mem[16];
+    SRC_DATA_T src_all[16][SUB_GROUP_SIZE];
+
+    REORDER_BLOCK(block_size, src_mem, src_all, d5);
+
+#elif TRANSPOSE_NXN
+    // Fast reorder that uses intel_sub_group_read/write functions
+    // to guarantee good memory bandwidth. Supports many layouts,
+    // see details in simple_reorder.cpp
+    //
+    // Uses subgroup size = N = 8 or 16.
+    // Each subgroup will read N sets of N values. Sets are strided in src by
+    // the dimension that'll be last in dst.
+    // The NxN data piece is shared between subgroup's work items and transposed
+    // Each subgroup will write N sets of N values.
+#define BATCH_SIZE SUB_GROUP_SIZE
+    int sgId = get_sub_group_local_id();
+
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+    const int d2 = GWS_GET_D2();
+    const int d3 = GWS_GET_D3();
+    const int d4 = GWS_GET_D4();
+    const int d5 = GWS_GET_D5();
+
+    const int d0_block = GWS_GET_D0_BLOCK();
+    const int d1_block = GWS_GET_D1_BLOCK();
+    const int d2_block = GWS_GET_D2_BLOCK();
+    const int d3_block = GWS_GET_D3_BLOCK();
+    const int d4_block = GWS_GET_D4_BLOCK();
+    const int d5_block = GWS_GET_D5_BLOCK();
+
+    SRC_DATA_T src_buf[SUB_GROUP_SIZE];
+    SRC_DATA_T dst_buf[SUB_GROUP_SIZE];
+    SRC_DATA_T send_buf;
+
+#if PAD_FILL_ZERO == 1
+    const int pad_d0 = d0 >= SRC_D0;
+    const int pad_d1 = NDIMS > 1 && d1 >= SRC_D1;
+    const int pad_d2 = NDIMS > 2 && d2 >= SRC_D2;
+    const int pad_d3 = NDIMS > 3 && d3 >= SRC_D3;
+    const int pad_d4 = NDIMS > 4 && d4 >= SRC_D4;
+    const int pad_d5 = NDIMS > 5 && d5 >= SRC_D5;
+    const int pad = pad_d0 || pad_d1 || pad_d2 || pad_d3 || pad_d4 || pad_d5;
+#else
+    const int pad = 0;
+#endif
+    if (!pad) {
+        for_(int d0i = 0; d0i < d0_block; d0i++)
+        for_(int d1i = 0; d1i < d1_block; d1i++)
+        for_(int d2i = 0; d2i < d2_block; d2i++)
+        for_(int d3i = 0; d3i < d3_block; d3i++)
+        for_(int d4i = 0; d4i < d4_block; d4i++)
+        for (int d5i = 0; d5i < d5_block; d5i++) {
+            const int iter = d0i + d1i + d2i + d3i + d4i + d5i;
+            const int src_off = SRC_OFF(
+                    d0 + d0i, d1 + d1i, d2 + d2i, d3 + d3i, d4 + d4i, d5 + d5i);
+
+            src_buf[iter] = SRC_BLOCK_READ(&src[src_off]);
+        }
+        // Share and transpose. Each work item keeps 1 own value and
+        // gets (N-1) values from other work items
+        dst_buf[sgId] = src_buf[sgId];
+        for (int i = 1; i < SUB_GROUP_SIZE; i++) {
+            send_buf = src_buf[(i + sgId) % BATCH_SIZE];
+            dst_buf[(BATCH_SIZE + sgId - i) % BATCH_SIZE]
+                    = intel_sub_group_shuffle(
+                            send_buf, (BATCH_SIZE + sgId - i) % BATCH_SIZE);
+        }
+    }
+
+    for_(int d0i = 0; d0i < d0_block; d0i++)
+    for_(int d1i = 0; d1i < d1_block; d1i++)
+    for_(int d2i = 0; d2i < d2_block; d2i++)
+    for_(int d3i = 0; d3i < d3_block; d3i++)
+    for_(int d4i = 0; d4i < d4_block; d4i++)
+    for (int d5i = 0; d5i < d5_block; d5i++) {
+        const int iter = d0i + d1i + d2i + d3i + d4i + d5i;
+#if DST_BLOCK_DIM == 0
+        const int dst_off = DST_OFF(d0 + iter, d1, d2, d3, d4, d5);
+#elif DST_BLOCK_DIM == 1
+        const int dst_off = DST_OFF(d0, d1 + iter, d2, d3, d4, d5);
+#elif DST_BLOCK_DIM == 2
+        const int dst_off = DST_OFF(d0, d1, d2 + iter, d3, d4, d5);
+#elif DST_BLOCK_DIM == 3
+        const int dst_off = DST_OFF(d0, d1, d2, d3 + iter, d4, d5);
+#elif DST_BLOCK_DIM == 4
+        const int dst_off = DST_OFF(d0, d1, d2, d3, d4 + iter, d5);
+#elif DST_BLOCK_DIM == 5
+        const int dst_off = DST_OFF(d0, d1, d2, d3, d4, d5 + iter);
+#endif
+        DST_DATA_T dst_tmp;
+        if (!pad) {
+#if WITH_SUM_AB
+            dst_tmp = DST_BLOCK_READ(&dst[dst_off]);
+#endif
+            REORDER(dst_tmp, dst_buf[iter], alpha, beta);
+        } else {
+            dst_tmp = 0;
+        }
+        DST_BLOCK_WRITE(&dst[dst_off], dst_tmp);
+    }
+
+#elif REORDER_NCHW
+
+#define BIGGER_THAN_16 (SRC_D1 >= 16)
+
+    int sgId = get_sub_group_local_id();
+
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+    const int d2 = GWS_GET_D2();
+    const int d3 = GWS_GET_D3();
+
+    const int d1_block = GWS_GET_D1_BLOCK();
+
+    SRC_DATA_T src_buf[SUB_GROUP_SIZE];
+    SRC_DATA_T dst_buf[SUB_GROUP_SIZE];
+#if BIGGER_THAN_16
+    SRC_DATA_T send_buf;
+#else
+    SRC_DATA_T exch_buf[d1_block][SUB_GROUP_SIZE];
+#endif
+
+#if BIGGER_THAN_16
+#define STRIDE_S SRC_D1
+#else
+#define STRIDE_S 16
+#endif
+#define STRIDE_D (SRC_D2 * SRC_D3)
+
+    for (int i = 0; i < d1_block; i++) {
+        int src_off = SRC_OFF(d0, d1, d2, d3, 0, 0) + STRIDE_S * i;
+        src_buf[i] = SRC_BLOCK_READ(&src[src_off]);
+    }
+#if BIGGER_THAN_16
+    for (int i = 0; i < SUB_GROUP_SIZE; i++) {
+        send_buf = src_buf[(i + sgId) % 16];
+        dst_buf[(16 + sgId - i) % 16]
+                = intel_sub_group_shuffle(send_buf, (16 + sgId - i) % 16);
+    }
+#else
+    for (int i = 0; i < d1_block; i++) {
+        for (int sg = 0; sg < SUB_GROUP_SIZE; sg++) {
+            exch_buf[i][sg] = intel_sub_group_shuffle(src_buf[i], sg);
+        }
+    }
+    for (int i = 0; i < d1_block; i++) {
+        int ofs = i + sgId * d1_block;
+        dst_buf[i] = exch_buf[ofs / SUB_GROUP_SIZE][ofs % SUB_GROUP_SIZE];
+    }
+#endif
+    for (int i = 0; i < d1_block; i++) {
+        int dst_off = DST_OFF(d0, d1, d2, d3, 0, 0) + STRIDE_D * i;
+        DST_DATA_T dst_tmp;
+#if WITH_SUM_AB
+        dst_tmp = DST_BLOCK_READ(&dst[dst_off]);
+#endif
+        REORDER(dst_tmp, dst_buf[i], alpha, beta);
+        DST_BLOCK_WRITE(&dst[dst_off], dst_tmp);
+    }
+
+#elif PLAIN_TO_ABCD4AXB
+    int sglid = get_sub_group_local_id();
+
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+    const int d2 = GWS_GET_D2();
+    const int d3 = GWS_GET_D3();
+
+    const int d0_block = GWS_GET_D0_BLOCK();
+    const int d1_block = GWS_GET_D1_BLOCK();
+    const int d01_block = d0_block * d1_block;
+
+    SRC_DATA_T tmp_buf[d01_block] = {0};
+    const int d0_inner_block = min(d0_block, SRC_D0);
+    const int d1_inner_block = min(d1_block, SRC_D1);
+    for (int d0_inner = 0; d0_inner < d0_inner_block; d0_inner++) {
+        for (int d1_inner = 0; d1_inner < d1_inner_block; d1_inner++) {
+            if (SRC_D0 % d0_inner_block != 0 && d0 + d0_inner >= SRC_D0)
+                continue;
+            if (SRC_D1 % d1_inner_block != 0 && d1 + d1_inner >= SRC_D1)
+                continue;
+            if (SRC_S3_0 == 1) {
+                // abcd layout.
+                int src_off
+                        = SRC_OFF(d0 + d0_inner, d1 + d1_inner, d2, d3, 0, 0);
+                tmp_buf[d0_inner * d1_block + d1_inner]
+                        = SRC_BLOCK_READ(&src[src_off]);
+            } else {
+                // acdb layout.
+                int src_off = SRC_OFF(
+                        d0 + d0_inner, d1 + d1_inner, d2, d3 + sglid, 0, 0);
+                tmp_buf[d0_inner * d1_block + d1_inner] = src[src_off];
+            }
+        }
+    }
+
+    SRC_DATA_T src_all[d01_block][SUB_GROUP_SIZE];
+    for (int i = 0; i < d01_block; i++)
+        for (int j = 0; j < SUB_GROUP_SIZE; j++)
+            src_all[i][j] = intel_sub_group_shuffle(tmp_buf[i], j);
+
+    for (int d = 0; d < SUB_GROUP_SIZE; d += 8) {
+        SRC_DATA8_T src_tmp;
+        for (int i = 0; i < 8; i++)
+            src_tmp[i] = src_all[sglid][d + i];
+        int dst_off = DST_OFF(d0, d1, d2, d3 + d, 0, 0);
+
+        DST_DATA8_T dst_tmp;
+#if WITH_SUM_AB
+        dst_tmp = DST_BLOCK_READ8(&dst[dst_off]);
+#endif
+        REORDER8(dst_tmp, src_tmp, alpha, beta);
+        DST_BLOCK_WRITE8(&dst[dst_off], dst_tmp);
+    }
+
+#elif PLAIN_TO_AB_XX_8AYB
+    // Reorders 2D plain format to a blocked one, where last two
+    // blocks are 8a4b or 8a2b. Supports formats with more block layers.
+    //
+    // Uses subgroup size 16
+    // Each subgroup will read 8 sets of 16 values. Sets are not
+    // adjacent in src, they are strided by 0th dim
+    // All those 8*16 values will be shared between work items in subgroup
+    // Each WI selects a set of 8 values out of 8*16 to write back
+    // Each subgroup will write 8 sets of 16 values. Sets are adjacent in dst.
+    //
+    // TODO: make it generic across number of dimensions, for now only works with 2D
+    // TODO: reduce shuffles from 8*16 to 28(?) - even though it doesn't improve perf
+    // TODO: the two dst_buf<-tmp_buf formulas should be unified
+    int sgId = get_sub_group_local_id();
+
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+
+    const int d0b = GWS_GET_D0_BLOCK();
+    const int d1b = GWS_GET_D1_BLOCK();
+
+    SRC_DATA_T src_buf[d0b];
+    DST_DATA_T dst_buf[d0b];
+
+    for (int d0i = 0; d0i < d0b; ++d0i) {
+        const int src_off = SRC_OFF(d0 + d0i, d1, 0, 0, 0, 0);
+        src_buf[d0i] = SRC_BLOCK_READ(&src[src_off]);
+    }
+
+    SRC_DATA_T tmp_buf[d0b][SUB_GROUP_SIZE];
+    for (int i = 0; i < d0b; i++) {
+        for (int sg = 0; sg < SUB_GROUP_SIZE; sg++) {
+            tmp_buf[i][sg] = intel_sub_group_shuffle(src_buf[i], sg);
+        }
+    }
+#if BLK_L == 4
+    for (int d0i = 0; d0i < d0b; ++d0i) {
+        dst_buf[d0i] = tmp_buf[(d0i % 2 * BLK_L) + sgId / BLK_L]
+                              [(d0i / 2) * BLK_L + sgId % BLK_L];
+    }
+#else // BLK_L == 2
+    for (int d0i = 0; d0i < d0b; ++d0i) {
+        dst_buf[d0i] = tmp_buf[sgId / BLK_L][d0i * BLK_L + sgId % BLK_L];
+    }
+#endif
+    for (int d0i = 0; d0i < d0b; ++d0i) {
+        const int dst_off = DST_OFF(d0, d1, 0, 0, 0, 0) + SUB_GROUP_SIZE * d0i;
+
+        DST_DATA_T dst_tmp;
+#if WITH_SUM_AB
+        dst_tmp = DST_BLOCK_READ(&dst[dst_off]);
+#endif
+        REORDER(dst_tmp, dst_buf[d0i], alpha, beta);
+        DST_BLOCK_WRITE(&dst[dst_off], dst_tmp);
+    }
+
+#elif VECTORIZE_LAST_DIM
+
+    const int d0 = GWS_GET_D0();
+    const int d1 = GWS_GET_D1();
+    const int d2 = GWS_GET_D2();
+    const int d3 = GWS_GET_D3();
+    const int d4 = GWS_GET_D4();
+    const int d5 = GWS_GET_D5();
+
+    const int d0_block = GWS_GET_D0_BLOCK();
+    const int d1_block = GWS_GET_D1_BLOCK();
+    const int d2_block = GWS_GET_D2_BLOCK();
+    const int d3_block = GWS_GET_D3_BLOCK();
+    const int d4_block = GWS_GET_D4_BLOCK();
+
+    for_(int d0i = 0; d0i < d0_block; d0i++)
+    for_(int d1i = 0; d1i < d1_block; d1i++)
+    for_(int d2i = 0; d2i < d2_block; d2i++)
+    for_(int d3i = 0; d3i < d3_block; d3i++)
+    for (int d4i = 0; d4i < d4_block; d4i++) {
+
+        int src_off
+                = SRC_OFF(d0 + d0i, d1 + d1i, d2 + d2i, d3 + d3i, d4 + d4i, d5);
+        SRC_DATA_T src_tmp = SRC_BLOCK_READ(&src[src_off]);
+
+        int dst_off
+                = DST_OFF(d0 + d0i, d1 + d1i, d2 + d2i, d3 + d3i, d4 + d4i, d5);
+        DST_DATA_T dst_tmp;
+#if WITH_SUM_AB
+        dst_tmp = DST_BLOCK_READ(&dst[dst_off]);
+#endif
+        REORDER(dst_tmp, src_tmp, alpha, beta);
+        DST_BLOCK_WRITE(&dst[dst_off], dst_tmp);
+    }
+
+#elif USE_DENSE_VECT
     const int d0_blk_start = GWS_GET_D0();
     const int d0_blk_end = d0_blk_start + (GWS_GET_D0_BLOCK() * 16);
     for (int d0 = d0_blk_start; d0 < d0_blk_end; d0 += 128) {
@@ -320,7 +680,7 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
         REORDER8(dst_tmp, src_tmp, alpha, beta);
         DST_BLOCK_WRITE8(&dst[d0], dst_tmp);
     }
-#else
+#else // unroll_* kernels start here
 
     const int d0 = GWS_GET_D0();
     const int d1 = GWS_GET_D1();
@@ -330,6 +690,7 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
     const int d5 = GWS_GET_D5();
     const int local_id = get_sub_group_local_id();
 
+// unroll_16a16b
 #if SRC_16A16B || DST_16A16B || SRC_16B16A || DST_16B16A
     src += SRC_OFF(d0, d1, d2, d3, d4, d5);
     dst += DST_OFF(d0, d1, d2, d3, d4, d5);
@@ -410,6 +771,7 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
     }
 #endif // (SRC_16A16B || SRC_16B16A) && (DST_16A16B || DST_16B16A)
 
+// unroll_16b
 #elif SRC_16B || DST_16B
     SRC_DATA_T src_tmp;
 #if SRC_16B
@@ -441,6 +803,7 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
     dst[0] = dst_tmp;
 #endif // DST_16B
 
+// unroll_16b16c
 #elif SRC_16B16C || DST_16B16C || SRC_16C16B || DST_16C16B
     const int g = d0;
 
@@ -524,6 +887,5 @@ __kernel void simple_reorder(__global SRC_DATA_T *src, __global DST_DATA_T *dst,
 #endif // (SRC_16B16C || SRC_16C16B) && (DST_16B16C || DST_16C16B)
 #endif // SRC_16B16C || DST_16B16C || SRC_16C16B || DST_16C16B
 
-#endif // USE_DENSE_VECT
-#endif // REF_REORDER
+#endif // REF_REORDER, PLAIN_xFxE_TO_ABCDEF, TRANSPOSE_16X16 etc.
 }

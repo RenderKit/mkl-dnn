@@ -17,14 +17,14 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
 using tag = memory::format_tag;
 
 template <typename data_t>
-struct softmax_test_params {
+struct softmax_test_params_t {
     prop_kind aprop_kind;
     tag memory_format;
     tag diff_memory_format;
@@ -35,25 +35,37 @@ struct softmax_test_params {
 };
 
 template <typename data_t>
-class softmax_test
-    : public ::testing::TestWithParam<softmax_test_params<data_t>> {
+class softmax_test_t
+    : public ::testing::TestWithParam<softmax_test_params_t<data_t>> {
 private:
-    softmax_test_params<data_t> p;
-    std::shared_ptr<memory> dst, workspace;
+    softmax_test_params_t<data_t> p;
+    memory dst, workspace;
     std::shared_ptr<softmax_forward::primitive_desc> pd_fwd_hint;
 
 protected:
-    virtual void SetUp() {
-        p = ::testing::TestWithParam<softmax_test_params<data_t>>::GetParam();
+    void SetUp() override {
+        p = ::testing::TestWithParam<softmax_test_params_t<data_t>>::GetParam();
+
+        SKIP_IF_CUDA(!cuda_check_format_tag(p.memory_format),
+                "Unsupported format tag");
+        SKIP_IF_CUDA(!cuda_check_format_tag(p.diff_memory_format),
+                "Unsupported format tag");
+        SKIP_IF_CUDA(data_traits<data_t>::data_type == memory::data_type::bf16,
+                "Unsupported datatype for CUDA");
+
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
+    }
+    bool cuda_check_format_tag(memory::format_tag tag) {
+        return (tag != memory::format_tag::aBcd8b
+                && tag != memory::format_tag::aBc16b);
     }
 
     void Forward() {
         // softmax specific types and values
         using op_desc_t = softmax_forward::desc;
         using pd_t = softmax_forward::primitive_desc;
-        allows_attr_t aa {0}; // doesn't support anything
+        allows_attr_t aa {false}; // doesn't support anything
 
         auto eng = get_test_engine();
         auto strm = make_stream(eng);
@@ -99,11 +111,9 @@ protected:
         ASSERT_TRUE(pd.diff_dst_desc().is_zero());
         ASSERT_TRUE(pd.diff_weights_desc().is_zero());
 
-        const auto test_engine = pd.get_engine();
-
-        auto src = memory(data_desc, test_engine);
-        dst.reset(new memory(data_desc, test_engine));
-        workspace.reset(new memory(workspace_desc, test_engine));
+        auto src = test::make_memory(data_desc, eng);
+        dst = test::make_memory(data_desc, eng);
+        workspace = test::make_memory(workspace_desc, eng);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
             fill_data<data_t>(
@@ -112,16 +122,16 @@ protected:
 
             // test out-place mode
             softmax.execute(strm,
-                    {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, *dst},
-                            {DNNL_ARG_WORKSPACE, *workspace}});
+                    {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, dst},
+                            {DNNL_ARG_WORKSPACE, workspace}});
             strm.wait();
-            check_zero_tail<data_t>(0, *dst);
+            check_zero_tail<data_t>(0, dst);
 
             // test in-place mode
             if (p.aprop_kind != prop_kind::backward_data) {
                 softmax.execute(strm,
                         {{DNNL_ARG_SRC, src}, {DNNL_ARG_DST, src},
-                                {DNNL_ARG_WORKSPACE, *workspace}});
+                                {DNNL_ARG_WORKSPACE, workspace}});
                 strm.wait();
                 check_zero_tail<data_t>(0, src);
             }
@@ -135,7 +145,7 @@ protected:
         using op_desc_t = softmax_backward::desc;
         using pd_t = softmax_backward::primitive_desc;
         using hint_pd_t = softmax_forward::primitive_desc;
-        allows_attr_t aa {0}; // doesn't support anything
+        allows_attr_t aa {false}; // doesn't support anything
 
         auto eng = get_test_engine();
         auto strm = make_stream(eng);
@@ -177,10 +187,8 @@ protected:
         ASSERT_TRUE(pd.weights_desc().is_zero());
         ASSERT_TRUE(pd.diff_weights_desc().is_zero());
 
-        const auto test_engine = pd.get_engine();
-
-        auto diff_src = memory(diff_data_desc, test_engine);
-        auto diff_dst = memory(diff_data_desc, test_engine);
+        auto diff_src = test::make_memory(diff_data_desc, eng);
+        auto diff_dst = test::make_memory(diff_data_desc, eng);
 
         auto test_with_given_fill = [&](data_t mean, data_t var) {
             // Fill the softmax backward diffs
@@ -189,9 +197,9 @@ protected:
             check_zero_tail<data_t>(1, diff_dst);
 
             softmax.execute(strm,
-                    {{DNNL_ARG_DST, *dst}, {DNNL_ARG_DIFF_DST, diff_dst},
+                    {{DNNL_ARG_DST, dst}, {DNNL_ARG_DIFF_DST, diff_dst},
                             {DNNL_ARG_DIFF_SRC, diff_src},
-                            {DNNL_ARG_WORKSPACE, *workspace}});
+                            {DNNL_ARG_WORKSPACE, workspace}});
             strm.wait();
 
             check_zero_tail<data_t>(0, diff_src);
@@ -206,14 +214,14 @@ protected:
     }
 };
 
-using softmax_forward_test_float = softmax_test<float>;
-using softmax_forward_test_half = softmax_test<float16_t>;
-using softmax_forward_test_bfloat16 = softmax_test<bfloat16_t>;
+using softmax_forward_test_float = softmax_test_t<float>;
+using softmax_forward_test_half = softmax_test_t<float16_t>;
+using softmax_forward_test_bfloat16 = softmax_test_t<bfloat16_t>;
 
-using softmax_backward_test_float = softmax_test<float>;
+using softmax_backward_test_float = softmax_test_t<float>;
 
 template <typename dt>
-using test_params = softmax_test_params<dt>;
+using test_params = softmax_test_params_t<dt>;
 
 TEST_P(softmax_forward_test_float, TestsSoftmax) {}
 INSTANTIATE_TEST_SUITE_P(TestSoftmaxForwardFloat, softmax_forward_test_float,

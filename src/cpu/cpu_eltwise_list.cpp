@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
+* Copyright 2021 FUJITSU LIMITED
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +23,10 @@
 #include "cpu/x64/jit_uni_eltwise.hpp"
 #include "cpu/x64/jit_uni_eltwise_int.hpp"
 using namespace dnnl::impl::cpu::x64;
+#elif DNNL_AARCH64
+#include "cpu/aarch64/jit_uni_eltwise.hpp"
+#include "cpu/aarch64/jit_uni_eltwise_int.hpp"
+using namespace dnnl::impl::cpu::aarch64;
 #endif
 
 namespace dnnl {
@@ -34,13 +39,15 @@ namespace {
 using namespace dnnl::impl::data_type;
 
 // clang-format off
-static const pd_create_f impl_list[] = {
+const pd_create_f impl_list[] = {
         CPU_INSTANCE_X64(jit_uni_eltwise_fwd_t<avx512_common, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_bwd_t<avx512_common, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_fwd_t<avx512_core, bf16>)
         CPU_INSTANCE_X64(jit_uni_eltwise_bwd_t<avx512_core, bf16>)
         CPU_INSTANCE_X64(jit_uni_eltwise_fwd_t<avx2, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_bwd_t<avx2, f32>)
+        CPU_INSTANCE_X64(jit_uni_eltwise_fwd_t<avx, f32>)
+        CPU_INSTANCE_X64(jit_uni_eltwise_bwd_t<avx, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_fwd_t<sse41, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_bwd_t<sse41, f32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_int_fwd_t<avx512_common, s32>)
@@ -52,6 +59,11 @@ static const pd_create_f impl_list[] = {
         CPU_INSTANCE_X64(jit_uni_eltwise_int_fwd_t<sse41, s32>)
         CPU_INSTANCE_X64(jit_uni_eltwise_int_fwd_t<sse41, s8>)
         CPU_INSTANCE_X64(jit_uni_eltwise_int_fwd_t<sse41, u8>)
+        CPU_INSTANCE_AARCH64(jit_uni_eltwise_fwd_t<sve_512, f32>)
+        CPU_INSTANCE_AARCH64(jit_uni_eltwise_bwd_t<sve_512, f32>)
+        CPU_INSTANCE_AARCH64(jit_uni_eltwise_int_fwd_t<sve_512, s32>)
+        CPU_INSTANCE_AARCH64(jit_uni_eltwise_int_fwd_t<sve_512, s8>)
+        CPU_INSTANCE_AARCH64(jit_uni_eltwise_int_fwd_t<sve_512, u8>)
         CPU_INSTANCE(ref_eltwise_fwd_t<f32>)
         CPU_INSTANCE(ref_eltwise_bwd_t<f32>)
         CPU_INSTANCE(ref_eltwise_fwd_t<bf16>)

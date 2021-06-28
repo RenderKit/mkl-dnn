@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2020 Intel Corporation
+# Copyright 2016-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,14 @@
 # limitations under the License.
 #===============================================================================
 
-file(GLOB_RECURSE HEADERS
-    ${PROJECT_BINARY_DIR}/include/*.h
+file(GLOB HEADERS_ROOT
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/*.hpp
+    )
+file(GLOB HEADERS_SUBDIR
+    ${PROJECT_BINARY_DIR}/include/oneapi/dnnl/*.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/oneapi/dnnl/*.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/oneapi/dnnl/*.hpp
     )
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -52,22 +56,31 @@ else()
     message(STATUS "Primitive cache is disabled")
 endif()
 
-if(DNNL_ENABLE_JIT_PROFILING AND UNIX AND NOT APPLE)
-    # Not every compiler adds -ldl automatically
-    list(APPEND EXTRA_SHARED_LIBS "${CMAKE_DL_LIBS}")
+if(DNNL_ENABLE_JIT_PROFILING OR DNNL_ENABLE_ITT_TASKS)
+    if (UNIX AND NOT APPLE)
+        # Not every compiler adds -ldl automatically
+        list(APPEND EXTRA_SHARED_LIBS "${CMAKE_DL_LIBS}")
+    endif()
+endif()
+
+if(DNNL_ENABLE_ITT_TASKS)
+    # Only supported for certain architectures (see src/common/CMakeLists.txt)
+    if(DNNL_TARGET_ARCH STREQUAL "AARCH64" OR DNNL_TARGET_ARCH STREQUAL "X64")
+        add_definitions(-DDNNL_ENABLE_ITT_TASKS)
+    endif()
 endif()
 
 if(DNNL_ENABLE_MAX_CPU_ISA)
     add_definitions(-DDNNL_ENABLE_MAX_CPU_ISA)
 endif()
 
+if(DNNL_ENABLE_CPU_ISA_HINTS)
+    add_definitions(-DDNNL_ENABLE_CPU_ISA_HINTS)
+endif()
+
 if(WIN32)
     add_definitions(-D_WIN)
     add_definitions(-DNOMINMAX)
-    # Correct 'jnl' macro/jit issue
-    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Intel" AND ${CMAKE_CXX_COMPILER_VERSION} LESS 19.1)
-        append(CMAKE_CXX_FLAGS "/Qlong-double")
-    endif()
 endif()
 
 # Windows does not support weak/strong symbols and no guarrantees by the linker
@@ -85,13 +98,18 @@ if(NOT DNNL_GPU_RUNTIME STREQUAL "NONE")
     add_subdirectory(gpu)
 endif()
 
+if(DNNL_WITH_SYCL)
+    add_subdirectory(sycl)
+endif()
+
 get_property(LIB_DEPS GLOBAL PROPERTY DNNL_LIB_DEPS)
 add_library(${LIB_NAME} ${DNNL_LIBRARY_TYPE}
-    ${VERSION_RESOURCE_FILE} ${HEADERS} ${LIB_DEPS})
+    ${VERSION_RESOURCE_FILE} ${HEADERS_ROOT} ${HEADERS_SUBDIR} ${LIB_DEPS})
+# LINK_PRIVATE for cmake 2.8.11 compatibility
+target_link_libraries(${LIB_NAME} LINK_PRIVATE ${${LIB_NAME}_INTERFACE})
 
 set_property(TARGET ${LIB_NAME} PROPERTY VERSION "${DNNL_VERSION_MAJOR}.${DNNL_VERSION_MINOR}")
 set_property(TARGET ${LIB_NAME} PROPERTY SOVERSION "${DNNL_VERSION_MAJOR}")
-set_property(TARGET ${LIB_NAME} PROPERTY PUBLIC_HEADER ${HEADERS})
 
 target_include_directories(${LIB_NAME} PUBLIC
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
@@ -112,8 +130,15 @@ install(TARGETS ${LIB_NAME}
     EXPORT "${LIB_EXPORT_NAME}"
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+# If only Cmake could preserve the directory hierarchy...
+foreach(header ${HEADERS_ROOT})
+    install(FILES ${header} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/")
+endforeach()
+foreach(header ${HEADERS_SUBDIR})
+    install(FILES ${header} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/oneapi/dnnl/")
+endforeach()
 
 # Write version and package config files
 set(LIB_CONFIG_GENERATE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -146,23 +171,23 @@ install(CODE "execute_process(COMMAND ${CMAKE_COMMAND}
 if (WIN32)
     if (NOT MINGW)
         set(prefix "")
-        set(ext "lib")
+        set(ext ".lib")
     else()
         set(prefix "lib")
         if (DNNL_LIBRARY_TYPE STREQUAL "SHARED")
-            set(ext "dll.a")
+            set(ext ".dll.a")
         else()
-            set(ext "a")
+            set(ext ".a")
         endif()
     endif()
     add_custom_target(compat_libs ALL
         ${CMAKE_COMMAND} -E copy
-        $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}dnnl.${ext}
-        $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn.${ext}
+        $<TARGET_LINKER_FILE_DIR:${LIB_NAME}>/$<TARGET_LINKER_FILE_NAME:${LIB_NAME}>
+        $<TARGET_LINKER_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn${ext}
         # Workaround for MSB8065 warning.
         COMMAND ${CMAKE_COMMAND} -E touch "CMakeFiles/compat_libs"
         DEPENDS ${LIB_NAME})
-    install(FILES $<TARGET_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn.${ext}
+    install(FILES $<TARGET_LINKER_FILE_DIR:${LIB_NAME}>/${prefix}mkldnn${ext}
         DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
 else()
     if(DNNL_LIBRARY_TYPE STREQUAL "SHARED")
@@ -192,7 +217,7 @@ endif()
 
 # Install custom find modules for transitive dependencies
 set(LIB_CONFIG_INSTALL_DIR_COMPAT "${CMAKE_INSTALL_LIBDIR}/cmake/mkldnn")
-if(DNNL_CPU_RUNTIME STREQUAL "TBB")
+if(DNNL_CPU_THREADING_RUNTIME STREQUAL "TBB")
     if(WIN32)
         install(FILES "../cmake/win/TBBConfig.cmake" RENAME "FindTBB.cmake"
             DESTINATION ${LIB_CONFIG_INSTALL_DIR})
@@ -213,6 +238,12 @@ if(DNNL_GPU_RUNTIME STREQUAL "OCL")
         DESTINATION ${LIB_CONFIG_INSTALL_DIR})
     install(FILES "../cmake/FindOpenCL.cmake"
             DESTINATION ${LIB_CONFIG_INSTALL_DIR_COMPAT})
+endif()
+
+if(DNNL_WITH_SYCL)
+    install(FILES
+        "../cmake/FindLevelZero.cmake"
+        DESTINATION ${LIB_CONFIG_INSTALL_DIR})
 endif()
 
 # On Windows we need to add dnnl.dll path to CTESTCONFIG_PATH which is later

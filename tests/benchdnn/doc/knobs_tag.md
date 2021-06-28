@@ -1,18 +1,26 @@
 # Format tags
 
-**Benchdnn** supports two kinds of memory format tags: meta-tags (benchdnn
-abstraction) and library tags (memory::format_tag enum). If an unsupported tag
-is specified, an error will be reported. The list of library supported tags can
-be found in dnnl.hpp header file. Meta-tags are xD-spatial tags which adapt to
-the number of dimensions specified by a problem descriptor (for descriptor-based
-drivers) or dimensions. Following plain and blocked meta-tags and special tags
-are supported:
+**Benchdnn** supports three kinds of memory format tags:
+- Meta-tags (benchdnn abstraction).
+    - Examples: `abx`, `aBx16b`
+- Library tags (refer to `dnnl::memory::format_tag` enum).
+    - Examples: `nchw`, `acdb`, `nChw8c`
+- Other valid tags not presented in `dnnl::memory::format_tag` enum (controlled
+    by `--allow-enum-tags-only` option).
+    - Examples: `abcdefghij`, `Ab3a`
+
+If an unsupported tag is specified, an error will be reported. The list of
+library supported tags can be found in dnnl.hpp header file. Meta-tags are
+xD-spatial tags which adapt to the number of dimensions specified by a problem
+descriptor (for descriptor-based drivers) or dimensions. Below are examples of
+plain and blocked meta-tags:
 
 | Plain tags   | Description
 | :---         | :---
 | abx          | Includes `a`, `ab`, `abc`, `abcd`, `abcde`, `abcdef` tags and their former names for activations and weights.
 | axb          | Includes `a`, `ab`, `acb`, `acdb`, `acdeb` tags and their former names for activations.
 | xba          | Includes `a`, `ba`, `cba`, `cdba`, `cdeba` tags and their former names for weights.
+| ...          | Other plain meta-tags following the same rules.
 
 | Blocked tags | Description
 | :---         | :---
@@ -20,6 +28,18 @@ are supported:
 | aBx8b        | Includes `aBc8b`, `aBcd8b`, `aBcde8b` tags and their former names for activations.
 | aBx16b       | Includes `aBc16b`, `aBcd16b`, `aBcde16b` tags and their former names for activations.
 | ABx16a16b    | Includes `ABc16a16b`, `ABcd16a16b`, `ABcde16a16b` tags and their former names for activations.
+| aBx32b       | Includes `aBc32b`, `aBcd32b`, `aBcde32b` tags and their former names for activations.
+| ABx32a32b    | Includes `ABc32a32b`, `ABcd32a32b`, `ABcde32a32b` tags and their former names for activations.
+| ...          | Other blocked meta-tags following the same rules.
+
+If tag represents xD-spatial memory descriptor, then most of times `x` should
+represent `cde` letters of a tag coming one by one. If tag represents weights
+memory descriptor, then depending whether weights have groups or not, it may
+represent either `cde` or `def` letters. In latter case, meta-tag should contain
+`c` or `C` to make it clear, i.e. `abxc` which may be either `gowi`, `gohwi` or
+`godhwi`.
+
+The following special tags are supported:
 
 | Special tags | Description
 | :---         | :---

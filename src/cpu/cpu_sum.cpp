@@ -36,7 +36,7 @@ namespace {
 // clang-format off
 #define INSTANCE(...) __VA_ARGS__::pd_t::create,
 #define INSTANCE_X64(...) DNNL_X64_ONLY(INSTANCE(__VA_ARGS__))
-static const spd_create_f cpu_sum_impl_list[] = {
+const spd_create_f cpu_sum_impl_list[] = {
         /*
         INSTANCE_X64(jit_bf16_sum_t<data_type::bf16, data_type::bf16>)
         INSTANCE_X64(jit_bf16_sum_t<data_type::bf16, data_type::f32>)
@@ -52,7 +52,7 @@ static const spd_create_f cpu_sum_impl_list[] = {
 // clang-format on
 } // namespace
 
-const spd_create_f *cpu_engine_t::get_sum_implementation_list() const {
+const spd_create_f *cpu_engine_impl_list_t::get_sum_implementation_list() {
     return cpu_sum_impl_list;
 }
 

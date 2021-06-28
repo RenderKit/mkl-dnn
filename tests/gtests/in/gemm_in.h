@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -58,32 +58,68 @@ INST_TEST_CASE(TestGEMM,
 CPU_INST_TEST_CASE(TestGEMV,
         test_params {'n', 'n', 2000, 1, 1000, 1.0f, 0.0f, 1000, 1, 1},
         test_params {'n', 'n', 1, 3000, 2000, 1.0f, 0.0f, 2000, 3000, 3000},
+        test_params {'n', 'n', 1, 300, 8000, 1.0f, 0.0f, 8000, 300, 300},
         test_params {'t', 'n', 2000, 1, 1000, 1.0f, 0.0f, 2000, 1, 1},
+        test_params {'t', 'n', 200, 1, 8000, 1.0f, 0.0f, 200, 1, 1},
         test_params {'t', 'n', 1, 3000, 2000, 1.0f, 0.0f, 1, 3000, 3000},
+        test_params {'t', 'n', 1, 300, 8000, 1.0f, 0.0f, 1, 300, 300},
         test_params {'n', 't', 2000, 1, 1000, 1.0f, 0.0f, 1000, 1000, 1},
         test_params {'n', 't', 1, 3000, 2000, 1.0f, 0.0f, 2000, 2000, 3000},
         test_params {'t', 't', 2000, 1, 1000, 1.0f, 0.0f, 2000, 1000, 1},
+        test_params {'t', 't', 200, 1, 8000, 1.0f, 0.0f, 200, 8000, 1},
         test_params {'t', 't', 1, 3000, 2000, 1.0f, 0.0f, 1, 2000, 3000},
 
         test_params {'n', 'n', 2000, 1, 1000, 1.0f, 0.0f, 1010, 1, 30},
         test_params {'n', 'n', 2000, 1, 1000, 1.0f, 0.0f, 1010, 20, 1},
         test_params {'n', 'n', 2000, 1, 1000, 1.0f, 0.0f, 1010, 20, 30},
         test_params {'n', 'n', 1, 3000, 2000, 1.0f, 0.0f, 2010, 3010, 3010},
+        test_params {'n', 'n', 1, 300, 8000, 1.0f, 0.0f, 8010, 310, 310},
         test_params {'t', 'n', 2000, 1, 1000, 1.0f, 0.0f, 2010, 20, 30},
+        test_params {'t', 'n', 200, 1, 8000, 1.0f, 0.0f, 210, 20, 30},
         test_params {'t', 'n', 1, 3000, 2000, 1.0f, 0.0f, 20, 3010, 3010},
+        test_params {'t', 'n', 1, 300, 8000, 1.0f, 0.0f, 20, 310, 310},
         test_params {'n', 't', 2000, 1, 1000, 1.0f, 0.0f, 1010, 1010, 20},
         test_params {'n', 't', 1, 3000, 2000, 1.0f, 0.0f, 2010, 2010, 3010},
         test_params {'t', 't', 2000, 1, 1000, 1.0f, 0.0f, 2010, 1010, 20},
+        test_params {'t', 't', 200, 1, 8000, 1.0f, 0.0f, 210, 8010, 20},
         test_params {'t', 't', 1, 3000, 2000, 1.0f, 0.0f, 20, 2010, 3010},
 
         test_params {'n', 'n', 2000, 1, 1000, 1.0f, 1.0f, 1000, 1, 1},
         test_params {'n', 'n', 1, 3000, 2000, 1.0f, 1.0f, 2000, 3000, 3000},
+        test_params {'n', 'n', 1, 300, 8000, 1.0f, 1.0f, 8000, 300, 300},
         test_params {'t', 'n', 2000, 1, 1000, 1.0f, 1.0f, 2000, 1, 1},
+        test_params {'t', 'n', 200, 1, 8000, 1.0f, 1.0f, 200, 1, 1},
         test_params {'t', 'n', 1, 3000, 2000, 1.0f, 1.0f, 1, 3000, 3000},
+        test_params {'t', 'n', 1, 300, 8000, 1.0f, 1.0f, 1, 300, 300},
         test_params {'n', 't', 2000, 1, 1000, 1.0f, 1.0f, 1000, 1000, 1},
         test_params {'n', 't', 1, 3000, 2000, 1.0f, 1.0f, 2000, 2000, 3000},
         test_params {'t', 't', 2000, 1, 1000, 1.0f, 1.0f, 2000, 1000, 1},
-        test_params {'t', 't', 1, 3000, 2000, 1.0f, 1.0f, 1, 2000, 3000});
+        test_params {'t', 't', 200, 1, 8000, 1.0f, 1.0f, 200, 8000, 1},
+        test_params {'t', 't', 1, 3000, 4000, 1.0f, 1.0f, 1, 4000, 3000});
+
+/**
+ * These cases are used to test the small-N avx-512 sgemm TN kernels.
+ * Note: The kernels assume a column major layout while the external 
+ * APIs assume row major layout, so the M/N and transA/transB values 
+ * are swapped.
+ */
+CPU_INST_TEST_CASE(TestGEMM_smalln,
+        test_params {'n', 't', 5, 512, 512, 1.0f, 1.0f, 512, 512, 512},
+        test_params {'n', 't', 5, 512, 1536, 1.0f, 1.0f, 1536, 1536, 512},
+        test_params {'n', 't', 5, 512, 2048, 1.0f, 1.0f, 2048, 2048, 512},
+        test_params {'n', 't', 5, 2048, 512, 1.0f, 1.0f, 512, 512, 2048},
+        test_params {'n', 't', 7, 512, 512, 0.0f, 1.0f, 512, 512, 512},
+        test_params {'n', 't', 7, 512, 1536, 1.0f, 0.0f, 1536, 1536, 512},
+        test_params {'n', 't', 7, 512, 2048, 0.5f, 0.5f, 2048, 2048, 512},
+        test_params {'n', 't', 7, 2048, 512, 1.0f, 1.0f, 512, 512, 2048},
+        test_params {'n', 't', 4, 512, 512, 1.0f, 1.0f, 512, 512, 512},
+        test_params {'n', 't', 4, 512, 1536, 1.0f, 1.0f, 1536, 1536, 512},
+        test_params {'n', 't', 4, 512, 2048, 1.0f, 1.0f, 2048, 2048, 512},
+        test_params {'n', 't', 4, 2048, 512, 1.0f, 1.0f, 512, 512, 2048},
+        test_params {'n', 't', 8, 512, 512, 1.0f, 1.0f, 512, 512, 512},
+        test_params {'n', 't', 8, 512, 1536, 1.0f, 1.0f, 1536, 1536, 512},
+        test_params {'n', 't', 8, 512, 2048, 1.0f, 1.0f, 2048, 2048, 512},
+        test_params {'n', 't', 8, 2048, 512, 1.0f, 1.0f, 512, 512, 2048});
 
 /**
  * These cases are used to test the small-N avx-512 sgemm TN kernels.
@@ -813,15 +849,6 @@ CPU_INST_TEST_CASE(TestGEMM_heavy,
         test_params {'n', 't', 3000, 3000, 3000, 1.0, 0.0, 3000, 3000, 3000,
                 fix_use_oc},
         test_params {'t', 't', 3000, 3000, 3000, 1.0, 0.0, 3000, 3000, 3000,
-                fix_use_oc},
-
-        test_params {'n', 'n', 3000, 3000, 3000, 2.19f, 1.99f, 3000, 3000, 3000,
-                fix_use_oc},
-        test_params {'t', 'n', 3000, 3000, 3000, 2.99f, 1.19f, 3000, 3000, 3000,
-                fix_use_oc},
-        test_params {'n', 't', 3000, 3000, 3000, 1.19f, 2.99f, 3000, 3000, 3000,
-                fix_use_oc},
-        test_params {'t', 't', 3000, 3000, 3000, 1.99f, 2.19f, 3000, 3000, 3000,
                 fix_use_oc});
 
 CPU_INST_TEST_CASE(TestGEMM_packed_heavy,

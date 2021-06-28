@@ -21,6 +21,7 @@
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
+#include "primitive.hpp"
 #include "primitive_attr.hpp"
 #include "primitive_desc.hpp"
 #include "type_helpers.hpp"
@@ -30,9 +31,15 @@ namespace dnnl {
 namespace impl {
 
 struct reorder_primitive_desc_iface_t : public dnnl_primitive_desc {
-    reorder_primitive_desc_iface_t(primitive_desc_t *pd,
-            dnnl::impl::engine_t *engine, dnnl::impl::engine_t *src_engine,
-            dnnl::impl::engine_t *dst_engine)
+    reorder_primitive_desc_iface_t(primitive_desc_t *pd, engine_t *engine,
+            engine_t *src_engine, engine_t *dst_engine)
+        : dnnl_primitive_desc(pd, engine)
+        , src_engine_(src_engine)
+        , dst_engine_(dst_engine)
+        , scratchpad_engine_(nullptr) {}
+
+    reorder_primitive_desc_iface_t(const std::shared_ptr<primitive_desc_t> &pd,
+            engine_t *engine, engine_t *src_engine, engine_t *dst_engine)
         : dnnl_primitive_desc(pd, engine)
         , src_engine_(src_engine)
         , dst_engine_(dst_engine)
@@ -58,6 +65,27 @@ struct reorder_primitive_desc_iface_t : public dnnl_primitive_desc {
             default: status = dnnl_primitive_desc::query(what, idx, result);
         }
         return status;
+    }
+
+    status_t create_primitive_iface(
+            std::pair<primitive_iface_t *, bool> &primitive_iface)
+            const override {
+        // Step 1: create impl::primitive_t or get it from primitive cache
+        std::pair<std::shared_ptr<primitive_t>, bool> p;
+        auto status = pd_->create_primitive(p, engine());
+        if (status != status::success) return status;
+        // Step 2: create primitive_iface_t, init and return it to user
+        primitive_iface_t *p_iface = nullptr;
+        CHECK(safe_ptr_assign(p_iface,
+                new primitive_iface_t(
+                        p.first, engine(), src_engine_, dst_engine_)));
+        status = p_iface->init();
+        if (status != status::success) {
+            p_iface->release();
+            return status;
+        }
+        primitive_iface = std::make_pair(p_iface, p.second);
+        return status::success;
     }
 
 private:

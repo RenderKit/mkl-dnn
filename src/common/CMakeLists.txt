@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2019-2020 Intel Corporation
+# Copyright 2019-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +14,25 @@
 # limitations under the License.
 #===============================================================================
 
-file(GLOB_RECURSE SOURCES
+file(GLOB SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/*.c
     ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
     )
+if(DNNL_ENABLE_JIT_PROFILING OR DNNL_ENABLE_ITT_TASKS)
+    if(DNNL_TARGET_ARCH STREQUAL "AARCH64" OR DNNL_TARGET_ARCH STREQUAL "X64")
+        file(GLOB ITT_SOURCES
+            ${CMAKE_CURRENT_SOURCE_DIR}/ittnotify/*.[ch]
+            )
+        list(APPEND SOURCES ${ITT_SOURCES})
+    endif()
+endif()
+
+if(NOT DNNL_CPU_RUNTIME STREQUAL "THREADPOOL")
+    # avoid building and linking empty objects
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/stream_threadpool.cpp")
+endif()
 
 set(OBJ_LIB ${LIB_NAME}_common)
 add_library(${OBJ_LIB} OBJECT ${SOURCES})

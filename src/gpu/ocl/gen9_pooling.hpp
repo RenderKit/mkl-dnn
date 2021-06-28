@@ -33,7 +33,7 @@ namespace ocl {
 
 struct gen9_pooling_fwd_t : public gpu_primitive_t {
     struct pd_t : public gpu_pooling_fwd_pd_t {
-        pd_t(const pooling_desc_t *adesc, const primitive_attr_t *attr,
+        pd_t(const pooling_v2_desc_t *adesc, const primitive_attr_t *attr,
                 const pooling_fwd_pd_t *hint_fwd_pd)
             : gpu_pooling_fwd_pd_t(adesc, attr, hint_fwd_pd) {}
 
@@ -57,11 +57,14 @@ struct gen9_pooling_fwd_t : public gpu_primitive_t {
                             pooling_avg_exclude_padding)
                     && (utils::everyone_is(
                                 f32, src_data_t, dst_data_t, acc_data_t)
-                            || utils::everyone_is(
-                                    f16, src_data_t, dst_data_t, acc_data_t))
+                            || utils::everyone_is(f16, src_data_t, dst_data_t)
+                            || utils::everyone_is(bf16, src_data_t, dst_data_t)
+                            || utils::everyone_is(u8, src_data_t, dst_data_t)
+                            || utils::everyone_is(s8, src_data_t, dst_data_t))
                     && IMPLICATION(utils::one_of(src_data_t, f16, s8, u8),
                             desc()->prop_kind == forward_inference)
-                    && attr()->has_default_values()
+                    && post_ops_with_binary_ok(attr(), dst_md()->data_type)
+                    && !is_dilated()
                     && compute_engine->mayiuse(
                             compute::device_ext_t::intel_subgroups)
                     && IMPLICATION(src_data_t == f16,
@@ -111,7 +114,7 @@ private:
 
 struct gen9_pooling_bwd_t : public gpu_primitive_t {
     struct pd_t : public gpu_pooling_bwd_pd_t {
-        pd_t(const pooling_desc_t *adesc, const primitive_attr_t *attr,
+        pd_t(const pooling_v2_desc_t *adesc, const primitive_attr_t *attr,
                 const pooling_fwd_pd_t *hint_fwd_pd)
             : gpu_pooling_bwd_pd_t(adesc, attr, hint_fwd_pd) {}
 
@@ -128,9 +131,13 @@ struct gen9_pooling_bwd_t : public gpu_primitive_t {
                     && utils::one_of(desc()->alg_kind, pooling_max,
                             pooling_avg_include_padding,
                             pooling_avg_exclude_padding)
-                    && utils::everyone_is(data_type::f32,
-                            diff_dst_md()->data_type, diff_src_md()->data_type)
-                    && attr()->has_default_values()
+                    && (utils::everyone_is(data_type::f32,
+                                diff_dst_md()->data_type,
+                                diff_src_md()->data_type)
+                            || utils::everyone_is(data_type::bf16,
+                                    diff_dst_md()->data_type,
+                                    diff_src_md()->data_type))
+                    && attr()->has_default_values() && !is_dilated()
                     && compute_engine->mayiuse(
                             compute::device_ext_t::intel_subgroups);
             if (!ok) return status::unimplemented;

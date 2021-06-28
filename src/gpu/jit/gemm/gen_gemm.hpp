@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,8 +27,6 @@
 #include "gpu/gemm/gpu_gemm.hpp"
 #include "gpu/gpu_gemm_pd.hpp"
 #include "gpu/jit/gemm/gen_gemm_kernel.hpp"
-#include "gpu/ocl/ocl_gpu_engine.hpp"
-#include "gpu/ocl/ocl_gpu_kernel.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -52,27 +50,52 @@ struct gen_gemm_t : public gpu_gemm_t {
             auto *compute_engine
                     = utils::downcast<compute::compute_engine_t *>(engine);
 
-            const auto attr_skip_mask = smask_t::oscale | smask_t::post_ops;
-
-            const auto d = desc();
-
             // LIMITATIONS:
             // - runtime dims are not supported
             // - bias is not supported
-            bool limits_ok = true
-                    && !utils::one_of(DNNL_RUNTIME_DIM_VAL, d->m, d->n, d->k,
-                            d->lda, d->ldb, d->ldc, d->batch)
-                    && d->bias_type == data_type::undef;
+            bool ok = true;
 
-            bool ok = limits_ok
-                    && utils::one_of(d->c_type, data_type::f32, data_type::f16)
-                    && d->a_type == d->c_type && d->b_type == d->c_type
-                    && d->acc_type == d->c_type
+            auto attr_skip_mask = smask_t::oscale | smask_t::post_ops;
+
+            ok = set_default_formats();
+            if (!ok) return status::unimplemented;
+
+            const auto d = desc();
+
+            if (d->c_type() == s32) {
+                ok = ok && utils::one_of(d->a_type(), u8, s8)
+                        && utils::one_of(d->b_type(), u8, s8)
+                        && d->acc_type == d->c_type()
+                        && attr()->zero_points_.defined(DNNL_ARG_SRC)
+                        && attr()->zero_points_.defined(DNNL_ARG_WEIGHTS)
+                        && (attr()->zero_points_.has_default_values(
+                                    DNNL_ARG_DST)
+                                || !attr()->zero_points_.defined(DNNL_ARG_DST));
+
+                int cmask = 0;
+                attr()->zero_points_.get(
+                        DNNL_ARG_DST, nullptr, &cmask, nullptr);
+                ok &= utils::one_of(cmask, 0, 1 << 0, 1 << 1);
+
+                attr_skip_mask |= smask_t::zero_points_runtime;
+            } else {
+                ok = ok && utils::one_of(d->c_type(), f32, f16)
+                        && d->a_type() == d->c_type()
+                        && d->b_type() == d->c_type()
+                        && d->acc_type == d->c_type();
+            }
+
+            ok = ok && !has_blocks() && d->c_desc.ndims <= 3
+                    && IMPLICATION(d->is_batched(),
+                            d->a_desc.dims[0] == d->b_desc.dims[0])
+                    && !utils::one_of(DNNL_RUNTIME_DIM_VAL, d->m(), d->n(),
+                            d->k(), d->lda(), d->ldb(), d->ldc(), d->batch())
+                    && d->bias_type() == data_type::undef
                     && compute_engine->mayiuse_ngen_kernels()
                     && attr()->has_default_values(attr_skip_mask)
                     && attr()->output_scales_.mask_ == 0
-                    && attr()->post_ops_.len_ <= 1
-                    && IMPLICATION(attr()->post_ops_.len_ == 1,
+                    && attr()->post_ops_.len() <= 1
+                    && IMPLICATION(attr()->post_ops_.len() == 1,
                             attr()->post_ops_.find(sum) != -1);
 
             if (!ok) return status::unimplemented;
@@ -82,7 +105,7 @@ struct gen_gemm_t : public gpu_gemm_t {
             arch_ = dev_info->gpu_arch();
 
             ok &= utils::one_of(arch_, compute::gpu_arch_t::gen9,
-                    compute::gpu_arch_t::gen12lp);
+                    compute::gpu_arch_t::xe_lp);
 
             if (!ok) return status::unimplemented;
 
@@ -92,6 +115,14 @@ struct gen_gemm_t : public gpu_gemm_t {
             attr_info_ = attr_info_t::create(attr());
 
             return status::success;
+        }
+
+        bool set_default_formats() {
+            return gpu_gemm_pd_t::set_default_formats();
+        }
+
+        bool with_c_offset() const {
+            return !attr()->zero_points_.has_default_values(DNNL_ARG_DST);
         }
 
         bool with_eltwise() const { return false; }
@@ -113,6 +144,7 @@ struct gen_gemm_t : public gpu_gemm_t {
         size_t dyn_offset_a = 0;
         size_t dyn_offset_b = 0;
         size_t dyn_offset_c = 0;
+        size_t dyn_offset_co = 0;
         int hw_threads_ = 0;
         int eu_count_ = 0;
         compute::gpu_arch_t arch_ = compute::gpu_arch_t::unknown;
@@ -128,29 +160,26 @@ struct gen_gemm_t : public gpu_gemm_t {
         using kernel_t = gen_gemm_nocopy_kernel_t;
 
         int unroll_m, unroll_n;
-        auto batch = pd()->desc()->batch;
+        auto batch = pd()->desc()->batch();
         bool batched = (batch > 1);
-        bool transa = (pd()->desc()->transa == dnnl_trans);
-        bool transb = (pd()->desc()->transb == dnnl_trans);
-        auto a_type = pd()->desc()->a_type;
-        auto b_type = pd()->desc()->b_type;
-        auto c_type = pd()->desc()->c_type;
-
-        auto *gpu_engine = utils::downcast<ocl::ocl_gpu_engine_t *>(engine);
-        if (!gpu_engine) return status::out_of_memory;
+        bool transa = (pd()->desc()->transa() == dnnl_trans);
+        bool transb = (pd()->desc()->transb() == dnnl_trans);
+        auto a_type = pd()->desc()->a_type();
+        auto b_type = pd()->desc()->b_type();
+        auto c_type = pd()->desc()->c_type();
 
         kernel_t::choose_unrolls(pd()->arch_, pd()->hw_threads_, transa, transb,
-                a_type, b_type, c_type, pd()->desc()->m, pd()->desc()->n,
-                pd()->desc()->k, batch, unroll_m, unroll_n);
+                a_type, b_type, c_type, pd()->desc()->m(), pd()->desc()->n(),
+                pd()->desc()->k(), batch, unroll_m, unroll_n);
 
         kernel_t kernel;
 
-        auto status = kernel.init(pd()->arch_, batched, transa, transb, a_type,
-                b_type, c_type, unroll_m, unroll_n);
+        auto status = kernel.init(pd()->arch_, batched, transa, transb,
+                pd()->with_c_offset(), a_type, b_type, c_type, unroll_m,
+                unroll_n);
         if (status != status::success) return status;
 
-        create_kernel(engine, &nocopy_kernel_, kernel.name(),
-                kernel.generate(gpu_engine->context(), gpu_engine->device()));
+        create_kernel(engine, &nocopy_kernel_, kernel);
 
         nocopy_info_ = kernel.driver_info();
 
@@ -163,11 +192,13 @@ private:
     status_t launch_nocopy(const gemm_exec_ctx_t &ctx,
             compute::compute_stream_t *s, const memory_storage_t &a,
             const memory_storage_t &b, const memory_storage_t &c,
-            int64_t offset_a, int64_t offset_b, int64_t offset_c, int32_t lda,
-            int32_t ldb, int32_t ldc, int32_t m, int32_t n, int32_t k,
-            float alpha, float beta, int last_k_block, float eltwise_alpha,
-            float eltwise_beta, float eltwise_scale, int32_t batch,
-            int32_t stride_a, int32_t stride_b, int32_t stride_c) const;
+            const memory_storage_t &co, int64_t offset_a, int64_t offset_b,
+            int64_t offset_c, int32_t offset_co, int32_t lda, int32_t ldb,
+            int32_t ldc, int32_t m, int32_t n, int32_t k, float alpha,
+            float beta, int16_t ao, int16_t bo, int32_t cmask,
+            bool last_k_block, float eltwise_alpha, float eltwise_beta,
+            float eltwise_scale, int32_t batch, int32_t stride_a,
+            int32_t stride_b, int32_t stride_c) const;
 
     compute::kernel_t nocopy_kernel_;
     CommonDriverInfo nocopy_info_;

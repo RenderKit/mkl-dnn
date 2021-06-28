@@ -36,21 +36,22 @@ status_t ocl_memory_storage_t::init_allocate(size_t size) {
 }
 
 namespace {
-cl_command_queue get_map_queue(engine_t *engine, stream_t *stream) {
+status_t get_map_queue(
+        cl_command_queue &queue, engine_t *engine, stream_t *stream) {
     ocl_stream_t *ocl_stream;
-    if (stream != nullptr)
-        ocl_stream = utils::downcast<ocl_stream_t *>(stream);
-    else {
+    if (stream == nullptr) {
         auto *ocl_engine = utils::downcast<ocl_gpu_engine_t *>(engine);
-        ocl_stream
-                = utils::downcast<ocl_stream_t *>(ocl_engine->service_stream());
+        status_t status = ocl_engine->get_service_stream(stream);
+        if (status != status::success) { return status::runtime_error; }
     }
-    return ocl_stream->queue();
+    ocl_stream = utils::downcast<ocl_stream_t *>(stream);
+    queue = ocl_stream->queue();
+    return status::success;
 }
 } // namespace
 
 status_t ocl_memory_storage_t::map_data(
-        void **mapped_ptr, stream_t *stream) const {
+        void **mapped_ptr, stream_t *stream, size_t) const {
     if (!mem_object()) {
         *mapped_ptr = nullptr;
         return status::success;
@@ -74,20 +75,24 @@ status_t ocl_memory_storage_t::map_data(
         map_flags |= CL_MAP_WRITE;
     }
 
+    cl_command_queue queue;
+    CHECK(get_map_queue(queue, engine(), stream));
+
     // Use blocking operation to simplify the implementation and API
     cl_int err;
-    *mapped_ptr = clEnqueueMapBuffer(get_map_queue(engine(), stream),
-            mem_object(), CL_TRUE, map_flags, 0, mem_bytes, 0, nullptr, nullptr,
-            &err);
+    *mapped_ptr = clEnqueueMapBuffer(queue, mem_object(), CL_TRUE, map_flags, 0,
+            mem_bytes, 0, nullptr, nullptr, &err);
     return convert_to_dnnl(err);
 }
 
 status_t ocl_memory_storage_t::unmap_data(
         void *mapped_ptr, stream_t *stream) const {
     if (!mapped_ptr) return status::success;
-    OCL_CHECK(clEnqueueUnmapMemObject(get_map_queue(engine(), stream),
-            mem_object_, const_cast<void *>(mapped_ptr), 0, nullptr, nullptr));
-    OCL_CHECK(clFinish(get_map_queue(engine(), stream)));
+    cl_command_queue queue;
+    CHECK(get_map_queue(queue, engine(), stream));
+    OCL_CHECK(clEnqueueUnmapMemObject(queue, mem_object_,
+            const_cast<void *>(mapped_ptr), 0, nullptr, nullptr));
+    OCL_CHECK(clFinish(queue));
     return status::success;
 }
 
@@ -105,32 +110,31 @@ std::unique_ptr<memory_storage_t> ocl_memory_storage_t::get_sub_storage(
     assert(err == CL_SUCCESS);
     if (err != CL_SUCCESS) return nullptr;
 
-    cl_mem parent_mem;
-    size_t parent_off;
-
-    err = clGetMemObjectInfo(mem_object(), CL_MEM_ASSOCIATED_MEMOBJECT,
-            sizeof(parent_mem), &parent_mem, nullptr);
-    assert(err == CL_SUCCESS);
-    if (err != CL_SUCCESS) return nullptr;
-
-    err = clGetMemObjectInfo(mem_object(), CL_MEM_OFFSET, sizeof(parent_off),
-            &parent_off, nullptr);
-    assert(err == CL_SUCCESS);
-    if (err != CL_SUCCESS) return nullptr;
-
-    if (!parent_mem) parent_mem = mem_object();
-
     assert(size != 0);
-    cl_buffer_region buffer_region = {parent_off + offset, size};
-    ocl_wrapper_t<cl_mem> sub_buffer = clCreateSubBuffer(parent_mem, mem_flags,
-            CL_BUFFER_CREATE_TYPE_REGION, &buffer_region, &err);
+    cl_buffer_region buffer_region = {base_offset_ + offset, size};
+    ocl_wrapper_t<cl_mem> sub_buffer = clCreateSubBuffer(parent_mem_object(),
+            mem_flags, CL_BUFFER_CREATE_TYPE_REGION, &buffer_region, &err);
     assert(err == CL_SUCCESS);
     if (err != CL_SUCCESS) return nullptr;
 
-    auto sub_storage = new ocl_memory_storage_t(this->engine());
-    if (sub_storage)
+    auto sub_storage
+            = new ocl_memory_storage_t(this->engine(), parent_storage());
+    if (sub_storage) {
         sub_storage->init(memory_flags_t::use_runtime_ptr, size, sub_buffer);
+        sub_storage->base_offset_ = base_offset_ + offset;
+    }
     return std::unique_ptr<memory_storage_t>(sub_storage);
+}
+
+std::unique_ptr<memory_storage_t> ocl_memory_storage_t::clone() const {
+    auto storage = new ocl_memory_storage_t(engine());
+    if (storage) storage->init(memory_flags_t::use_runtime_ptr, 0, mem_object_);
+    return std::unique_ptr<memory_storage_t>(storage);
+}
+
+cl_mem ocl_memory_storage_t::parent_mem_object() const {
+    return utils::downcast<const ocl_memory_storage_t *>(parent_storage())
+            ->mem_object();
 }
 
 } // namespace ocl

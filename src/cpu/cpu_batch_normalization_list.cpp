@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
+* Copyright 2021 FUJITSU LIMITED
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,6 +28,12 @@
 using namespace dnnl::impl::cpu::x64;
 #endif
 
+#if DNNL_AARCH64
+#include "cpu/aarch64/jit_uni_batch_normalization.hpp"
+#include "cpu/aarch64/jit_uni_batch_normalization_s8.hpp"
+using namespace dnnl::impl::cpu::aarch64;
+#endif
+
 namespace dnnl {
 namespace impl {
 namespace cpu {
@@ -37,7 +44,7 @@ namespace {
 using namespace dnnl::impl::data_type;
 
 // clang-format off
-static const pd_create_f impl_list[] = {
+const pd_create_f impl_list[] = {
         /* fp */
         CPU_INSTANCE_X64(jit_uni_batch_normalization_fwd_t<avx512_common>)
         CPU_INSTANCE_X64(jit_uni_batch_normalization_bwd_t<avx512_common>)
@@ -51,6 +58,10 @@ static const pd_create_f impl_list[] = {
         CPU_INSTANCE_X64(jit_uni_tbb_batch_normalization_bwd_t<avx2>)
         CPU_INSTANCE_X64(jit_uni_tbb_batch_normalization_fwd_t<sse41>)
         CPU_INSTANCE_X64(jit_uni_tbb_batch_normalization_bwd_t<sse41>)
+        CPU_INSTANCE_AARCH64(jit_uni_batch_normalization_fwd_t<sve_512>)
+        CPU_INSTANCE_AARCH64(jit_uni_batch_normalization_bwd_t<sve_512>)
+        CPU_INSTANCE_AARCH64(jit_uni_batch_normalization_fwd_t<asimd>)
+        CPU_INSTANCE_AARCH64(jit_uni_batch_normalization_bwd_t<asimd>)
         CPU_INSTANCE(ncsp_batch_normalization_fwd_t<f32>)
         CPU_INSTANCE(ncsp_batch_normalization_bwd_t<f32>)
         CPU_INSTANCE(ncsp_batch_normalization_fwd_t<bf16>)
@@ -66,6 +77,8 @@ static const pd_create_f impl_list[] = {
         /* int */
         CPU_INSTANCE_X64(jit_uni_batch_normalization_s8_fwd_t<avx512_core>)
         CPU_INSTANCE_X64(jit_uni_batch_normalization_s8_fwd_t<avx2>)
+        CPU_INSTANCE_X64(jit_uni_batch_normalization_s8_fwd_t<sse41>)
+        CPU_INSTANCE_AARCH64(jit_uni_batch_normalization_s8_fwd_t<sve_512>)
         CPU_INSTANCE(ref_batch_normalization_fwd_t<s8>)
         /* eol */
         nullptr,

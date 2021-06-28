@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2020 Intel Corporation
+# Copyright 2020-2021 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,16 +18,6 @@ file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/*.[ch]
     ${CMAKE_CURRENT_SOURCE_DIR}/*.[ch]pp
     )
-
-if(NOT DNNL_ENABLE_JIT_PROFILING)
-    # XXX: the profiling interface will still be built and present
-    add_definitions(-DDNNL_ENABLE_JIT_PROFILING=0)
-    # Don't enable support for linux_perf and VTune Amplifier
-    list(REMOVE_ITEM SOURCES
-        "${CMAKE_CURRENT_SOURCE_DIR}/jit_utils/jitprofiling/jitprofiling.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/jit_utils/linux_perf/linux_perf.cpp"
-        )
-endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
     # to make computations more stable and to align the jitted code
@@ -56,7 +46,7 @@ endif()
 # remove optimizations of files that don't need them for faster build times.
 file(GLOB FILES_WITHOUT_OPT
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm/*/*_kern_autogen.cpp)
-if(WIN32 AND NOT MINGW)
+if(MSVC)
     set_source_files_properties(${FILES_WITHOUT_OPT}
         PROPERTIES COMPILE_FLAGS "/Od")
 else()

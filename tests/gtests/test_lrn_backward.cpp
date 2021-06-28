@@ -19,7 +19,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 namespace dnnl {
 
@@ -32,7 +32,7 @@ struct test_lrn_desc_t {
     float alpha, beta, k;
 };
 
-struct lrn_test_params {
+struct lrn_test_params_t {
     prop_kind aprop_kind;
     algorithm aalgorithm;
     memory::format_tag data_format;
@@ -49,7 +49,7 @@ acc_data_t fast_inv_powf(acc_data_t omega, float beta) {
 }
 
 template <typename data_t, typename acc_data_t = data_t>
-void check_lrn_bwd(const lrn_test_params &p, const memory &src,
+void check_lrn_bwd(const lrn_test_params_t &p, const memory &src,
         const memory &diff_dst, const memory &diff_src) {
     auto src_ptr = map_memory<data_t>(src);
     auto diff_dst_ptr = map_memory<data_t>(diff_dst);
@@ -186,7 +186,7 @@ void check_lrn_bwd(const lrn_test_params &p, const memory &src,
 }
 
 template <typename data_t>
-class lrn_test : public ::testing::TestWithParam<lrn_test_params> {
+class lrn_test_t : public ::testing::TestWithParam<lrn_test_params_t> {
 private:
     std::shared_ptr<test_memory> src;
     std::shared_ptr<test_memory> dst;
@@ -198,31 +198,47 @@ private:
     std::shared_ptr<memory::desc> diff_src_desc;
     std::shared_ptr<memory::desc> diff_dst_desc;
     lrn_forward::primitive_desc lrn_fwd_prim_desc;
-    lrn_test_params p;
+    lrn_test_params_t p;
     memory::dims padR;
     engine eng;
     stream strm;
     memory::data_type data_type;
 
 protected:
-    virtual void SetUp() {
+    void SetUp() override {
         data_type = data_traits<data_t>::data_type;
 
-        SKIP_IF(data_type == memory::data_type::bf16
-                        && get_test_engine_kind() == engine::kind::gpu,
-                "GPU does not support bf16 data type.");
         SKIP_IF(unsupported_data_type(data_type),
                 "Engine does not support this data type.");
 
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
-
+        SKIP_IF_CUDA(!cuda_check_format_tags(p.data_format, p.diff_data_format),
+                "Unsupported format tag");
+        SKIP_IF_CUDA(p.aalgorithm != algorithm::lrn_across_channels,
+                "Unsupported algorithm");
         ASSERT_TRUE(p.aalgorithm == algorithm::lrn_across_channels
                 || p.aalgorithm == algorithm::lrn_within_channel);
 
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status);
     }
+    bool cuda_check_format_tags(memory::format_tag data_format,
+            memory::format_tag diff_data_format) {
+        bool data_ok = data_format == memory::format_tag::ncdhw
+                || data_format == memory::format_tag::nchw
+                || data_format == memory::format_tag::nhwc
+                || data_format == memory::format_tag::ncw
+                || data_format == memory::format_tag::nwc
+                || data_format == memory::format_tag::any;
+        bool diff_data_ok = diff_data_format == memory::format_tag::ncdhw
+                || diff_data_format == memory::format_tag::nchw
+                || diff_data_format == memory::format_tag::nhwc
+                || diff_data_format == memory::format_tag::ncw
+                || diff_data_format == memory::format_tag::nwc
+                || diff_data_format == memory::format_tag::any;
 
+        return data_ok && diff_data_ok;
+    }
     void Test() {
         p = ::testing::TestWithParam<decltype(p)>::GetParam();
 
@@ -267,7 +283,7 @@ protected:
         std::unordered_map<int, memory> args
                 = {{DNNL_ARG_SRC, src->get()}, {DNNL_ARG_DST, dst->get()}};
         auto workspace_md = lrn_fwd_prim_desc.workspace_desc();
-        workspace = memory(workspace_md, eng);
+        workspace = test::make_memory(workspace_md, eng);
         args.insert({DNNL_ARG_WORKSPACE, workspace});
         l.execute(strm, args);
         strm.wait();
@@ -328,150 +344,150 @@ protected:
 
 static auto padded_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {0, 10, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 0, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nChw16c, {2, 16, 0, 4, 5, 1.0e-4f, 0.75f, 3.0f}});
 };
 
 static auto EF_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {-1, 10, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}, true,
                     dnnl_invalid_arguments},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 10, -4, 4, 5, 1.0e-4f, 0.75f, 3.0f}, true,
                     dnnl_invalid_arguments});
 };
 
 static auto nChw16c_padded_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 17, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 26, 4, 4, 5, 1.0e-4f, 0.75f, 5.7f}});
 };
 
 static auto nChw8c_padded_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 7, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 26, 4, 4, 5, 1.0e-4f, 0.75f, 5.7f}});
 };
 
 static auto cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 10, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 10, 4, 4, 5, 1.0e-4f, 0.75f, 4.0f}});
 };
 
 static auto NHWC_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nhwc,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nhwc,
                     fmt::nhwc, {2, 10, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nhwc,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nhwc,
                     fmt::nhwc, {2, 10, 4, 4, 5, 1.0e-4f, 0.75f, 3.0f}});
 };
 
 static auto nChw8c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 16, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 16, 4, 4, 5, 1.0e-4f, 0.75f, 5.0f}});
 };
 
 static auto nChw16c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 16, 4, 4, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 16, 4, 4, 5, 1.0e-4f, 0.75f, 5.0f}});
 };
 
 static auto CaffeNCHW_cases = [](algorithm lk) {
-    return ::testing::Values(lrn_test_params {prop_kind::forward_training, lk,
+    return ::testing::Values(lrn_test_params_t {prop_kind::forward_training, lk,
             fmt::nchw, fmt::nchw, {2, 4, 5, 5, 5, 1.0f, 0.75f, 1.0f}});
 };
 
 static auto CaffeNHWC_cases = [](algorithm lk) {
-    return ::testing::Values(lrn_test_params {prop_kind::forward_training, lk,
+    return ::testing::Values(lrn_test_params_t {prop_kind::forward_training, lk,
             fmt::nhwc, fmt::nhwc, {2, 4, 5, 5, 5, 1.0f, 0.75f, 1.0f}});
 };
 
 static auto Caffe_nChw8c_cases = [](algorithm lk) {
-    return ::testing::Values(lrn_test_params {prop_kind::forward_training, lk,
+    return ::testing::Values(lrn_test_params_t {prop_kind::forward_training, lk,
             fmt::nChw8c, fmt::nChw8c, {2, 96, 55, 55, 3, 1.0f, 0.75f, 1.0f}});
 };
 
 static auto Caffe_nChw16c_cases = [](algorithm lk) {
-    return ::testing::Values(lrn_test_params {prop_kind::forward_training, lk,
+    return ::testing::Values(lrn_test_params_t {prop_kind::forward_training, lk,
             fmt::nChw16c, fmt::nChw16c, {2, 96, 55, 55, 3, 1.0f, 0.75f, 1.0f}});
 };
 
 static auto AlexnetNCHW_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 96, 55, 55, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 256, 27, 27, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto AlexnetNHWC_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nhwc,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nhwc,
                     fmt::nhwc, {2, 96, 55, 55, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nhwc,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nhwc,
                     fmt::nhwc, {2, 256, 27, 27, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto Alexnet_nChw8c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 96, 55, 55, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 256, 27, 27, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto Alexnet_nChw16c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 96, 55, 55, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 256, 27, 27, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto GoogleNetV1NCHW_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 64, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nchw,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nchw,
                     fmt::nchw, {2, 192, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto GoogleNetV1_nChw8c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 64, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw8c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw8c,
                     fmt::nChw8c, {2, 192, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto GoogleNetV1_nChw16c_cases = [](algorithm lk) {
     return ::testing::Values(
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 64, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}},
-            lrn_test_params {prop_kind::forward_training, lk, fmt::nChw16c,
+            lrn_test_params_t {prop_kind::forward_training, lk, fmt::nChw16c,
                     fmt::nChw16c, {2, 192, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
 static auto RegressionWeightFormat_cases = [](algorithm lk) {
-    return ::testing::Values(lrn_test_params {prop_kind::forward_training, lk,
+    return ::testing::Values(lrn_test_params_t {prop_kind::forward_training, lk,
             fmt::oihw, fmt::oihw, {2, 64, 56, 56, 5, 1.0e-4f, 0.75f, 1.0f}});
 };
 
@@ -506,10 +522,10 @@ static auto RegressionWeightFormat_cases = [](algorithm lk) {
             RegressionWeightFormat_cases( \
                     lk)); // This tests compatibility with Intel MKL-DNN v0.14
 
-using float_across = lrn_test<float>;
-using float_within = lrn_test<float>;
-using bfloat16_across = lrn_test<bfloat16_t>;
-using bfloat16_within = lrn_test<bfloat16_t>;
+using float_across = lrn_test_t<float>;
+using float_within = lrn_test_t<float>;
+using bfloat16_across = lrn_test_t<bfloat16_t>;
+using bfloat16_within = lrn_test_t<bfloat16_t>;
 
 INST_TEST_CASE(float_across, algorithm::lrn_across_channels)
 INST_TEST_CASE(bfloat16_across, algorithm::lrn_across_channels)

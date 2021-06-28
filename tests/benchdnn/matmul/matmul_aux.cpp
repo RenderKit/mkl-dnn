@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "dnnl_common.hpp"
 #include "dnnl_debug.hpp"
@@ -33,7 +33,7 @@ void prb_t::generate_oscales() {
 
     if (attr.oscale.policy == policy_t::COMMON) {
         scales = (float *)zmalloc(sizeof(float), 4);
-        SAFE_V(scales != NULL ? OK : FAIL);
+        SAFE_V(scales != nullptr ? OK : FAIL);
         scales[0] = attr.oscale.scale;
         return;
     }
@@ -41,7 +41,7 @@ void prb_t::generate_oscales() {
     assert(attr.oscale.policy == policy_t::PER_OC);
 
     scales = (float *)zmalloc(sizeof(float) * n, 64);
-    SAFE_V(scales != NULL ? OK : FAIL);
+    SAFE_V(scales != nullptr ? OK : FAIL);
 
     const float K = 32;
     /* scale in [1/K .. K], with starting point at oscale.scale */
@@ -59,8 +59,31 @@ void prb_t::generate_oscales() {
     }
 }
 
-int str2desc(desc_t *desc, const char *str) {
-    desc_t d {0};
+int32_t *prb_t::generate_zero_points(
+        int arg, const attr_t::zero_points_t &zero_points, int N) {
+    if (zero_points.is_def(arg)) return nullptr;
+
+    const auto &e = zero_points.get(arg);
+    if (e.policy == policy_t::COMMON) {
+        int32_t *zp = (int32_t *)zmalloc(sizeof(int32_t), 4);
+        SAFE_V(zp != nullptr ? OK : FAIL);
+        zp[0] = e.value;
+        return zp;
+    }
+
+    assert(e.policy == policy_t::PER_DIM_1);
+
+    int32_t *zp = (int32_t *)zmalloc(sizeof(int32_t) * N, 64);
+    SAFE_V(zp != nullptr ? OK : FAIL);
+
+    for (int i = 0; i < N; ++i)
+        zp[i] = e.value + i % 3;
+    return zp;
+}
+
+int legacy_str2desc(desc_t *desc, const char *str) {
+
+    desc_t d;
 
     /* canonical form:
      * mbXmXnXkXnS
@@ -77,22 +100,25 @@ int str2desc(desc_t *desc, const char *str) {
      * default values:
      *      mb = 0, S="wip"
      */
-
-    d.mb = 0;
+    d.is_legacy_desc = true;
+    int64_t mb = 0;
+    int64_t m = 0;
+    int64_t n = 0;
+    int64_t k = 0;
 
     const char *s = str;
     assert(s);
 
-#define CASE_NN(p, c) \
+#define CASE_NN(prb, c) \
     do { \
-        if (!strncmp(p, s, strlen(p))) { \
+        if (!strncmp(prb, s, strlen(prb))) { \
             ok = 1; \
-            s += strlen(p); \
+            s += strlen(prb); \
             char *end_s; \
-            d.c = strtol(s, &end_s, 10); \
+            (c) = strtol(s, &end_s, 10); \
             s += (end_s - s); \
-            if (d.c < 0) return FAIL; \
-            /* printf("@@@debug: %s: %d\n", p, d. c); */ \
+            if ((c) < 0) return FAIL; \
+            /* printf("@@@debug: %s: %d\n", prb, (c)); */ \
         } \
     } while (0)
 #define CASE_N(c) CASE_NN(#c, c)
@@ -113,61 +139,131 @@ int str2desc(desc_t *desc, const char *str) {
 #undef CASE_NN
 #undef CASE_N
 
-    if (d.mb < 0 || d.m < 0 || d.n < 0 || d.k < 0) return FAIL;
-    if (d.m * d.n * d.k == 0) return FAIL;
+    if (mb < 0 || m < 0 || n < 0 || k < 0) return FAIL;
+    if (m * n * k == 0) return FAIL;
 
-    d.ndims = 2 + (d.mb != 0);
-    if (d.ndims == 2) d.mb = 1;
+    d.sdims.resize(2);
+    if (mb) {
+        d.sdims[0].push_back(mb);
+        d.sdims[1].push_back(mb);
+    }
+    d.sdims[0].push_back(m);
+    d.sdims[0].push_back(k);
+
+    d.sdims[1].push_back(k);
+    d.sdims[1].push_back(n);
 
     *desc = d;
 
     return OK;
 }
 
+int str2desc(desc_t *desc, const char *str) {
+    const char *s = str;
+
+    while (*s == '_')
+        ++s;
+    if (*s == 'm') return legacy_str2desc(desc, s);
+
+    desc_t d;
+    d.is_legacy_desc = false;
+    /* canonical form:
+        d0xd1xd2xd3...:d0xd1xd2xd3...:d0xd1xd2xd3...nS
+        with dimensions of src, weights and dst matrices are delimited by ':'
+        in that order. The number of dims must match for all matrices.
+    
+        note: the dims are not auto expanded (to prevent undesired behavior by
+        accidental expansion with missing dim value)
+
+        S - string for name
+
+        if the dst dims are not provided, then they are computed by benchdnn as
+        dst_dims[d] = max(src_dims[d], weights_dims[d]), except for m, n dims
+        for which usual convention is followed.
+
+        default value for S = "wip"
+    */
+
+    int dims_idx = 0;
+    while (*s) {
+        if (isdigit(*s)) {
+            d.sdims.resize(dims_idx + 1);
+
+            char *end_s;
+            d.sdims.back().push_back(strtol(s, &end_s, 10));
+            if (d.sdims.back().back() < 0) return FAIL;
+
+            s += (end_s - s);
+            if (*s == ':') {
+                ++dims_idx;
+                ++s;
+            } else if (*s == 'x') {
+                ++s;
+            }
+        } else if (*s == 'n') {
+            d.name = s + 1;
+            break;
+        } else if (*s == '_') {
+            ++s;
+        } else {
+            return FAIL;
+        }
+    }
+    if (d.sdims.size() < 2) return FAIL;
+    const auto ndims = d.sdims[0].size();
+    for (const auto &dims : d.sdims) {
+        if (dims.size() != ndims) return FAIL;
+    }
+    *desc = d;
+    return OK;
+}
+
 std::ostream &operator<<(std::ostream &s, const desc_t &d) {
-    if (d.ndims == 3) s << "mb" << d.mb;
-    s << "m" << d.m << "n" << d.n << "k" << d.k;
+
+    for (size_t i = 0; i < d.sdims.size(); ++i) {
+        for (size_t j = 0; j < d.sdims[i].size(); ++j) {
+            s << d.sdims[i][j];
+            if (j + 1 < d.sdims[i].size()) s << "x";
+        }
+        if (i + 1 < d.sdims.size()) s << ":";
+    }
 
     if (d.name) s << "_n" << d.name;
 
     return s;
 }
 
-std::ostream &operator<<(std::ostream &s, const prb_t &p) {
+std::ostream &operator<<(std::ostream &s, const prb_t &prb) {
     dump_global_params(s);
     settings_t def;
 
-    if (canonical || p.cfg != def.cfg[0]) s << "--cfg=" << p.cfg << " ";
-    if (canonical || p.stag != def.stag[0]) s << "--stag=" << p.stag << " ";
-    if (canonical || p.wtag != def.wtag[0]) s << "--wtag=" << p.wtag << " ";
-    if (canonical || p.dtag != def.dtag[0]) s << "--dtag=" << p.dtag << " ";
+    if (canonical || prb.cfg != def.cfg[0]) s << "--cfg=" << prb.cfg << " ";
+    if (canonical || prb.stag != def.stag[0]) s << "--stag=" << prb.stag << " ";
+    if (canonical || prb.wtag != def.wtag[0]) s << "--wtag=" << prb.wtag << " ";
+    if (canonical || prb.dtag != def.dtag[0]) s << "--dtag=" << prb.dtag << " ";
 
     // TODO: switch me on when run-time leading dimensions will be supported
-    // if (canonical || p.ld_src != defaults::ld)
-    //     s << "--ld_src=" << p.ld_src << " ";
-    // if (canonical || p.ld_wei != defaults::ld)
-    //     s << "--ld_wei=" << p.ld_wei << " ";
-    // if (canonical || p.ld_dst != defaults::ld)
-    //     s << "--ld_dst=" << p.ld_dst << " ";
+    // if (canonical || prb.ld_src != defaults::ld)
+    //     s << "--ld_src=" << prb.ld_src << " ";
+    // if (canonical || prb.ld_wei != defaults::ld)
+    //     s << "--ld_wei=" << prb.ld_wei << " ";
+    // if (canonical || prb.ld_dst != defaults::ld)
+    //     s << "--ld_dst=" << prb.ld_dst << " ";
 
-    if (canonical || p.runtime_mb != def.runtime_mb[0])
-        s << "--runtime_mb=" << p.runtime_mb << " ";
-    if (canonical || p.runtime_m != def.runtime_m[0])
-        s << "--runtime_m=" << p.runtime_m << " ";
-    if (canonical || p.runtime_n != def.runtime_n[0])
-        s << "--runtime_n=" << p.runtime_n << " ";
-    if (canonical || p.runtime_k != def.runtime_k[0])
-        s << "--runtime_k=" << p.runtime_k << " ";
+    if (canonical || prb.src_runtime_dim_mask().any()
+            || prb.weights_runtime_dim_mask().any())
+        s << "--runtime_dims_masks=" << prb.src_runtime_dim_mask().to_ulong()
+          << ":" << prb.weights_runtime_dim_mask().to_ulong() << " ";
 
-    if (canonical || p.bia_dt != def.bia_dt[0]) {
-        s << "--bia_dt=" << p.bia_dt << " ";
+    if (canonical || prb.bia_dt != def.bia_dt[0]) {
+        s << "--bia_dt=" << prb.bia_dt << " ";
 
-        if (canonical || p.bia_mask != def.bia_mask[0])
-            s << "--bia_mask=" << p.bia_mask << " ";
+        if (canonical || prb.bia_mask != def.bia_mask[0])
+            s << "--bia_mask=" << prb.bia_mask << " ";
     }
 
-    s << p.attr;
-    s << static_cast<const desc_t &>(p);
+    s << prb.attr;
+    s << static_cast<const desc_t &>(prb);
 
     return s;
 }

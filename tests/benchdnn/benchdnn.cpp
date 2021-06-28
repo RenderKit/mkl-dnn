@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
 
 #include "common.hpp"
 #include "dnnl_common.hpp"
@@ -38,6 +38,8 @@
 #include "lrn/lrn.hpp"
 #include "matmul/matmul.hpp"
 #include "pool/pool.hpp"
+#include "prelu/prelu.hpp"
+#include "reduction/reduction.hpp"
 #include "reorder/reorder.hpp"
 #include "resampling/resampling.hpp"
 #include "rnn/rnn.hpp"
@@ -45,6 +47,7 @@
 #include "shuffle/shuffle.hpp"
 #include "softmax/softmax.hpp"
 #include "sum/sum.hpp"
+#include "zeropad/zeropad.hpp"
 
 int verbose {0};
 bool canonical {false};
@@ -59,6 +62,8 @@ int min_times_per_prb {5};
 int fix_times_per_prb {0};
 
 bool fast_ref_gpu {true};
+bool allow_enum_tags_only {true};
+int test_start {0};
 
 int main(int argc, char **argv) {
     using namespace parser;
@@ -98,6 +103,8 @@ int main(int argc, char **argv) {
         softmax::bench(--argc, ++argv);
     } else if (!strcmp("--pool", argv[0])) {
         pool::bench(--argc, ++argv);
+    } else if (!strcmp("--prelu", argv[0])) {
+        prelu::bench(--argc, ++argv);
     } else if (!strcmp("--sum", argv[0])) {
         sum::bench(--argc, ++argv);
     } else if (!strcmp("--eltwise", argv[0])) {
@@ -112,6 +119,10 @@ int main(int argc, char **argv) {
         matmul::bench(--argc, ++argv);
     } else if (!strcmp("--resampling", argv[0])) {
         resampling::bench(--argc, ++argv);
+    } else if (!strcmp("--reduction", argv[0])) {
+        reduction::bench(--argc, ++argv);
+    } else if (!strcmp("--zeropad", argv[0])) {
+        zeropad::bench(--argc, ++argv);
     } else {
         fprintf(stderr, "err: unknown driver\n");
     }

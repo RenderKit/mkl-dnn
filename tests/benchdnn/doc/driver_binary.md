@@ -7,14 +7,16 @@
 
 where *binary-knobs* are:
 
- - `--sdt={f32 [default], bf16}` -- src data type.
+ - `--sdt={f32:f32 [default], ...}` -- src data type.
+            Refer to ``Inputs`` below.
             Refer to [data types](knobs_dt.md) for details.
- - `--ddt={f32 [default], bf16}` -- dst data type.
+ - `--ddt={f32 [default], ...}` -- dst data type.
             Refer to [data types](knobs_dt.md) for details.
  - `--stag={nchw:nchw [default], ...}` -- physical src memory layout.
             Refer to ``Inputs`` below.
             Refer to [tags](knobs_tag.md) for details.
- - `--alg={ADD [default], MUL, MAX, MIN}` -- algorithm for binary operations.
+ - `--alg={ADD [default], DIV, EQ, GE, GT, LE, LT, MAX, MIN, MUL, NE, SUB}` --
+            algorithm for binary operations.
             Refer to [binary primitive](https://oneapi-src.github.io/oneDNN/dev_guide_binary.html)
             for details.
  - `--attr-scales="STRING"` -- per argument scales primitive attribute. No
@@ -55,10 +57,10 @@ is no overflow in f16 or bf16 data types.
 
 ## Examples
 
-Run the set of binary primitive problems from `binary/test_binary_all` with the
+Run the set of binary primitive problems from `inputs/binary/shapes_ci` with the
 default settings:
 ``` sh
-    ./benchdnn --binary --batch=inputs/binary/test_binary_all
+    ./benchdnn --binary --batch=inputs/binary/shapes_ci
 ```
 
 Run a specific binary primitive problem:
@@ -74,5 +76,5 @@ Run a specific binary primitive problem:
 ```
 
 More examples with different driver options can be found at
-inputs/binary/test_binary_all. Examples with different benchdnn options can be
+inputs/binary/test_***. Examples with different benchdnn common options can be
 found at driver_conv.md.

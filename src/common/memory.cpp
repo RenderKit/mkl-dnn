@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2016-2020 Intel Corporation
+* Copyright 2016-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,10 +18,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
+#include "oneapi/dnnl/dnnl.hpp"
+
+#ifdef DNNL_WITH_SYCL
+#include "oneapi/dnnl/dnnl_sycl.h"
+#endif
 
 #include "c_types_map.hpp"
 #include "engine.hpp"
+#include "memory.hpp"
 #include "memory_desc_wrapper.hpp"
 #include "stream.hpp"
 #include "type_helpers.hpp"
@@ -39,32 +45,27 @@ memory_desc_t glob_zero_md = memory_desc_t();
 } // namespace dnnl
 
 namespace {
-bool memory_desc_sanity_check(int ndims, const dims_t dims,
-        data_type_t data_type, format_kind_t format_kind) {
-    if (ndims == 0) return true;
+// Returns the size required for memory descriptor mapping.
+// Caveats:
+// 1. If memory descriptor with run-time parameters, the mapping cannot be done;
+//    hence return DNNL_RUNTIME_SIZE_VAL
+// 2. Otherwise, the size returned includes `offset0` and holes (for the case
+//    of non-trivial strides). Strictly speaking, the mapping should happen only
+//    for elements accessible with `md.off_l(0 .. md.nelems())`. However, for
+//    the sake of simple implementation let's have such limitation hoping that
+//    no one will do concurrent mapping for overlapping memory objects.
+//
+// XXX: remove limitation mentioned in 2nd bullet.
+size_t memory_desc_map_size(const memory_desc_t *md) {
+    auto mdw = memory_desc_wrapper(md);
 
-    bool ok = dims != nullptr && 0 < ndims && ndims <= DNNL_MAX_NDIMS
-            && one_of(data_type, f16, bf16, f32, s32, s8, u8);
-    if (!ok) return false;
+    if (mdw.has_runtime_dims_or_strides()) return DNNL_RUNTIME_SIZE_VAL;
+    if (mdw.offset0() == 0) return mdw.size();
 
-    bool has_runtime_dims = false;
-    for (int d = 0; d < ndims; ++d) {
-        if (dims[d] != DNNL_RUNTIME_DIM_VAL && dims[d] < 0) return false;
-        if (dims[d] == DNNL_RUNTIME_DIM_VAL) has_runtime_dims = true;
-    }
-
-    if (has_runtime_dims) {
-        // format `any` is currently not supported for run-time dims
-        if (format_kind == format_kind::any) return false;
-    }
-
-    return true;
-}
-
-bool memory_desc_sanity_check(const memory_desc_t *md) {
-    if (md == nullptr) return false;
-    return memory_desc_sanity_check(
-            md->ndims, md->dims, md->data_type, format_kind::undef);
+    memory_desc_t md_no_offset0 = *md;
+    md_no_offset0.offset0 = 0;
+    return memory_desc_wrapper(md_no_offset0).size()
+            + md->offset0 * mdw.data_type_size();
 }
 } // namespace
 
@@ -79,7 +80,13 @@ dnnl_memory::dnnl_memory(dnnl::impl::engine_t *engine,
     if (status != success) return;
 
     memory_storage_.reset(memory_storage_ptr);
-    if (!(flags & omit_zero_pad)) zero_pad(nullptr);
+}
+
+dnnl_memory::dnnl_memory(dnnl::impl::engine_t *engine,
+        const dnnl::impl::memory_desc_t *md,
+        std::unique_ptr<dnnl::impl::memory_storage_t> &&memory_storage)
+    : engine_(engine), md_(*md) {
+    this->reset_memory_storage(std::move(memory_storage));
 }
 
 status_t dnnl_memory::set_data_handle(void *handle, stream_t *stream) {
@@ -91,7 +98,23 @@ status_t dnnl_memory::set_data_handle(void *handle, stream_t *stream) {
     if (handle != old_handle) {
         CHECK(memory_storage()->set_data_handle(handle));
     }
-    return zero_pad(stream);
+    return status::success;
+}
+
+status_t dnnl_memory::reset_memory_storage(
+        std::unique_ptr<dnnl::impl::memory_storage_t> &&memory_storage) {
+    if (memory_storage) {
+        memory_storage_ = std::move(memory_storage);
+    } else {
+        memory_storage_t *memory_storage_ptr;
+        status_t status = engine_->create_memory_storage(
+                &memory_storage_ptr, use_runtime_ptr, 0, nullptr);
+        if (status != status::success) return status;
+
+        memory_storage_.reset(memory_storage_ptr);
+    }
+
+    return status::success;
 }
 
 status_t dnnl_memory_desc_init_by_tag(memory_desc_t *memory_desc, int ndims,
@@ -472,8 +495,16 @@ size_t dnnl_memory_desc_get_size(const memory_desc_t *md) {
     return memory_desc_wrapper(*md).size();
 }
 
+size_t dnnl_data_type_size(dnnl_data_type_t data_type) {
+    return types::data_type_size(data_type);
+}
+
 status_t dnnl_memory_create(memory_t **memory, const memory_desc_t *md,
         engine_t *engine, void *handle) {
+#ifdef DNNL_WITH_SYCL
+    return dnnl_sycl_interop_memory_create(
+            memory, md, engine, dnnl_sycl_interop_usm, handle);
+#else
     if (any_null(memory, engine)) return invalid_arguments;
 
     memory_desc_t z_md = types::zero_md();
@@ -495,6 +526,7 @@ status_t dnnl_memory_create(memory_t **memory, const memory_desc_t *md,
     }
     *memory = _memory;
     return success;
+#endif
 }
 
 status_t dnnl_memory_get_memory_desc(
@@ -526,14 +558,28 @@ status_t dnnl_memory_set_data_handle(memory_t *memory, void *handle) {
 status_t dnnl_memory_set_data_handle_v2(
         memory_t *memory, void *handle, stream_t *stream) {
     if (any_null(memory)) return invalid_arguments;
-    return memory->set_data_handle(handle, stream);
+    if (stream) stream->before_exec_hook();
+    status_t status = memory->set_data_handle(handle, stream);
+    if (stream) stream->after_exec_hook();
+    return status;
 }
 
 status_t dnnl_memory_map_data(const memory_t *memory, void **mapped_ptr) {
     bool args_ok = !any_null(memory, mapped_ptr);
     if (!args_ok) return invalid_arguments;
 
-    return memory->memory_storage()->map_data(mapped_ptr, nullptr);
+    const memory_desc_t *md = memory->md();
+    // See caveats in the comment to `memory_desc_map_size()` function.
+    const size_t map_size = memory_desc_map_size(md);
+
+    if (map_size == 0) {
+        *mapped_ptr = nullptr;
+        return success;
+    } else if (map_size == DNNL_RUNTIME_SIZE_VAL) {
+        return invalid_arguments;
+    }
+
+    return memory->memory_storage()->map_data(mapped_ptr, nullptr, map_size);
 }
 
 status_t dnnl_memory_unmap_data(const memory_t *memory, void *mapped_ptr) {

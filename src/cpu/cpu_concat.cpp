@@ -30,7 +30,7 @@ using cpd_create_f = dnnl::impl::engine_t::concat_primitive_desc_create_f;
 namespace {
 // clang-format off
 #define INSTANCE(...) __VA_ARGS__::pd_t::create,
-static const cpd_create_f cpu_concat_impl_list[] = {
+const cpd_create_f cpu_concat_impl_list[] = {
         /*
         INSTANCE(simple_concat_t<data_type::f32>)
         INSTANCE(simple_concat_t<data_type::u8>)
@@ -45,7 +45,7 @@ static const cpd_create_f cpu_concat_impl_list[] = {
 // clang-format on
 } // namespace
 
-const cpd_create_f *cpu_engine_t::get_concat_implementation_list() const {
+const cpd_create_f *cpu_engine_impl_list_t::get_concat_implementation_list() {
     return cpu_concat_impl_list;
 }
 

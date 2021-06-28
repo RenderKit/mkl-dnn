@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@
 
 #include "common/type_helpers.hpp"
 #include "common/utils.hpp"
-#include "gpu/jit/binary_format.hpp"
+#include "gpu/compute/kernel_list.hpp"
 #include "gpu/ocl/kernel_utils.hpp"
+#include "gpu/ocl/ocl_gpu_device_info.hpp"
+#include "gpu/ocl/ocl_gpu_engine.hpp"
 #include "gpu/ocl/ocl_memory_storage.hpp"
 #include "gpu/ocl/ocl_stream.hpp"
 #include "gpu/ocl/ocl_utils.hpp"
@@ -32,9 +34,15 @@ namespace gpu {
 namespace ocl {
 
 status_t ocl_gpu_engine_t::init() {
-    CHECK(compute_engine_t::init());
-
     cl_int err = CL_SUCCESS;
+    err = clRetainDevice(device_);
+    if (err != CL_SUCCESS) {
+        device_ = nullptr;
+        context_ = nullptr;
+    }
+
+    OCL_CHECK(err);
+
     if (is_user_context_) {
         err = clRetainContext(context_);
         if (err != CL_SUCCESS) context_ = nullptr;
@@ -45,14 +53,9 @@ status_t ocl_gpu_engine_t::init() {
 
     OCL_CHECK(err);
 
-    status_t status = check_device(engine_kind::gpu, device_, context_);
-    if (status != status::success) return status;
+    CHECK(check_device(engine_kind::gpu, device_, context_));
+    compute::compute_engine_t::init();
 
-    stream_t *service_stream_ptr;
-    status = create_stream(
-            &service_stream_ptr, stream_flags::default_flags, nullptr);
-    if (status != status::success) return status;
-    service_stream_.reset(service_stream_ptr);
     return status::success;
 }
 
@@ -69,9 +72,7 @@ status_t ocl_gpu_engine_t::create_memory_storage(
     return status::success;
 }
 
-status_t ocl_gpu_engine_t::create_stream(
-        stream_t **stream, unsigned flags, const stream_attr_t *attr) {
-    MAYBE_UNUSED(attr);
+status_t ocl_gpu_engine_t::create_stream(stream_t **stream, unsigned flags) {
     return ocl_stream_t::create_stream(stream, this, flags);
 }
 
@@ -89,11 +90,23 @@ cl_uint count_lines(const char **code) {
     return i;
 }
 
-status_t ocl_gpu_engine_t::create_kernel(compute::kernel_t *kernel,
-        const char *kernel_name,
-        const std::vector<unsigned char> &binary) const {
+status_t ocl_gpu_engine_t::create_kernel(
+        compute::kernel_t *kernel, jit::jit_generator_base &jitter) const {
 
-    *kernel = compute::kernel_t(new ocl_gpu_kernel_t(binary, kernel_name));
+    auto binary = jitter.get_binary(context(), device());
+    auto kernel_name = jitter.kernel_name();
+
+    ocl_wrapper_t<cl_kernel> ocl_kernel
+            = jitter.get_kernel(context(), device());
+    std::vector<gpu::compute::scalar_type_t> arg_types;
+    CHECK(get_kernel_arg_types(ocl_kernel, &arg_types));
+
+    auto shared_binary = std::make_shared<gpu::compute::binary_t>(binary);
+
+    *kernel = compute::kernel_t(
+            new ocl_gpu_kernel_t(shared_binary, kernel_name, arg_types));
+    dump_kernel_binary(this, *kernel);
+
     return status::success;
 }
 
@@ -112,7 +125,7 @@ status_t ocl_gpu_engine_t::create_kernels(
 }
 
 static status_t get_program_binaries(
-        cl_program program, std::vector<unsigned char> *binary) {
+        cl_program program, std::shared_ptr<compute::binary_t> &binary) {
 
     // Get the size of the program binary in bytes.
     size_t binary_size = 0;
@@ -124,7 +137,7 @@ static status_t get_program_binaries(
     if (binary_size == 0) return status::runtime_error;
 
     // Get program binary.
-    binary->resize(binary_size);
+    binary = std::make_shared<compute::binary_t>(binary_size);
     unsigned char *binary_buffer = binary->data();
     err = clGetProgramInfo(
             program, CL_PROGRAM_BINARIES, binary_size, &binary_buffer, nullptr);
@@ -140,6 +153,12 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
         const compute::kernel_ctx_t &kernel_ctx) const {
     std::string options = kernel_ctx.options();
 
+    // XXX: Update options by adding macros for OpenCL extensions that are not
+    // handled properly by the OpenCL runtime
+    auto *dev_info
+            = utils::downcast<const ocl_gpu_device_info_t *>(device_info());
+    options += " " + dev_info->get_cl_ext_options();
+
     cl_int err;
     cl_program program = clCreateProgramWithSource(
             context(), count_lines(code_strings), code_strings, nullptr, &err);
@@ -147,8 +166,10 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
 
     cl_device_id dev = device();
     err = clBuildProgram(program, 1, &dev, options.c_str(), nullptr, nullptr);
-#ifndef NDEBUG
     if (err != CL_SUCCESS) {
+        // Return error if verbose is not enabled.
+        if (get_verbose() == 0) OCL_CHECK(err);
+
         size_t log_length = 0;
         err = clGetProgramBuildInfo(
                 program, dev, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_length);
@@ -156,39 +177,47 @@ status_t ocl_gpu_engine_t::create_kernels_from_ocl_source(
 
         std::vector<char> log_buf(log_length);
         err = clGetProgramBuildInfo(program, dev, CL_PROGRAM_BUILD_LOG,
-                log_length, log_buf.data(), 0);
+                log_length, log_buf.data(), nullptr);
         assert(err == CL_SUCCESS);
         printf("Error during the build of OpenCL program.\nBuild "
                "log:\n%s\n",
                 log_buf.data());
         OCL_CHECK(err);
     }
-#endif
 
-    std::vector<unsigned char> binary;
-    CHECK(get_program_binaries(program, &binary));
+    std::shared_ptr<compute::binary_t> shared_binary;
+    CHECK(get_program_binaries(program, shared_binary));
 
     *kernels = std::vector<compute::kernel_t>(kernel_names.size());
     for (size_t i = 0; i < kernel_names.size(); ++i) {
-        (*kernels)[i] = compute::kernel_t(
-                new ocl_gpu_kernel_t(binary, kernel_names[i]));
+        cl_int err;
+        ocl_wrapper_t<cl_kernel> ocl_kernel
+                = clCreateKernel(program, kernel_names[i], &err);
+        OCL_CHECK(err);
+        std::vector<gpu::compute::scalar_type_t> arg_types;
+        CHECK(get_kernel_arg_types(ocl_kernel, &arg_types));
+
+        (*kernels)[i] = compute::kernel_t(new ocl_gpu_kernel_t(
+                shared_binary, kernel_names[i], arg_types));
+        dump_kernel_binary(this, (*kernels)[i]);
     }
 
     OCL_CHECK(clReleaseProgram(program));
     return status::success;
 }
 
-void ocl_gpu_engine_t::check_mayiuse_ngen_kernels() {
-    if (!checked_ngen_kernels_) {
-        auto status
-                = jit::gpu_supports_binary_format(&enable_ngen_kernels_, this);
-        if (status != status::success) enable_ngen_kernels_ = false;
-        checked_ngen_kernels_ = true;
+std::function<void(void *)> ocl_gpu_engine_t::get_program_list_deleter() const {
+    return [](void *p) {
+        cl_int err = clReleaseProgram(reinterpret_cast<cl_program>(p));
+        assert(err == 0);
+        MAYBE_UNUSED(err);
+    };
+}
 
-        if (get_verbose())
-            printf("dnnl_verbose,info,gpu,binary_kernels:%s\n",
-                    enable_ngen_kernels_ ? "enabled" : "disabled");
-    }
+status_t ocl_gpu_engine_t::init_device_info() {
+    device_info_ = std::make_shared<ocl_gpu_device_info_t>();
+    CHECK(device_info_->init(this));
+    return status::success;
 }
 
 } // namespace ocl

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,26 +30,33 @@ namespace resampling {
 
 void check_correctness(const settings_t &s) {
     for_(const auto &i_dir : s.dir)
-    for_(const auto &i_dt : s.dt)
+    for_(const auto &i_sdt : s.sdt)
+    for_(const auto &i_ddt : s.ddt)
     for_(const auto &i_tag : s.tag)
     for_(const auto &i_alg : s.alg)
-    for (const auto &i_mb : s.mb) {
-        const prb_t p(s.desc, i_dir, i_dt, i_tag, i_alg, i_mb);
+    for_(const auto &i_post_ops : s.post_ops)
+    for_(const auto &i_mb : s.mb)
+    for (const auto &i_scratchpad_mode : s.scratchpad_mode) {
+        attr_t attr;
+        attr.insert(i_post_ops);
+        attr.insert(i_scratchpad_mode);
+
+        const prb_t prb(s.desc, i_dir, i_sdt, i_ddt, i_tag, i_alg, attr, i_mb);
         std::stringstream ss;
-        ss << p;
+        ss << prb;
         const std::string cpp_pstr = ss.str();
         const char *pstr = cpp_pstr.c_str();
         BENCHDNN_PRINT(1, "run: %s\n", pstr);
 
         res_t res {};
-        const int status = doit(&p, &res);
+        const int status = doit(&prb, &res);
 
         bool want_perf_report = false;
         parse_result(res, want_perf_report, status, pstr);
 
         if (want_perf_report && bench_mode & PERF) {
             perf_report_t pr(s.perf_template);
-            pr.report(&p, &res, pstr);
+            pr.report(&prb, &res, pstr);
         }
 
         benchdnn_stat.tests++;
@@ -65,10 +72,14 @@ int bench(int argc, char **argv) {
         const bool parsed_options = parse_bench_settings(argv[0])
                 || parse_batch(bench, argv[0])
                 || parse_dir(s.dir, def.dir, argv[0])
-                || parse_dt(s.dt, def.dt, argv[0])
+                || parse_dt(s.sdt, def.sdt, argv[0], "sdt")
+                || parse_dt(s.ddt, def.ddt, argv[0], "ddt")
                 || parse_tag(s.tag, def.tag, argv[0])
                 || parse_alg(s.alg, def.alg, str2alg, argv[0])
+                || parse_attr_post_ops(s.post_ops, argv[0])
                 || parse_mb(s.mb, def.mb, argv[0])
+                || parse_attr_scratchpad_mode(
+                        s.scratchpad_mode, def.scratchpad_mode, argv[0])
                 || parse_perf_template(s.perf_template, s.perf_template_def,
                         s.perf_template_csv, argv[0])
                 || parse_reset(s, argv[0]);

@@ -35,6 +35,7 @@
 #include "cpu/x64/rnn/jit_uni_gru_lbr_cell_postgemm_fwd.hpp"
 #include "cpu/x64/rnn/jit_uni_lstm_cell_postgemm_bwd.hpp"
 #include "cpu/x64/rnn/jit_uni_lstm_cell_postgemm_fwd.hpp"
+#include "cpu/x64/rnn/jit_uni_lstm_cell_projection_postgemm_fwd.hpp"
 #include "cpu/x64/rnn/jit_uni_rnn_cell_postgemm_bwd.hpp"
 #include "cpu/x64/rnn/jit_uni_rnn_cell_postgemm_fwd.hpp"
 #include "cpu/x64/rnn/jit_uni_rnn_common_postgemm.hpp"
@@ -79,6 +80,10 @@ struct rnn_postgemm_dispatcher {
         switch (pd->cell_kind()) {
             case alg_kind::vanilla_lstm:
                 postgemm_func = &class_name::lstm_postgemm;
+                // used for int8 requantization after projection
+                postgemm_part2_func = pd->is_lstm_projection() && pd_->is_fwd()
+                        ? &class_name::lstm_projection_postgemm
+                        : nullptr;
                 break;
             case alg_kind::vanilla_rnn:
                 postgemm_func = &class_name::rnn_postgemm;
@@ -157,12 +162,13 @@ struct rnn_postgemm_dispatcher {
                     src_iter_c_, diff_src_layer_, diff_src_iter_,
                     diff_src_iter_c_, diff_dst_layer_, diff_dst_iter_,
                     diff_dst_iter_c_, weights_peephole_, bias_, ws_grid_,
-                    scratch_cell_, dst_iter_);
+                    scratch_cell_, dst_iter_, weights_scales_, block_step);
             unpoison(rnn, cell_position, ws_gates_, scratch_gates_, dst_layer_,
                     dst_iter_c_, src_iter_, src_iter_c_, diff_src_layer_,
                     diff_src_iter_, diff_src_iter_c_, diff_dst_layer_,
                     diff_dst_iter_, diff_dst_iter_c_, weights_peephole_, bias_,
-                    ws_grid_, scratch_cell_, dst_iter_);
+                    ws_grid_, scratch_cell_, dst_iter_, weights_scales_,
+                    block_step);
             return;
         }
 #endif
@@ -170,7 +176,8 @@ struct rnn_postgemm_dispatcher {
                 dst_layer_, dst_iter_c_, src_iter_, src_iter_c_,
                 diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
                 diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
-                weights_peephole_, bias_, ws_grid_, scratch_cell_, dst_iter_);
+                weights_peephole_, bias_, ws_grid_, scratch_cell_, dst_iter_,
+                weights_scales_, block_step);
     }
 
     // template <typename src_data_t, typename acc_data_t>
@@ -182,12 +189,13 @@ struct rnn_postgemm_dispatcher {
                     src_iter_c_, diff_src_layer_, diff_src_iter_,
                     diff_src_iter_c_, diff_dst_layer_, diff_dst_iter_,
                     diff_dst_iter_c_, weights_peephole_, bias_, ws_grid_,
-                    scratch_cell_, dst_iter_);
+                    scratch_cell_, dst_iter_, weights_scales_, block_step);
             unpoison(rnn, cell_position, ws_gates_, scratch_gates_, dst_layer_,
                     dst_iter_c_, src_iter_, src_iter_c_, diff_src_layer_,
                     diff_src_iter_, diff_src_iter_c_, diff_dst_layer_,
                     diff_dst_iter_, diff_dst_iter_c_, weights_peephole_, bias_,
-                    ws_grid_, scratch_cell_, dst_iter_);
+                    ws_grid_, scratch_cell_, dst_iter_, weights_scales_,
+                    block_step);
             return;
         }
 #endif
@@ -195,13 +203,15 @@ struct rnn_postgemm_dispatcher {
                 scratch_gates_, dst_layer_, dst_iter_c_, src_iter_, src_iter_c_,
                 diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
                 diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
-                weights_peephole_, bias_, ws_grid_, scratch_cell_, dst_iter_);
+                weights_peephole_, bias_, ws_grid_, scratch_cell_, dst_iter_,
+                weights_scales_, block_step);
     }
 
 private:
     float (*activation_func)(float s, float alpha, float cliping);
     rnn_postgemm_sig(rnn_postgemm);
     rnn_postgemm_sig(lstm_postgemm);
+    rnn_postgemm_sig(lstm_projection_postgemm);
     rnn_postgemm_sig(gru_part1_postgemm);
     rnn_postgemm_sig(gru_part2_postgemm);
     rnn_postgemm_sig(gru_lbr_postgemm);

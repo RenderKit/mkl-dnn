@@ -33,6 +33,27 @@
         } \
     } while (0)
 
+#define SKIP_FOR_LOOP(cond, msg) \
+    if (cond) { \
+        std::cout << "[  SKIPPED ] " << (msg) << std::endl; \
+        continue; \
+    }
+
+#ifdef DNNL_SYCL_CUDA
+#define SKIP_IF_CUDA(cond, message) \
+    do { \
+        SKIP_IF(get_test_engine_kind() == engine::kind::gpu && (cond), \
+                (message)); \
+    } while (0)
+
+#define SKIP_FOR_LOOP_CUDA(cond, message) \
+    SKIP_FOR_LOOP( \
+            get_test_engine_kind() == engine::kind::gpu && (cond), (message));
+#else
+#define SKIP_IF_CUDA(cond, message)
+#define SKIP_FOR_LOOP_CUDA(cond, message)
+#endif
+
 #define TEST_F_(test_fixture, test_name) TEST_F(test_fixture, test_name)
 
 #define CPU_TEST_F(test_fixture, test_name) \
@@ -68,7 +89,7 @@
     test_fixture##_##test_name##_Derived_Test
 
 #define HANDLE_EXCEPTIONS_FOR_TEST_SETUP(...) \
-    virtual void SetUp() { \
+    void SetUp() override { \
         catch_expected_failures([=]() { Testing(); }, false, dnnl_success); \
     } \
     void Testing()
@@ -133,7 +154,7 @@
     void DERIVED_TEST_CLASS(test_fixture, test_name)::Test_failures()
 
 #else
-#define HANDLE_EXCEPTIONS_FOR_TEST_SETUP(...) virtual void SetUp()
+#define HANDLE_EXCEPTIONS_FOR_TEST_SETUP(...) void SetUp() override
 #define HANDLE_EXCEPTIONS_FOR_TEST(test_fixture, test_name) \
     TEST(test_fixture, test_name)
 #define HANDLE_EXCEPTIONS_FOR_TEST_F(test_fixture, test_name) \

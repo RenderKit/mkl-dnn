@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,22 +17,40 @@
 #ifndef DNNL_MEMORY_HPP
 #define DNNL_MEMORY_HPP
 
+#if DNNL_GPU_RUNTIME == DNNL_RUNTIME_DPCPP
+#include "oneapi/dnnl/dnnl_sycl.h"
+#endif
+
+#include "common.hpp"
 #include "dnnl_common.hpp"
 
+#define dnnl_mem_default_value 0xFF
+
 struct dnn_mem_t {
+    struct handle_info_t {
+        bool is_host_ptr;
+        void *ptr;
+
+        bool is_allocate() const { return ptr == DNNL_MEMORY_ALLOCATE; }
+
+        static handle_info_t allocate() {
+            return {false, DNNL_MEMORY_ALLOCATE};
+        }
+    };
+
     dnn_mem_t() { map(); }
 
     dnn_mem_t(const dnnl_memory_desc_t &md, dnnl_engine_t engine) {
         active_ = (initialize(md, engine) == OK);
     }
 
-    dnn_mem_t(
-            const dnnl_memory_desc_t &md, dnnl_engine_t engine, void *handle) {
-        active_ = (initialize(md, engine, handle) == OK);
+    dnn_mem_t(const dnnl_memory_desc_t &md, dnnl_engine_t engine,
+            const handle_info_t &handle_info) {
+        active_ = (initialize(md, engine, handle_info) == OK);
     }
 
     dnn_mem_t(int ndims, const dnnl_dims_t dims, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, dnnl_engine_t engine) {
+            const std::string &tag, dnnl_engine_t engine) {
         active_ = (initialize(ndims, dims, dt, tag, engine) == OK);
     }
 
@@ -42,16 +60,16 @@ struct dnn_mem_t {
     }
 
     dnn_mem_t(const dnnl_memory_desc_t &md, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, dnnl_engine_t engine) {
+            const std::string &tag, dnnl_engine_t engine) {
         active_ = (initialize(md, dt, tag, engine) == OK);
     }
 
     dnn_mem_t(const dnnl_memory_desc_t &md, dnnl_data_type_t dt,
             dnnl_engine_t engine) {
-        active_ = (initialize(md, dt, dnnl_format_tag_undef, engine) == OK);
+        active_ = (initialize(md, dt, tag::undef, engine) == OK);
     }
 
-    dnn_mem_t(const dnn_mem_t &rhs, dnnl_data_type_t dt, dnnl_format_tag_t tag,
+    dnn_mem_t(const dnn_mem_t &rhs, dnnl_data_type_t dt, const std::string &tag,
             dnnl_engine_t engine)
         : dnn_mem_t(rhs.md_, dt, tag, engine) {
         if (active_) reorder(rhs);
@@ -81,11 +99,8 @@ struct dnn_mem_t {
 
     ~dnn_mem_t() { cleanup(); }
 
-    int reorder(const dnn_mem_t &rhs, const attr_bundle_t *attr_bundle);
+    int reorder(const dnn_mem_t &rhs, const_dnnl_primitive_attr_t attr);
     int reorder(const dnn_mem_t &rhs) { return reorder(rhs, nullptr); }
-    int reorder(const dnn_mem_t &rhs, const attr_bundle_t &attr_bundle) {
-        return reorder(rhs, &attr_bundle);
-    }
 
     size_t size() const { return dnnl_memory_desc_get_size(&md_); }
 
@@ -138,15 +153,15 @@ struct dnn_mem_t {
         }
     }
 
-    int64_t get_scale_idx(int64_t data_idx, int scale_mask) const {
-        const int ndims = md_.ndims;
+    int64_t get_scale_idx(
+            int64_t data_idx, int scale_mask, const int ndims) const {
         const auto &dims = md_.dims;
         int64_t stride = 1;
         int64_t offset = 0;
 
         if (scale_mask != 0) {
             for (int i = 0; i < ndims; ++i) {
-                int d = md_.ndims - 1 - i;
+                int d = ndims - 1 - i;
                 auto pos = data_idx % dims[d];
                 data_idx /= dims[d];
                 if (scale_mask & (1 << d)) {
@@ -157,6 +172,10 @@ struct dnn_mem_t {
         }
 
         return offset;
+    }
+
+    int64_t get_scale_idx(int64_t data_idx, int scale_mask) const {
+        return get_scale_idx(data_idx, scale_mask, md_.ndims);
     }
 
     dnnl_engine_t engine() const { return engine_; }
@@ -181,7 +200,8 @@ struct dnn_mem_t {
         mapped_ptr_ = NULL;
     }
 
-    static int check_mem_size(const_dnnl_primitive_desc_t const_pd);
+    static dnn_mem_t create_from_host_ptr(
+            const dnnl_memory_desc_t &md, dnnl_engine_t engine, void *host_ptr);
 
     /* fields */
     dnnl_memory_desc_t md_ {};
@@ -198,47 +218,33 @@ private:
     mutable bool is_mapped_ = false;
     mutable void *mapped_ptr_ = NULL;
 
+    int initialize_memory_create_sycl(const handle_info_t &handle_info);
+
+    int initialize_memory_create(const handle_info_t &handle_info);
+
     int initialize(const dnnl_memory_desc_t &md, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, dnnl_engine_t engine,
-            void *handle = DNNL_MEMORY_ALLOCATE) {
+            const std::string &tag, dnnl_engine_t engine,
+            const handle_info_t &handle_info = handle_info_t::allocate()) {
         is_mapped_ = false;
 
-        if (tag == dnnl_format_tag_undef) {
+        if (tag == tag::undef) {
             md_ = md;
             md_.data_type = dt;
         } else {
-            DNN_SAFE(dnnl_memory_desc_init_by_tag(
-                             &md_, md.ndims, md.dims, dt, tag),
-                    CRIT);
+            SAFE(init_md(&md_, md.ndims, md.dims, dt, tag), CRIT);
         }
         engine_ = engine;
         DNN_SAFE_V(dnnl_engine_get_kind(engine_, &engine_kind_));
 
-        size_t sz = dnnl_memory_desc_get_size(&md_);
-        if (engine_kind_ == dnnl_cpu && handle == DNNL_MEMORY_ALLOCATE) {
-            // Allocate memory for native runtime directly
-            is_data_owner_ = true;
-            const size_t alignment = 2 * 1024 * 1024;
-            data_ = zmalloc(sz, alignment);
-            DNN_SAFE(data_ == NULL ? dnnl_out_of_memory : dnnl_success, CRIT);
-            DNN_SAFE(dnnl_memory_create(&m_, &md_, engine, data_), CRIT);
-        } else {
-            is_data_owner_ = false;
-            data_ = NULL;
-            DNN_SAFE(dnnl_memory_create(&m_, &md_, engine, handle), CRIT);
-        }
+        SAFE(initialize_memory_create(handle_info), CRIT);
 
-        if (handle == DNNL_MEMORY_ALLOCATE) {
+        if (handle_info.is_allocate()) {
             // Fill memory with a magic number (NAN for fp data types) to catch
             // possible uninitialized access.
             map();
-            memset(mapped_ptr_, 0xFF, sz);
+            size_t sz = dnnl_memory_desc_get_size(&md_);
+            memset(mapped_ptr_, dnnl_mem_default_value, sz);
             unmap();
-
-            // Set own data handle to trigger zero padding
-            void *ret_handle;
-            DNN_SAFE(dnnl_memory_get_data_handle(m_, &ret_handle), CRIT);
-            DNN_SAFE(dnnl_memory_set_data_handle(m_, ret_handle), CRIT);
         }
 
         // Keep memory mapped and unmap only before execution
@@ -248,16 +254,14 @@ private:
     }
 
     int initialize(const dnnl_memory_desc_t &md, dnnl_engine_t engine,
-            void *handle = DNNL_MEMORY_ALLOCATE) {
-        return initialize(
-                md, md.data_type, dnnl_format_tag_undef, engine, handle);
+            const handle_info_t &handle_info = handle_info_t::allocate()) {
+        return initialize(md, md.data_type, tag::undef, engine, handle_info);
     }
 
     int initialize(int ndims, const dnnl_dims_t dims, dnnl_data_type_t dt,
-            dnnl_format_tag_t tag, dnnl_engine_t engine) {
+            const std::string &tag, dnnl_engine_t engine) {
         dnnl_memory_desc_t xmd;
-        DNN_SAFE(
-                dnnl_memory_desc_init_by_tag(&xmd, ndims, dims, dt, tag), CRIT);
+        SAFE(init_md(&xmd, ndims, dims, dt, tag), CRIT);
         SAFE(initialize(xmd, engine), CRIT);
         return OK;
     }
@@ -272,16 +276,31 @@ private:
         return OK;
     }
 
+    int cleanup_sycl();
+
     int cleanup() {
         if (!active_) return OK;
         unmap();
         DNN_SAFE(dnnl_memory_destroy(m_), CRIT);
-        if (is_data_owner_) zfree(data_);
+        if (is_data_owner_) {
+            if (is_sycl_engine(engine_)) {
+                SAFE(cleanup_sycl(), CRIT);
+            } else {
+                zfree(data_);
+            }
+        }
         return OK;
     }
 };
 
 // Check that zero padding is preserved.
-int check_zero_padding(const dnn_mem_t &mem, int arg);
+int check_zero_padding(
+        const dnn_mem_t &mem, int arg, int *error_count = nullptr);
+
+// Returns physical offset by logical one. Logical offset is represented by an
+// array pos. If is_pos_padded is true pos represents the position in already
+// padded area.
+dnnl_dim_t md_off_v(const dnnl_memory_desc_t &md, const dnnl_dims_t pos,
+        bool is_pos_padded = false);
 
 #endif

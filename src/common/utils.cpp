@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2018-2020 Intel Corporation
+* Copyright 2018-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 #include <windows.h>
 #endif
 
-#if defined __linux__ || defined __APPLE__
+#if defined __linux__ || defined __APPLE__ || defined __FreeBSD__
 #include <unistd.h>
 #endif
 
@@ -35,7 +35,8 @@
 #include <mutex>
 #include <string>
 
-#include "dnnl.h"
+#include "oneapi/dnnl/dnnl.h"
+
 #include "memory_debug.hpp"
 #include "utils.hpp"
 
@@ -45,7 +46,8 @@ namespace dnnl {
 namespace impl {
 
 int getenv(const char *name, char *buffer, int buffer_size) {
-    if (name == NULL || buffer_size < 0 || (buffer == NULL && buffer_size > 0))
+    if (name == nullptr || buffer_size < 0
+            || (buffer == nullptr && buffer_size > 0))
         return INT_MIN;
 
     int result = 0;
@@ -56,7 +58,7 @@ int getenv(const char *name, char *buffer, int buffer_size) {
     value_length = GetEnvironmentVariable(name, buffer, buffer_size);
 #else
     const char *value = ::getenv(name);
-    value_length = value == NULL ? 0 : strlen(value);
+    value_length = value == nullptr ? 0 : strlen(value);
 #endif
 
     if (value_length > INT_MAX)
@@ -74,7 +76,7 @@ int getenv(const char *name, char *buffer, int buffer_size) {
         }
     }
 
-    if (buffer != NULL) buffer[term_zero_idx] = '\0';
+    if (buffer != nullptr) buffer[term_zero_idx] = '\0';
     return result;
 }
 
@@ -118,7 +120,7 @@ void *malloc(size_t size, int alignment) {
     int rc = ::posix_memalign(&ptr, alignment, size);
 #endif
 
-    return (rc == 0) ? ptr : 0;
+    return (rc == 0) ? ptr : nullptr;
 }
 
 void free(void *p) {
@@ -141,7 +143,7 @@ int32_t fetch_and_add(int32_t *dst, int32_t val) {
 #endif
 }
 
-static setting_t<bool> jit_dump {0};
+static setting_t<bool> jit_dump {false};
 bool get_jit_dump() {
     if (!jit_dump.initialized()) {
         jit_dump.set(!!getenv_int("MKLDNN_JIT_DUMP", 0));
@@ -150,7 +152,11 @@ bool get_jit_dump() {
     return jit_dump.get();
 }
 
+#if DNNL_AARCH64
+static setting_t<unsigned> jit_profiling_flags {DNNL_JIT_PROFILE_LINUX_PERFMAP};
+#else
 static setting_t<unsigned> jit_profiling_flags {DNNL_JIT_PROFILE_VTUNE};
+#endif
 unsigned get_jit_profiling_flags() {
     if (!jit_profiling_flags.initialized()) {
         jit_profiling_flags.set(
@@ -225,17 +231,28 @@ dnnl_cpu_isa_t dnnl_get_effective_cpu_isa() {
     return dnnl::impl::cpu::platform::get_effective_cpu_isa();
 }
 
+dnnl_status_t dnnl_set_cpu_isa_hints(dnnl_cpu_isa_hints_t isa_hints) {
+    return dnnl::impl::cpu::platform::set_cpu_isa_hints(isa_hints);
+}
+
+dnnl_cpu_isa_hints_t dnnl_get_cpu_isa_hints() {
+    return dnnl::impl::cpu::platform::get_cpu_isa_hints();
+}
+
 #if DNNL_CPU_THREADING_RUNTIME == DNNL_RUNTIME_THREADPOOL
-#include "dnnl_threadpool_iface.hpp"
+#include "oneapi/dnnl/dnnl_threadpool_iface.hpp"
 namespace dnnl {
 namespace impl {
 namespace threadpool_utils {
 
 namespace {
-static thread_local threadpool_iface *active_threadpool = nullptr;
+static thread_local dnnl::threadpool_interop::threadpool_iface
+        *active_threadpool
+        = nullptr;
 }
 
-void DNNL_API activate_threadpool(threadpool_iface *tp) {
+void DNNL_API activate_threadpool(
+        dnnl::threadpool_interop::threadpool_iface *tp) {
     assert(!active_threadpool);
     if (!active_threadpool) active_threadpool = tp;
 }
@@ -244,7 +261,7 @@ void DNNL_API deactivate_threadpool() {
     active_threadpool = nullptr;
 }
 
-threadpool_iface *get_active_threadpool() {
+dnnl::threadpool_interop::threadpool_iface *get_active_threadpool() {
     return active_threadpool;
 }
 

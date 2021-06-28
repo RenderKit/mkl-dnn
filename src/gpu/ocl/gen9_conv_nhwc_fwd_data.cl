@@ -154,7 +154,11 @@ gen9_conv_nhwc_fwd(const __global DATA_T *src, const __global DATA_T *wei,
     DATA_T blockC00[OW_BLOCK] = {0};
     if (WITH_BIAS) {
         const int bc_off = oc * OC_BLOCK + local_id;
+#if IS_DW
+        DATA_T b = (G_WO_PADDING % OC_BLOCK == 0 || bc_off < G_WO_PADDING)
+#else
         DATA_T b = (OC_WO_PADDING % OC_BLOCK == 0 || bc_off < OC_WO_PADDING)
+#endif
                 ? bias[bc_off]
                 : DATA_ZERO;
         unroll_for(int i = 0; i < OW_BLOCK; i++) { blockC00[i] = b; }
@@ -294,7 +298,10 @@ gen9_conv_nhwc_fwd(const __global DATA_T *src, const __global DATA_T *wei,
 
 #endif // WITH_SUM
 
-    APPLY_POST_OPS(blockC00, DATA_T, blockS00, DATA_T);
+    const int po_mb = (mb) % MB;
+    const int po_oc = (oc * OC_BLOCK) % (OC * G);
+    APPLY_POST_OPS_SERIAL_BINARY_2D(
+            blockC00, DATA_T, blockS00, DATA_T, po_mb, 1, po_oc, 1);
 
     // Save
     for (int i = 0; i < min(OW_BLOCK, OW - ow); i++) {

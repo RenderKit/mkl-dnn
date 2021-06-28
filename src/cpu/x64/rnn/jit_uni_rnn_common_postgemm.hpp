@@ -25,7 +25,7 @@
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 
-#include "cpu/x64/jit_uni_eltwise_injector.hpp"
+#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
 
 #include "cpu/rnn/rnn_utils.hpp"
 
@@ -36,13 +36,10 @@ namespace x64 {
 
 struct jit_uni_rnn_postgemm : public jit_generator {
 
-    typedef void (*kernel_t)(void *param1_, void *param2_, const void *param3_,
-            void *param4_, void *param5_, const void *param6_, void *param7_,
-            void *param8_, void *param9_);
-
     jit_uni_rnn_postgemm(const rnn_utils::rnn_conf_t &rnn, const rnn_pd_t *pd)
         : rnn_(rnn)
         , pd_(pd)
+        , projection_(false)
         , dscale_off_addr(0)
         , dshift_off_addr(0)
         , ymm_perm_mask_addr(0)
@@ -64,7 +61,9 @@ struct jit_uni_rnn_postgemm : public jit_generator {
         if (bf16_emu_) delete bf16_emu_;
     }
 
-    virtual void init(data_type_t src_data_t) {
+    bool is_projection() const { return projection_; };
+
+    virtual status_t init(data_type_t src_data_t) {
         // no need to check as bf16 is guarded for avx512 and above in rnn primtive
         using namespace Xbyak;
         if (src_data_t == data_type::bf16 && !mayiuse(avx512_core_bf16)) {
@@ -73,7 +72,8 @@ struct jit_uni_rnn_postgemm : public jit_generator {
 
         } else
             bf16_emu_ = nullptr;
-    };
+        return status::success;
+    }
 
     template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
             typename gemm_acc_t, typename gates_t, typename scratch_t>
@@ -84,20 +84,48 @@ struct jit_uni_rnn_postgemm : public jit_generator {
                     diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
                     diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
                     weights_peephole_, bias_, ws_grid_, scratch_cell_,
-                    dst_iter_);
+                    dst_iter_, weights_scales_, block_step);
         else
             execute_fwd(rnn, cell_position, ws_gates_, scratch_gates_,
                     dst_layer_, dst_iter_c_, src_iter_, src_iter_c_,
                     diff_src_layer_, diff_src_iter_, diff_src_iter_c_,
                     diff_dst_layer_, diff_dst_iter_, diff_dst_iter_c_,
                     weights_peephole_, bias_, ws_grid_, scratch_cell_,
-                    dst_iter_);
+                    dst_iter_, weights_scales_, block_step);
     }
 
     template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
             typename gemm_acc_t, typename gates_t, typename scratch_t>
     rnn_postgemm_sig(execute_fwd) {
         using namespace rnn_utils;
+        if (rnn.is_brgemm && !rnn_.unfused_post_gemm) {
+            for (int i = 0; i < rnn.m_block; i++)
+                postgemm_fwd_call(i, rnn, cell_position, ws_gates_,
+                        scratch_gates_, dst_layer_, dst_iter_c_, src_iter_,
+                        src_iter_c_, weights_peephole_, bias_, ws_grid_,
+                        scratch_cell_, dst_iter_, weights_scales_, block_step);
+        } else {
+            // Todo: add parallelization on dhc for the batch 1 case
+            // Assumption: the kernel runs a loop on dhc elements
+            parallel_nd(rnn.mb, [&](int i) {
+                postgemm_fwd_call(i, rnn, cell_position, ws_gates_,
+                        scratch_gates_, dst_layer_, dst_iter_c_, src_iter_,
+                        src_iter_c_, weights_peephole_, bias_, ws_grid_,
+                        scratch_cell_, dst_iter_, weights_scales_, 0);
+            });
+        }
+    }
+
+    template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
+            typename gates_t, typename scratch_t>
+    inline void postgemm_fwd_call(int m, const rnn_utils::rnn_conf_t &rnn,
+            rnn_utils::cell_position_t cell_position, gates_t *ws_gates_,
+            scratch_t *scratch_gates_, dst_layer_t *dst_layer_,
+            float *dst_iter_c_, const src_iter_t *src_iter_,
+            const float *src_iter_c_, const float *weights_peephole_,
+            float *bias_, gates_t *ws_grid_, scratch_t *scratch_cell_,
+            dst_iter_t *dst_iter_, float *weights_scales_,
+            int block_step) const {
         rnn_utils::ws_gates_aoc<gates_t> ws_gates(rnn, ws_gates_);
         rnn_utils::scratch_gates_aoc<scratch_t> scratch_gates(
                 rnn, scratch_gates_);
@@ -107,7 +135,7 @@ struct jit_uni_rnn_postgemm : public jit_generator {
 
         auto src_iter_ld = rnn.src_iter_ld(cell_position);
         auto dst_iter_c_ld = rnn.dst_iter_c_ld(cell_position);
-        auto dst_layer_ld = rnn.dst_layer_ld(cell_position);
+        auto dst_layer_ld = rnn.dst_layer_ld(cell_position, is_projection());
         auto dst_iter_ld = rnn.dst_iter_ld(cell_position);
         auto src_iter_c_ld = rnn.src_iter_c_ld(cell_position);
 
@@ -125,43 +153,41 @@ struct jit_uni_rnn_postgemm : public jit_generator {
         utils::array_offset_calculator<gates_t, 2> ws_Wh_b(
                 ws_grid_, rnn.mb, rnn.dhc);
 
-        // Todo: add parallelization on dhc for the batch 1 case
-        // Assumption: the kernel runs a loop on dhc elements
-        parallel_nd(rnn.mb, [&](int i) {
-            void *param1_ = &ws_gates(i, 0, 0); // RNN, LSTM, GRU
-            void *param2_ = &scratch_gates(i, 0, 0); // RNN, LSTM, GRU
-            const void *param3_ = &bias(0, 0); // RNN, LSTM, GRU
-            void *param4_ = &dst_layer(i, 0); // RNN, LSTM, GRU
-            void *param5_
-                    = dst_iter_ ? &dst_iter(i, 0) : dst_iter_; // RNN, LSTM, GRU
-            const void *param6_;
-            void *param7_, *param8_;
-            void *param9_ = nullptr;
-            switch (pd_->cell_kind()) {
-                case alg_kind::vanilla_lstm:
-                    param6_ = &src_iter_c(i, 0);
-                    param7_ = &dst_iter_c(i, 0);
-                    param8_ = (void *)&weights_peephole(0, 0);
-                    break;
-                case alg_kind::lbr_gru:
-                    param6_ = &src_iter(i, 0);
-                    param7_ = &scratch_cell(i, 0, 0);
-                    param8_ = &ws_Wh_b(i, 0);
-                    break;
-                case alg_kind::vanilla_gru:
-                    param6_ = &src_iter(i, 0);
-                    param7_ = nullptr;
-                    param8_ = nullptr;
-                    break;
-                default:
-                    param6_ = nullptr;
-                    param7_ = nullptr;
-                    param8_ = nullptr;
-                    break;
-            }
-            kernel_(param1_, param2_, param3_, param4_, param5_, param6_,
-                    param7_, param8_, param9_);
-        });
+        void *param1_ = &ws_gates(m, 0, 0); // RNN, LSTM, GRU
+        void *param2_ = &scratch_gates(m, 0, 0); // RNN, LSTM, GRU
+        const void *param3_ = &bias(0, 0); // RNN, LSTM, GRU
+        void *param4_ = &dst_layer(m, 0); // RNN, LSTM, GRU
+        void *param5_
+                = dst_iter_ ? &dst_iter(m, 0) : dst_iter_; // RNN, LSTM, GRU
+        const void *param6_;
+        void *param7_, *param8_;
+        void *param9_ = (void *)weights_scales_;
+        size_t param10_ = block_step;
+
+        switch (pd_->cell_kind()) {
+            case alg_kind::vanilla_lstm:
+                param6_ = is_projection() ? src_iter_c_ : &src_iter_c(m, 0);
+                param7_ = &dst_iter_c(m, 0);
+                param8_ = (void *)&weights_peephole(0, 0);
+                break;
+            case alg_kind::lbr_gru:
+                param6_ = &src_iter(m, 0);
+                param7_ = &scratch_cell(m, 0, 0);
+                param8_ = &ws_Wh_b(m, 0);
+                break;
+            case alg_kind::vanilla_gru:
+                param6_ = &src_iter(m, 0);
+                param7_ = nullptr;
+                param8_ = nullptr;
+                break;
+            default:
+                param6_ = nullptr;
+                param7_ = nullptr;
+                param8_ = nullptr;
+                break;
+        }
+        this->operator()(param1_, param2_, param3_, param4_, param5_, param6_,
+                param7_, param8_, param9_, param10_);
     }
 
     template <typename dst_layer_t, typename dst_iter_t, typename src_iter_t,
@@ -207,6 +233,7 @@ struct jit_uni_rnn_postgemm : public jit_generator {
             void *param1_, *param2_, *param4_, *param5_, *param7_, *param8_,
                     *param9_;
             const void *param3_, *param6_;
+            size_t param10_ = 0;
             switch (pd_->cell_kind()) {
                 case alg_kind::vanilla_lstm:
                     param1_ = &ws_gates(i, 0, 0);
@@ -266,13 +293,13 @@ struct jit_uni_rnn_postgemm : public jit_generator {
                     param9_ = nullptr;
                     break;
             }
-            kernel_(param1_, param2_, param3_, param4_, param5_, param6_,
-                    param7_, param8_, param9_);
+            this->operator()(param1_, param2_, param3_, param4_, param5_,
+                    param6_, param7_, param8_, param9_, param10_);
         });
     }
 
 protected:
-    void init_regs(size_t vlen) {
+    void init_regs(float *weights_scales, size_t vlen) {
         switch (pd_->weights_md()->data_type) {
             case data_type::bf16: {
                 /* bfloat downconvert init */
@@ -284,10 +311,20 @@ protected:
             }
             case data_type::s8: {
                 /* int8 (de)quantization init*/
-                float *weights_scales
-                        = pd_->attr()->rnn_weights_qparams_.scales_;
                 mov(qtable, qlabel);
-                mov(weights_scales_reg, size_t(weights_scales));
+                if (rnn_.is_brgemm && !rnn_.unfused_post_gemm) {
+                    auto base_args = get_stack_params_address();
+                    // Read param #9
+#ifdef _WIN32
+                    mov(weights_scales_reg, ptr[base_args + 32]);
+#else
+                    mov(weights_scales_reg, ptr[base_args + 16]);
+#endif
+                } else {
+                    float *weights_scales
+                            = pd_->attr()->rnn_weights_qparams_.scales_;
+                    mov(weights_scales_reg, size_t(weights_scales));
+                }
 
                 zero_addr = ptr[qtable];
                 u8_saturation_addr = ptr[qtable + vlen];
@@ -304,6 +341,11 @@ protected:
             default: assert(!"not supported");
         }
     }
+
+    void init_regs(size_t vlen) {
+        assert(pd_->weights_md()->data_type != data_type::s8);
+        return init_regs(nullptr, vlen);
+    };
 
     void init_table(size_t vlen) {
         if (pd_->weights_md()->data_type != data_type::s8) return;
@@ -351,11 +393,14 @@ protected:
         }
     }
 
-    void inc_regs(size_t vlen) {
+    void inc_regs(int mask, size_t vlen) {
         if (pd_->weights_md()->data_type == data_type::s8) {
-            int mask = pd_->attr()->rnn_weights_qparams_.mask_;
             if (mask != 0) add(weights_scales_reg, vlen);
         }
+    }
+    void inc_regs(size_t vlen) {
+        assert(pd_->weights_md()->data_type != data_type::s8);
+        inc_regs(0, vlen);
     }
 
     template <typename Vmm>
@@ -421,23 +466,28 @@ protected:
 
     // dequantize from s32 to float
     template <typename Vmm>
-    void deq_w(Vmm s, Vmm tmp1, Vmm tmp2, int gate, bool packed) {
-        const primitive_attr_t *attr = pd_->attr();
-        int mask = attr->rnn_weights_qparams_.mask_;
+    void deq_w(data_type_t src_data_t, Vmm s, Vmm tmp1, Vmm tmp2,
+            dim_t scale_off, int mask, bool packed,
+            Xbyak::Reg64 *comp = nullptr) {
+        // nothing to do if not int8
+        if (src_data_t != data_type::u8) return;
+
         size_t qscale_dt_size = sizeof(float);
 
         // TODO: if mask is 0 precompute mul and inverse
         if (mask == 0)
             uni_vbroadcastss(tmp1, ptr[weights_scales_reg]);
         else {
-            auto scales_ptr = ptr[weights_scales_reg
-                    + gate * rnn_.dhc * qscale_dt_size];
+            auto scales_ptr
+                    = ptr[weights_scales_reg + scale_off * qscale_dt_size];
             if (packed)
                 uni_vmovups(tmp1, scales_ptr);
             else
                 uni_vmovss(tmp1, scales_ptr);
         }
         uni_vcvtdq2ps(s, s);
+        // Here we subtract a compensation if need be
+        if (comp) { uni_vsubps(s, s, ptr[*comp]); }
         uni_vmulps(tmp1, tmp1, dscale_off_addr);
 #ifdef DNNL_ENABLE_FAST_RCP
         fast_recip(tmp1, tmp2, packed);
@@ -445,6 +495,20 @@ protected:
 #else
         uni_vdivps(s, s, tmp1);
 #endif
+    }
+
+    // dequantize from u8 to float
+    template <typename Vmm>
+    void deq_h(Vmm dst, Xbyak::Address src, int in_len) {
+        if (4 == in_len) {
+            uni_vpinsrb(dst, dst, src, 0x0);
+            uni_vpmovzxbd(dst, dst);
+        } else {
+            uni_vpmovzxbd(dst, src);
+        }
+        uni_vcvtdq2ps(dst, dst);
+        uni_vsubps(dst, dst, dshift_off_addr);
+        uni_vdivps(dst, dst, dscale_off_addr);
     }
 
     // upconvert from bf16 to float
@@ -522,13 +586,14 @@ protected:
                     assert(!"unsupported");
                 break;
             case data_type::bf16: bf16_uc(dst, src, in_len); break;
+            case data_type::u8: deq_h(dst, src, in_len); break;
             default: assert(!"unsupported");
         }
     }
 
-    kernel_t kernel_;
     const rnn_utils::rnn_conf_t &rnn_;
     const rnn_pd_t *pd_;
+    bool projection_;
     bf16_emulation_t *bf16_emu_;
 
     // registers/Labels used for int8 quantization and conversions

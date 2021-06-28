@@ -31,9 +31,14 @@ factors in each spatial dimension.
 The following formulas show how oneDNN computes resampling for nearest neighbor
 and bilinear interpolation methods.
 To further simplify the formulas, we assume the following:
-- \f$\src(n, ic, ih, iw) = 0\f$ if \f$ih < 0\f$ or \f$iw < 0\f$,
-- \f$\src(n, ic, ih, iw) = \src(n, ic, IH - 1, iw)\f$ if \f$ih \geq IH\f$,
-- \f$\src(n, ic, ih, iw) = \src(n, ic, ih, IW - 1)\f$ if \f$iw \geq IW\f$.
+\f$\src(n, ic, ih, iw) = \begin{cases}
+\src(n, ic, ih, 0), & \text{if}\ iw < 0 \\
+\src(n, ic, ih, iw), & \text{if}\ IW - 1 \geq iw \geq 0 \\
+\src(n, ic, ih, IW - 1), & \text{if}\ iw > IW - 1
+\end{cases}\f$
+
+Same assumptions apply for \f$ih\f$. Definitions of \f$ih\f$ and \f$iw\f$ are
+provided below with a correspondent algorithm.
 
 ### Forward
 
@@ -50,10 +55,10 @@ where
 
 \f[
     \dst(n, c, oh, ow) =
-            \src(n, c, ih_0, iw_0) \cdot W_{ih} \cdot W_{iw} + \\
-            \src(n, c, ih_1, iw_0) \cdot (1 - W_{ih}) \cdot W_{iw} + \\
-            \src(n, c, ih_0, iw_1) \cdot W_{ih} \cdot (1 - W_{iw}) + \\
-            \src(n, c, ih_1, iw_1) \cdot (1 - W_{ih}) \cdot (1 - W_{iw}) \\
+            \src(n, c, ih_0, iw_0) \cdot (1 - W_{ih}) \cdot (1 - W_{iw}) + \\
+            \src(n, c, ih_1, iw_0) \cdot W_{ih} \cdot (1 - W_{iw}) + \\
+            \src(n, c, ih_0, iw_1) \cdot (1 - W_{ih}) \cdot W_{iw} + \\
+            \src(n, c, ih_1, iw_1) \cdot W_{ih} \cdot W_{iw} \\
 \f]
 
 where
@@ -85,6 +90,7 @@ argument index as specified by the following table.
 | \dst                   | DNNL_ARG_DST             |
 | \diffsrc               | DNNL_ARG_DIFF_SRC        |
 | \diffdst               | DNNL_ARG_DIFF_DST        |
+| \f$\text{binary post-op}\f$ | DNNL_ARG_ATTR_MULTIPLE_POST_OP(binary_post_op_position) \| DNNL_ARG_SRC_1 |
 
 ## Implementation Details
 
@@ -120,17 +126,24 @@ source and destination memory objects:
 | Propagation        | Source / Destination  |
 | :--                | :--                   |
 | forward / backward | f32, bf16             |
-| forward            | f16, s8, u8           |
+| forward            | f16, s32, s8, u8      |
 
 ### Post-ops and Attributes
 
-The resampling primitive does not support any post-ops or attributes.
+The following attributes are supported:
+
+| Type    | Operation                                      | Description                                                                    | Restrictions
+| :--     | :--                                            | :--                                                                            | :--
+| Post-op | [Sum](@ref dnnl::post_ops::append_sum)         | Adds the operation result to the destination tensor instead of overwriting it. |                                     |
+| Post-op | [Eltwise](@ref dnnl::post_ops::append_eltwise) | Applies an @ref dnnl_api_eltwise operation to the result.                      |                                     |
+| Post-op | [Binary](@ref dnnl::post_ops::append_binary)   | Applies a @ref dnnl_api_binary operation to the result                         | General binary post-op restrictions |
 
 ## Implementation Limitations
 
 1. No primitive specific limitations. Refer to @ref dev_guide_data_types for
    limitations related to data types support.
-2. **CPU**
+2. Only GPU support mixed data types and post-ops.
+3. **CPU**
     - No support for f16, u8, s8 data types.
 
 ## Performance Tips

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,16 +34,17 @@ using namespace dnnl::impl::utils;
 template <cpu_isa_t isa, data_type_t src_type, data_type_t dst_type>
 void jit_uni_dw_convolution_fwd_t<isa, src_type, dst_type>::execute_forward(
         const exec_ctx_t &ctx) const {
+    const auto &jcp = pd()->jcp_;
     auto src = CTX_IN_MEM(const data_t *, DNNL_ARG_SRC);
     auto weights = CTX_IN_MEM(const data_t *, DNNL_ARG_WEIGHTS);
     auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector::prepare_binary_args(jcp.post_ops, ctx);
 
     const memory_desc_wrapper src_d(pd()->src_md());
     const memory_desc_wrapper dst_d(pd()->dst_md());
     const memory_desc_wrapper weights_d(pd()->weights_md(0));
     const memory_desc_wrapper bias_d(pd()->weights_md(1));
-
-    const auto &jcp = pd()->jcp_;
 
     f32_data_t *bias = nullptr;
     if (pd()->desc()->bias_desc.data_type == data_type::bf16) {
@@ -129,20 +130,20 @@ void jit_uni_dw_convolution_fwd_t<isa, src_type, dst_type>::execute_forward(
 
             par_conv.kh_padding = (size_t)nstl::max(0, kh_padding);
 
-            if (is_src_layout_nxc) {
-                // maximize jit work along contiguous dimension
-                int work_rem = end - iwork;
-                par_conv.ch_blocks = ch + work_rem * ch_step >= jcp.nb_ch
-                        ? jcp.nb_ch - ch
-                        : work_rem * ch_step;
-                assert(jcp.loop_order == loop_nhwcg);
-            } else {
-                par_conv.ch_blocks
-                        = utils::this_block_size(ch, jcp.nb_ch, ch_step);
-                assert(jcp.loop_order != loop_nhwcg);
-            }
+            assert(IMPLICATION(
+                    jcp.loop_order == loop_nhwcg, is_src_layout_nxc));
+            // For is_src_layout_nxc maximize jit work along contiguous dim.
+            const int work_rem = end - iwork;
+            par_conv.load_work = utils::this_block_size(ch * jcp.ch_block,
+                    jcp.oc_without_padding,
+                    (is_src_layout_nxc ? work_rem * ch_step : ch_step)
+                            * jcp.ch_block);
 
-            kernel_->jit_ker(&par_conv);
+            par_conv.oc_l_off = ch * jcp.ch_block;
+            par_conv.post_ops_binary_rhs_arg_vec
+                    = post_ops_binary_rhs_arg_vec.data();
+            par_conv.dst_orig = dst;
+            (*kernel_)(&par_conv);
 
             if (jcp.loop_order == loop_ngcw) {
                 ++iwork;
@@ -155,8 +156,7 @@ void jit_uni_dw_convolution_fwd_t<isa, src_type, dst_type>::execute_forward(
         }
     });
 
-    if (pd()->wants_zero_pad_dst())
-        ctx.memory(DNNL_ARG_DST)->zero_pad(ctx.stream());
+    if (pd()->wants_zero_pad_dst()) ctx.zero_pad_output(DNNL_ARG_DST);
 }
 
 template struct jit_uni_dw_convolution_fwd_t<avx512_core, data_type::bf16,
@@ -235,7 +235,7 @@ void jit_uni_dw_convolution_bwd_data_t<isa, diff_dst_type,
                         = kernel_params(ur_str_w, iw, oh, ih, i_t_overflow,
                                 i_b_overflow, stride_off_h, ch, ch_num, n);
 
-                kernel_->jit_ker(&par_conv);
+                (*kernel_)(&par_conv);
             }
 
             // main loop
@@ -245,7 +245,7 @@ void jit_uni_dw_convolution_bwd_data_t<isa, diff_dst_type,
                         = kernel_params(ur_str_w, iw, oh, ih, i_t_overflow,
                                 i_b_overflow, stride_off_h, ch, ch_num, n);
 
-                kernel_->jit_ker(&par_conv);
+                (*kernel_)(&par_conv);
 
                 iw += ur_str_w * jcp.stride_w;
             }
@@ -257,7 +257,7 @@ void jit_uni_dw_convolution_bwd_data_t<isa, diff_dst_type,
                         = kernel_params(ur_str_w, iw, oh, ih, i_t_overflow,
                                 i_b_overflow, stride_off_h, ch, ch_num, n);
 
-                kernel_->jit_ker(&par_conv);
+                (*kernel_)(&par_conv);
             }
         }
     });
@@ -274,11 +274,7 @@ template struct jit_uni_dw_convolution_bwd_data_t<sse41, data_type::f32>;
 template <cpu_isa_t isa, data_type_t src_type, data_type_t diff_weights_type>
 jit_uni_dw_convolution_bwd_weights_t<isa, src_type, diff_weights_type>::
         jit_uni_dw_convolution_bwd_weights_t(const pd_t *apd)
-    : primitive_t(apd), acc_ker_(nullptr), kernel_(nullptr) {
-    kernel_ = new jit_uni_dw_conv_bwd_weights_kernel<isa, src_type>(pd()->jcp_);
-    if (pd()->jcp_.nthr_mb > 1 && isa != sse41)
-        acc_ker_ = new cpu_accumulator_1d_t<data_type::f32>();
-}
+    : primitive_t(apd), acc_ker_(nullptr), kernel_(nullptr) {}
 
 template <cpu_isa_t isa, data_type_t src_type, data_type_t diff_weights_type>
 void jit_uni_dw_convolution_bwd_weights_t<isa, src_type,
@@ -394,7 +390,7 @@ void jit_uni_dw_convolution_bwd_weights_t<isa, src_type,
                     set_kernel_params(&conv_params, mb, g, oh, h_work,
                             zero_filter_flag | zero_bias_flag,
                             kh_t_padding + kh_b_padding, kh_t_padding);
-                    kernel_->jit_ker(&conv_params);
+                    (*kernel_)(&conv_params);
 
                     zero_bias_flag &= ~FLAG_ZERO_BIAS;
                     zero_filter_flag &= ~FLAG_ZERO_FILTER;

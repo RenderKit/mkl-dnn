@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2020 Intel Corporation
+* Copyright 2017-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -28,6 +28,9 @@
 #include "cpu/platform.hpp"
 #include "cpu/x64/cpu_barrier.hpp"
 
+#include "cpu/x64/injectors/injector_utils.hpp"
+#include "cpu/x64/injectors/jit_uni_binary_injector.hpp"
+#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
 #include "cpu/x64/jit_avx512_common_1x1_conv_kernel.hpp"
 #include "cpu/x64/jit_uni_1x1_conv_utils.hpp"
 
@@ -44,12 +47,38 @@ using namespace dnnl::impl::utils;
 
 using namespace Xbyak;
 
+jit_avx512_common_1x1_conv_kernel::jit_avx512_common_1x1_conv_kernel(
+        const jit_1x1_conv_conf_t &ajcp, const primitive_attr_t &attr,
+        const memory_desc_t &dst_md)
+    : jcp(ajcp), attr_(attr) {
+    if (jcp.with_eltwise || jcp.with_binary) {
+        using namespace binary_injector;
+        static constexpr bool preserve_gpr = true;
+        static constexpr bool preserve_vmm = false;
+        static constexpr size_t helper_vmm_idx = 31;
+        const size_t tail_size = jcp.oc_without_padding % isa_simd_width_;
+        static constexpr bool use_exact_tail_scalar_bcast = true;
+
+        const rhs_arg_static_params_t rhs_arg_static_params {helper_vmm_idx,
+                r14, r15, preserve_gpr, preserve_vmm,
+                GET_OFF(post_ops_binary_rhs_arg_vec),
+                memory_desc_wrapper(dst_md), tail_size, k_load_dim_mask,
+                use_exact_tail_scalar_bcast};
+        const static_params_t static_params {
+                this->param1, rhs_arg_static_params};
+
+        postops_injector_ = utils::make_unique<
+                injector::jit_uni_postops_injector_t<avx512_common>>(
+                this, jcp.post_ops, static_params);
+    }
+}
+
 void jit_avx512_common_1x1_conv_kernel::bcast_loop(int load_loop_blk) {
     mov(aux1_reg_bcast_data, reg_bcast_data);
     mov(aux_reg_bcast_data, reg_bcast_data);
 
     mov(aux_reg_output_data, reg_output_data);
-    mov(reg_bcast_loop_iter, EVEX_compress_addr(rsp, bcast_loop_work_offt));
+    mov(reg_bcast_loop_iter, EVEX_compress_addr(rsp, reg_bcast_loop_work_offt));
 
     if (jcp.ver == ver_4fma) {
         Label bcast_loop;
@@ -147,6 +176,97 @@ void jit_avx512_common_1x1_conv_kernel::bcast_loop(int load_loop_blk) {
     }
 }
 
+Address jit_avx512_common_1x1_conv_kernel::output_ptr(
+        const bool is_out_layout_nxc, const int i_load, const int i_ur) {
+    if (one_of(jcp.prop_kind, forward_training, forward_inference,
+                backward_data)) {
+        int i_load_shift = is_out_layout_nxc
+                ? jcp.load_block
+                : (jcp.with_dw_conv ? jcp.ow : jcp.bcast_dim) * jcp.load_block;
+        int i_ur_shift = is_out_layout_nxc ? jcp.load_dim : jcp.load_block;
+        int offset = (i_load * i_load_shift + i_ur * i_ur_shift)
+                * jcp.typesize_out;
+        return EVEX_compress_addr(aux_reg_output_data, offset);
+    } else
+        return ptr[aux_reg_output_data
+                + (i_load ? reg_output_stride * i_load
+                          : 0) // TODO: Xbyak should allow 0 scale
+                + jcp.typesize_out * jcp.load_block * i_ur];
+}
+
+static int vreg_accum_idx(
+        const int load_loop_blk, const int i_load, const int i_ur) {
+    return (i_ur * load_loop_blk + i_load);
+}
+
+template <typename F>
+static void iterate(const int load_loop_blk, const int ur, const bool mask_tail,
+        const F &fun) {
+    for (int i_load = 0; i_load < load_loop_blk; ++i_load) {
+        const bool mask_flag = mask_tail && i_load + 1 == load_loop_blk;
+        for (int i_ur = 0; i_ur < ur; ++i_ur)
+            fun(mask_flag, i_load, i_ur);
+    }
+}
+template <typename F>
+static void iterate(const int load_loop_blk, const int ur, const F &fun) {
+    iterate(load_loop_blk, ur, false, fun);
+}
+
+void jit_avx512_common_1x1_conv_kernel::apply_postops(
+        const bool is_out_layout_nxc, const int load_loop_blk, const int ur) {
+    injector_utils::vmm_index_set_t vmm_idxs;
+    if (jcp.with_binary) {
+        binary_injector::rhs_arg_dynamic_params_t rhs_arg_params;
+        const auto oc_off_oprnd = r12;
+        const auto mask_tail = jcp.oc_without_padding % jcp.load_block;
+
+        iterate(load_loop_blk, ur, mask_tail,
+                [&](const bool mask_flag, const int i_load, const int i_ur) {
+                    const int aux_output_l_off
+                            = output_ptr(is_out_layout_nxc, i_load, i_ur)
+                                      .getDisp()
+                            / jcp.typesize_out;
+                    const int oc_l_offset = i_load * jcp.load_block;
+                    const auto vmm_idx
+                            = vreg_accum_idx(load_loop_blk, i_load, i_ur);
+                    vmm_idxs.emplace(vmm_idx);
+
+                    rhs_arg_params.vmm_idx_to_oc_elem_off_addr.emplace(
+                            vmm_idx, ptr[param1 + GET_OFF(oc_l_off)]);
+                    rhs_arg_params.vmm_idx_to_oc_elem_off_val.emplace(
+                            vmm_idx, oc_l_offset);
+                    rhs_arg_params.vmm_idx_to_oc_off_oprnd.emplace(
+                            vmm_idx, oc_off_oprnd);
+                    rhs_arg_params.vmm_idx_to_out_elem_off_addr.emplace(
+                            vmm_idx, ptr[param1 + GET_OFF(dst_l_off)]);
+                    rhs_arg_params.vmm_idx_to_out_elem_off_val.emplace(
+                            vmm_idx, aux_output_l_off);
+                    if (mask_flag)
+                        rhs_arg_params.vmm_tail_idx_.emplace(vmm_idx);
+                });
+
+        const injector_utils::register_preserve_guard_t register_guard(
+                this, {oc_off_oprnd});
+        const size_t reg_guard_stack_occupied
+                = register_guard.stack_space_occupied();
+        mov(abi_param1,
+                ptr[rsp + reg_abi_param1_backup + reg_guard_stack_occupied]);
+        mov(oc_off_oprnd,
+                ptr[rsp + +reg_binary_post_op_acc_off
+                        + reg_guard_stack_occupied]);
+
+        postops_injector_->compute_vector_range(vmm_idxs, rhs_arg_params);
+    } else {
+        iterate(load_loop_blk, ur,
+                [&](const bool, const int i_load, const int i_ur) {
+                    vmm_idxs.emplace(
+                            vreg_accum_idx(load_loop_blk, i_load, i_ur));
+                });
+        postops_injector_->compute_vector_range(vmm_idxs);
+    }
+}
+
 void jit_avx512_common_1x1_conv_kernel::reduce_loop(
         int load_loop_blk, int ur, int substep, bool wraparound) {
     const bool out_layout_nxc = is_out_layout_nxc(jcp);
@@ -161,7 +281,7 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
     };
 
     auto vreg_accum = [=](int i_load, int i_ur) {
-        return Zmm(i_ur * load_loop_blk + i_load);
+        return Zmm(vreg_accum_idx(load_loop_blk, i_load, i_ur));
     };
 
     auto bias_ptr = [=](int i_load) {
@@ -209,24 +329,6 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
                 u1 * jcp.reduce_loop_load_step + jcp.typesize_in * offt);
     };
 
-    auto output_ptr = [=](int i_load, int i_ur) {
-        if (one_of(jcp.prop_kind, forward_training, forward_inference,
-                    backward_data)) {
-            int i_load_shift = out_layout_nxc
-                    ? jcp.load_block
-                    : (jcp.with_dw_conv ? jcp.ow : jcp.bcast_dim)
-                            * jcp.load_block;
-            int i_ur_shift = out_layout_nxc ? jcp.load_dim : jcp.load_block;
-            int offset = (i_load * i_load_shift + i_ur * i_ur_shift)
-                    * jcp.typesize_out;
-            return EVEX_compress_addr(aux_reg_output_data, offset);
-        } else
-            return ptr[aux_reg_output_data
-                    + (i_load ? reg_output_stride * i_load
-                              : 0) // TODO: Xbyak should allow 0 scale
-                    + jcp.typesize_out * jcp.load_block * i_ur];
-    };
-
     auto init = [=]() {
         Label init_done;
         Label init_zero;
@@ -234,7 +336,7 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
         if (jcp.with_sum) {
             for (int i_load = 0; i_load < load_loop_blk; ++i_load) {
                 for (int i_ur = 0; i_ur < ur; ++i_ur) {
-                    mic_prefetcht1(output_ptr(i_load, i_ur));
+                    mic_prefetcht1(output_ptr(out_layout_nxc, i_load, i_ur));
                 }
             }
         }
@@ -276,21 +378,23 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
                 auto r = vreg_accum(i_load, i_ur);
                 if (i_load + 1 == load_loop_blk && load_dim_tail)
                     r = r | k_load_dim_mask | T_z;
-                vaddps(r, r, output_ptr(i_load, i_ur));
+                vaddps(r, r, output_ptr(out_layout_nxc, i_load, i_ur));
             }
 
         L(store_noadd);
-        if (jcp.with_eltwise) {
-            Label store_noeltwise;
+
+        if (jcp.with_eltwise || jcp.with_binary) {
+            Label store_nopostops;
             test(reg_reduce_pos_flag, FLAG_REDUCE_LAST);
-            jz(store_noeltwise, T_NEAR);
+            jz(store_nopostops, T_NEAR);
 
-            eltwise_injector_->compute_vector_range(0, ur * load_loop_blk);
+            apply_postops(out_layout_nxc, load_loop_blk, ur);
 
-            L(store_noeltwise);
+            L(store_nopostops);
         }
 
         auto store_output = [=](bool output_is_aligned) {
+            const auto mask_flag = load_dim_tail;
             for (int i_ur = 0; i_ur < ur; ++i_ur) {
                 for (int i_load = 0; i_load < load_loop_blk; ++i_load) {
                     auto vreg_acc = vreg_accum(i_load, i_ur);
@@ -299,14 +403,15 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
                     // To ensure final output (after reduction) is zero-padded,
                     // here we zero-pad output by omitting the mask.
                     if (jcp.prop_kind != backward_weights
-                            && i_load + 1 == load_loop_blk && load_dim_tail) {
+                            && (i_load + 1 == load_loop_blk && mask_flag)) {
                         vreg_acc = vreg_acc | k_load_dim_mask;
                     }
-
-                    if (output_is_aligned && jcp.use_vmovntps && !load_dim_tail)
-                        vmovntps(output_ptr(i_load, i_ur), vreg_acc);
+                    if (output_is_aligned && jcp.use_vmovntps && !mask_flag)
+                        vmovntps(output_ptr(out_layout_nxc, i_load, i_ur),
+                                vreg_acc);
                     else
-                        vmovups(output_ptr(i_load, i_ur), vreg_acc);
+                        vmovups(output_ptr(out_layout_nxc, i_load, i_ur),
+                                vreg_acc);
                 }
             }
         };
@@ -507,26 +612,33 @@ void jit_avx512_common_1x1_conv_kernel::reduce_loop(
 void jit_avx512_common_1x1_conv_kernel::generate() {
     preamble();
 
+    sub(rsp, stack_space_needed);
+    if (jcp.with_binary) {
+        const auto zeroed_reg = r15;
+        xor_(zeroed_reg, zeroed_reg);
+        mov(EVEX_compress_addr(rsp, reg_binary_post_op_acc_off), zeroed_reg);
+        mov(EVEX_compress_addr(rsp, reg_abi_param1_backup), param1);
+    }
+
     mov(reg_bcast_data, ptr[param1 + GET_OFF(bcast_data)]);
     mov(reg_load_data, ptr[param1 + GET_OFF(load_data)]);
     mov(reg_output_data, ptr[param1 + GET_OFF(output_data)]);
-
-    sub(rsp, stack_space_needed);
 
     if (jcp.with_bias) mov(reg_bias_data, ptr[param1 + GET_OFF(bias_data)]);
 
     mov(reg_load_loop_work, ptr[param1 + GET_OFF(load_dim)]);
     mov(reg_bcast_loop_work, ptr[param1 + GET_OFF(bcast_dim)]);
-    mov(EVEX_compress_addr(rsp, bcast_loop_work_offt), reg_bcast_loop_work);
+    mov(EVEX_compress_addr(rsp, reg_bcast_loop_work_offt), reg_bcast_loop_work);
     mov(reg_reduce_loop_work, ptr[param1 + GET_OFF(reduce_dim)]);
     mov(reg_reduce_pos_flag, ptr[param1 + GET_OFF(first_last_flag)]);
-    if (one_of(jcp.prop_kind, forward_training, forward_inference))
-        mov(reg_relu_ns, reinterpret_cast<size_t>(&jcp.eltwise.alpha));
     if (jcp.prop_kind == backward_weights)
         mov(reg_output_stride, ptr[param1 + GET_OFF(output_stride)]);
 
-    const int load_dim_tail = jcp.load_dim % jcp.load_block;
-
+    const int load_dim_tail
+            = (one_of(jcp.prop_kind, forward_training, forward_inference)
+                              ? jcp.oc_without_padding
+                              : jcp.load_dim)
+            % jcp.load_block;
     if (load_dim_tail) {
         Reg32 reg_tail_32 = reg_load_dim_tail_mask.cvt32();
         mov(reg_tail_32, (1 << load_dim_tail) - 1);
@@ -557,6 +669,15 @@ void jit_avx512_common_1x1_conv_kernel::generate() {
                                                 : (jcp.with_dw_conv
                                                                 ? jcp.ow
                                                                 : jcp.bcast_dim)));
+                if (jcp.with_binary) {
+                    const auto oc_off_oprnd = aux_reg_load_data;
+                    mov(oc_off_oprnd,
+                            EVEX_compress_addr(
+                                    rsp, reg_binary_post_op_acc_off));
+                    add(oc_off_oprnd, jcp.load_block * load_loop_blk);
+                    mov(EVEX_compress_addr(rsp, reg_binary_post_op_acc_off),
+                            oc_off_oprnd);
+                }
                 break;
             case backward_data:
                 add(reg_output_data,
@@ -634,32 +755,7 @@ void jit_avx512_common_1x1_conv_kernel::generate() {
 
     postamble();
 
-    if (jcp.with_eltwise) eltwise_injector_->prepare_table();
-}
-
-bool jit_avx512_common_1x1_conv_kernel::post_ops_ok(
-        jit_1x1_conv_conf_t &jcp, const primitive_attr_t &attr) {
-    const auto &p = attr.post_ops_;
-
-    auto is_eltwise = [&](int idx) { return p.entry_[idx].is_eltwise(); };
-    auto is_sum = [&](int idx) { return p.entry_[idx].is_sum(); };
-    auto is_convolution
-            = [&](int idx) { return p.entry_[idx].is_convolution(); };
-
-    int dw_idx = p.find(primitive_kind::convolution);
-    int len = dw_idx != -1 ? dw_idx + 1 : p.len_;
-
-    switch (len) {
-        case 0: return true; // no post_ops
-        case 1: // eltwise OR sum OR Convolution
-            return is_eltwise(0) || is_sum(0) || is_convolution(0);
-        case 2: // sum -> eltwise OR eltwise -> convolution
-            return (is_sum(0) && is_eltwise(1))
-                    || (is_eltwise(0) && is_convolution(1));
-        default: return false;
-    }
-
-    return false;
+    if (jcp.with_eltwise) postops_injector_->prepare_table();
 }
 
 status_t jit_avx512_common_1x1_conv_kernel::init_conf(jit_1x1_conv_conf_t &jcp,
@@ -711,19 +807,31 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(jit_1x1_conv_conf_t &jcp,
     jcp.is = jcp.id * jcp.ih * jcp.iw;
     jcp.tr_is = rnd_up(jcp.is, 4);
 
-    if (!post_ops_ok(jcp, attr)) return status::unimplemented;
-
-    const auto &p = attr.post_ops_;
-    const int dw_conv_ind = p.find(primitive_kind::convolution);
+    const auto &post_ops = attr.post_ops_;
+    const int dw_conv_ind = post_ops.find(primitive_kind::convolution);
     jcp.with_dw_conv = dw_conv_ind != -1;
     // Using dw_conv_ind as upper-bound below, as post-ops after it will be
     // handled in depthwise convolution.
-    jcp.with_sum = p.find(primitive_kind::sum, 0, dw_conv_ind) != -1;
-    const int eltwise_ind = p.find(primitive_kind::eltwise, 0, dw_conv_ind);
+    const int eltwise_ind
+            = post_ops.find(primitive_kind::eltwise, 0, dw_conv_ind);
     jcp.with_eltwise = eltwise_ind != -1;
     if (jcp.with_eltwise) {
-        jcp.eltwise = p.entry_[eltwise_ind].eltwise;
         if (dst_d.data_type() == data_type::s32) return status::unimplemented;
+    }
+
+    const int sum_ind = post_ops.find(primitive_kind::sum, 0, dw_conv_ind);
+    jcp.with_sum = sum_ind != -1;
+
+    const int binary_ind
+            = post_ops.find(primitive_kind::binary, 0, dw_conv_ind);
+    jcp.with_binary = binary_ind != -1;
+
+    if (dw_conv_ind >= 0) {
+        // dw_conv and post_ops after it are handled externally, so skip them
+        jcp.post_ops.entry_.assign(post_ops.entry_.cbegin(),
+                post_ops.entry_.cbegin() + dw_conv_ind);
+    } else {
+        jcp.post_ops = post_ops;
     }
 
     const auto dat_tag_nxc = pick(ndims - 3, nwc, nhwc, ndhwc);
@@ -742,6 +850,14 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(jit_1x1_conv_conf_t &jcp,
         jcp.oc = rnd_up(jcp.oc, simd_w);
         jcp.ic = rnd_up(jcp.ic, simd_w);
     }
+
+    using namespace injector;
+    static constexpr bool sum_at_pos_0_only = true;
+    static constexpr bool sum_requires_scale_one = true;
+    const bool post_ops_ok_
+            = post_ops_ok({avx512_common, {eltwise, binary, sum}, jcp.post_ops,
+                    &dst_d, sum_at_pos_0_only, sum_requires_scale_one});
+    if (!post_ops_ok_) return status::unimplemented;
 
     bool args_ok = true && jcp.ngroups == 1 && jcp.src_tag == required_dat_tag
             && jcp.dst_tag == required_dat_tag
@@ -1036,6 +1152,42 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(jit_1x1_conv_conf_t &jcp,
             load_blocking = jcp.load_block;
         }
 
+        auto get_thr_eff = [=](int load_chunk, int nthr) {
+            int lgc = div_up(nb_load, load_chunk);
+            int thr_per_grp = div_up(nthr, lgc);
+            int bcast_per_thr
+                    = div_up(jcp.mb * nb_bcast, thr_per_grp) * jcp.bcast_block;
+            int load_per_thr = load_chunk * simd_w;
+            float data_norm = (bcast_per_thr + load_per_thr) / 2.f;
+            float data_eff
+                    = (bcast_per_thr * load_per_thr) / (data_norm * data_norm);
+            float thr_eff_over_grp
+                    = (float)nstl::max(1, nthr / lgc) / div_up(nthr, lgc);
+            float thr_eff_in_grp = ((float)jcp.mb * nb_bcast)
+                    / rnd_up(jcp.mb * nb_bcast, thr_per_grp);
+            float thr_eff = thr_eff_over_grp * thr_eff_in_grp;
+            float load_eff = (float)nb_load / rnd_up(nb_load, lgc);
+            float overall_eff = data_eff + thr_eff + load_eff;
+            return overall_eff;
+        };
+
+        auto get_load_chunk = [=](int nthr) {
+            float best_eff = -1.0f;
+            int best_lgc = 1;
+            float eff;
+
+            for (int load_chunk = 1; load_chunk <= nb_load; load_chunk++) {
+                int lgc = div_up(nb_load, load_chunk);
+                if (lgc > nthr) continue;
+                eff = get_thr_eff(load_chunk, nthr);
+                if (eff > best_eff) {
+                    best_eff = eff;
+                    best_lgc = lgc;
+                }
+            }
+            return best_lgc;
+        };
+
         if (jcp.ver == ver_4fma && jcp.bcast_dim * jcp.mb < jcp.load_dim
                 && jcp.os > 64
                 && IMPLICATION(reduce_src, jcp.load_dim < 1024)) {
@@ -1048,35 +1200,38 @@ status_t jit_avx512_common_1x1_conv_kernel::init_conf(jit_1x1_conv_conf_t &jcp,
             * TODO: remove heuristic constants in above condition
             * TODO: check this blocking for other ISA
             */
-            float best_eff = -1.f;
-            int best_lgc = 1;
-
-            for (int load_chunk = 1; load_chunk <= nb_load; load_chunk++) {
-                int lgc = div_up(nb_load, load_chunk);
-                if (lgc > jcp.nthr) continue;
-                int thr_per_grp = div_up(jcp.nthr, lgc);
-                int bcast_per_thr = div_up(jcp.mb * nb_bcast, thr_per_grp)
-                        * jcp.bcast_block;
-                int load_per_thr = load_chunk * simd_w;
-                float data_norm = (bcast_per_thr + load_per_thr) / 2.f;
-                float data_eff = (bcast_per_thr * load_per_thr)
-                        / (data_norm * data_norm);
-                float thr_eff_over_grp = (float)nstl::max(1, jcp.nthr / lgc)
-                        / div_up(jcp.nthr, lgc);
-                float thr_eff_in_grp = ((float)jcp.mb * nb_bcast)
-                        / rnd_up(jcp.mb * nb_bcast, thr_per_grp);
-                float thr_eff = thr_eff_over_grp * thr_eff_in_grp;
-                float load_eff = (float)nb_load / rnd_up(nb_load, lgc);
-                float overall_eff = data_eff + thr_eff + load_eff;
-                if (overall_eff > best_eff) {
-                    best_eff = overall_eff;
-                    best_lgc = lgc;
-                }
-            }
-            jcp.load_grp_count = best_lgc;
+            jcp.load_grp_count = get_load_chunk(jcp.nthr);
             load_blocking
                     = div_up(nb_load, jcp.load_grp_count) * jcp.load_block;
         }
+
+        /* adjust the thread decomposition
+         * to improve the thr_eff for small problem size
+         * the threshold 8192 is empirical 
+         * TODO: Threshold can be increase for init stride > 1*/
+        if (jcp.ver == ver_avx512_core && sizeof(float) * bcast_size < 8192
+                && jcp.mb < jcp.nthr && nb_load * nb_bcast < jcp.nthr) {
+            float best_thr_eff = -1.0f;
+            float thr_eff = -1.0f;
+            int overall_lgc = jcp.load_grp_count;
+            int lgc = 1;
+            int best_nthr = jcp.nthr;
+            int end_nthr = with_groups ? jcp.ngroups : 1;
+            for (int nthr = jcp.nthr / 2; nthr >= end_nthr; nthr--) {
+                lgc = get_load_chunk(nthr);
+                thr_eff = get_thr_eff(lgc, nthr);
+                if (best_thr_eff < thr_eff) {
+                    best_thr_eff = thr_eff;
+                    overall_lgc = lgc;
+                    best_nthr = nthr;
+                }
+            }
+            jcp.nthr = best_nthr;
+            jcp.load_grp_count = overall_lgc;
+            load_blocking
+                    = div_up(nb_load, jcp.load_grp_count) * jcp.load_block;
+        }
+
         bcast_blocking = div_up(jcp.mb * jcp.ngroups * nb_bcast,
                                  div_up(jcp.nthr, jcp.load_grp_count))
                 * jcp.bcast_block;

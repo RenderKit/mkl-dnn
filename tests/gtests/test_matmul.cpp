@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include "dnnl_test_common.hpp"
 #include "gtest/gtest.h"
 
-#include "dnnl.hpp"
+#include "oneapi/dnnl/dnnl.hpp"
 
 #include <vector>
 
@@ -76,7 +76,7 @@ struct matmul_attr_t {
     std::vector<post_op_t> post_ops;
 };
 
-struct matmul_test_params {
+struct matmul_test_params_t {
     matmul_base_t base;
     matmul_attr_t attr;
 
@@ -86,14 +86,35 @@ struct matmul_test_params {
 
 using tag = memory::format_tag;
 
-class matmul_iface_test : public ::testing::TestWithParam<matmul_test_params> {
+class matmul_iface_test_t
+    : public ::testing::TestWithParam<matmul_test_params_t> {
 protected:
-    virtual void SetUp() {
-        matmul_test_params p
+    void SetUp() override {
+        matmul_test_params_t p
                 = ::testing::TestWithParam<decltype(p)>::GetParam();
 
         SKIP_IF(unsupported_data_type(p.base.src.dt),
                 "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(p.base.weights.dt),
+                "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(p.base.dst.dt),
+                "Engine does not support this data type.");
+        SKIP_IF(unsupported_data_type(p.base.bia_dt),
+                "Engine does not support this data type.");
+        SKIP_IF(get_test_engine_kind() == engine::kind::gpu
+                        && ((p.attr.zero_points.src & P::PER_N)
+                                || (p.attr.zero_points.dst & P::PER_N)),
+                "Per dimensional zero points are not supported on GPU");
+        SKIP_IF(get_test_engine_kind() == engine::kind::cpu
+                        && p.base.src.tag == impl::format_tag::AB8a4b,
+                "Don't test blocked formats on CPU");
+
+        SKIP_IF_CUDA((p.attr.zero_points.src != 0 || p.attr.zero_points.dst != 0
+                             || p.attr.zero_points.weights != 0),
+                "Zero points not supported for CUDA");
+
+        SKIP_IF_CUDA((p.attr.scale_flags & P::MASK_MASK) == P::PER_N,
+                "Per dimensional scaling is not supported for CUDA");
 
         catch_expected_failures(
                 [=]() { Test(); }, p.expect_to_fail, p.expected_status, false);
@@ -129,7 +150,7 @@ protected:
         return memory::desc(dims, desc.dt, strides);
     }
 
-    static void create_attr(const matmul_test_params &p, primitive_attr &attr,
+    static void create_attr(const matmul_test_params_t &p, primitive_attr &attr,
             memory &scales_m, memory &zero_points_src_m,
             memory &zero_points_weights_m, memory &zero_points_dst_m,
             engine &eng) {
@@ -148,9 +169,10 @@ protected:
             if (p.attr.scale_flags & P::RUNTIME) {
                 attr.set_output_scales(mask, {DNNL_RUNTIME_F32_VAL});
 
-                scales_m = memory(
+                scales_m = test::make_memory(
                         {{scale_size}, memory::data_type::f32, {1}}, eng);
                 auto s = map_memory<float>(scales_m);
+                GTEST_EXPECT_NE(s, nullptr);
                 for (memory::dim i = 0; i < scale_size; ++i)
                     s[i] = 2.f;
             } else {
@@ -190,9 +212,10 @@ protected:
 
             if (flags & P::RUNTIME) {
                 attr.set_zero_points(arg, mask, {DNNL_RUNTIME_S32_VAL});
-                zero_points_m = memory(
+                zero_points_m = test::make_memory(
                         {{zero_points_size}, memory::data_type::s32, {1}}, eng);
                 auto z = map_memory<int32_t>(zero_points_m);
+                GTEST_EXPECT_NE(z, nullptr);
                 for (memory::dim i = 0; i < zero_points_size; ++i)
                     z[i] = (arg % 7) - 3;
             } else {
@@ -224,8 +247,8 @@ protected:
     }
 
     void Test() {
-        matmul_test_params p
-                = ::testing::TestWithParam<matmul_test_params>::GetParam();
+        matmul_test_params_t p
+                = ::testing::TestWithParam<matmul_test_params_t>::GetParam();
 
         auto eng = get_test_engine();
         auto strm = make_stream(eng);
@@ -249,7 +272,8 @@ protected:
             tag bia_tag = bia_dims.size() == 2 ? tag::ab : tag::abc;
             bia_md = init_md({bia_dims, p.base.bia_dt, bia_tag,
                     p.base.dst.flags & P::RUNTIME});
-            bia_m = memory(init_md({bia_dims, p.base.bia_dt, bia_tag}), eng);
+            bia_m = test::make_memory(
+                    init_md({bia_dims, p.base.bia_dt, bia_tag}), eng);
         }
 
         auto matmul_d = matmul::desc(src_md, weights_md, bia_md, dst_md);
@@ -273,14 +297,15 @@ protected:
 
         auto matmul_p = matmul(matmul_pd);
 
-        memory src_m(init_md(p.base.src, true), eng);
-        memory weights_m(init_md(p.base.weights, true), eng);
-        memory dst_m(init_md(p.base.dst, true), eng);
+        auto src_m = test::make_memory(init_md(p.base.src, true), eng);
+        auto weights_m = test::make_memory(init_md(p.base.weights, true), eng);
+        auto dst_m = test::make_memory(init_md(p.base.dst, true), eng);
 
         // Initialize memory to make sanitizers happy
         auto set_to_zero = [](memory &m) {
             if (m) {
                 auto p = map_memory<char>(m);
+                GTEST_EXPECT_NE(p, nullptr);
                 memset(p, 0, m.get_desc().get_size());
             }
         };
@@ -309,14 +334,14 @@ protected:
 
 /********************************* TEST CASES *********************************/
 
-using iface = matmul_iface_test;
+using iface = matmul_iface_test_t;
 
 using data_type = memory::data_type;
 
 TEST_P(iface, TestsMatMul) {}
 
 static auto cases_ef = []() {
-    std::vector<matmul_test_params> cases;
+    std::vector<matmul_test_params_t> cases;
 
     // inconsistent dims
     cases.push_back(
@@ -337,6 +362,26 @@ static auto cases_ef = []() {
                              {{1, 11, 2}, data_type::s8, tag::abc}},
             {}, true, dnnl_invalid_arguments});
 
+    // inconsistent wrt runtime dim vals
+    cases.push_back(
+            {{{{3, 10, 10}, data_type::f32, tag::abc},
+                     {{DNNL_RUNTIME_DIM_VAL, 10, 10}, data_type::f32, tag::abc},
+                     {{DNNL_RUNTIME_DIM_VAL, 10, 10}, data_type::f32,
+                             tag::abc}},
+                    {}, true, dnnl_invalid_arguments});
+
+    // inconsistent wrt broadcasting
+    cases.push_back({{{{3, 10, 10}, data_type::f32, tag::abc},
+                             {{1, 10, 10}, data_type::f32, tag::abc},
+                             {{1, 10, 10}, data_type::f32, tag::abc}},
+            {}, true, dnnl_invalid_arguments});
+
+    // no broadcasting on m/k/n dims
+    cases.push_back({{{{10, 10}, data_type::f32, tag::ab},
+                             {{1, 1}, data_type::f32, tag::ab},
+                             {{10, 10}, data_type::f32, tag::ab}},
+            {}, true, dnnl_invalid_arguments});
+
     // f32 data and zero-points
     cases.push_back({{{{10, 1}, data_type::f32, tag::ab},
                              {{1, 20}, data_type::f32, tag::ab},
@@ -351,26 +396,23 @@ static auto cases_ef = []() {
                      {{10, 20}, data_type::f32, tag::ab}, data_type::u8},
                     {}, true, dnnl_unimplemented});
     // XXX: disable assert in type_helpers.hpp: default_accum_data_type(...)
-    //cases.push_back({{{{10, 1}, data_type::u8, tag::ab}, {{1, 20}, data_type::u8, tag::ab},
+    // cases.push_back({{{{10, 1}, data_type::u8, tag::ab}, {{1, 20},
+    // data_type::u8, tag::ab},
     //                           {{10, 20}, data_type::u8, tag::ab}},
     //        {}, true, dnnl_unimplemented});
 
-    // unimplemented post-ops
-    cases.push_back({{{{10, 1}, data_type::u8, tag::ab},
-                             {{1, 20}, data_type::s8, tag::ab},
-                             {{10, 20}, data_type::f32, tag::ab}},
-            {P::NONE, {},
-                    {{primitive::kind::eltwise, algorithm::eltwise_relu},
-                            {primitive::kind::eltwise,
-                                    algorithm::eltwise_tanh}}},
-            true, dnnl_unimplemented});
+    // unimplemented formats (GPU only)
+    cases.push_back({{{{16, 16}, data_type::f32, tag::AB8a4b},
+                             {{16, 16}, data_type::f32, tag::AB8a4b},
+                             {{16, 16}, data_type::f32, tag::AB8a4b}},
+            {}, true, dnnl_unimplemented});
 
     return ::testing::ValuesIn(cases);
 };
 INSTANTIATE_TEST_SUITE_P(EF, iface, cases_ef());
 
 static auto cases_f = [](memory::data_type dt) {
-    std::vector<matmul_test_params> cases;
+    std::vector<matmul_test_params_t> cases;
 
     // simple case
     cases.push_back({{{{10, 2}, dt, tag::ab}, {{2, 20}, dt, tag::ab},
@@ -433,7 +475,7 @@ GPU_INSTANTIATE_TEST_SUITE_P(Generic_bf16, iface, cases_f(data_type::bf16));
 INSTANTIATE_TEST_SUITE_P(Generic_f32, iface, cases_f(data_type::f32));
 
 static auto cases_x8 = [](memory::data_type src_dt, memory::data_type dst_dt) {
-    std::vector<matmul_test_params> cases;
+    std::vector<matmul_test_params_t> cases;
 
     // simple case
     cases.push_back(
@@ -485,6 +527,13 @@ static auto cases_x8 = [](memory::data_type src_dt, memory::data_type dst_dt) {
                                     P::ZERO_POINTS | P::DST | P::COMMON
                                             | P::RUNTIME}}});
 
+    // per_dim_1 zero points + runtime
+    cases.push_back({{{{10, 2}, src_dt, tag::ba},
+                             {{2, 20}, data_type::s8, tag::ab},
+                             {{10, 20}, dst_dt, tag::ab}, data_type::f32},
+            {P::SCALES | P::COMMON | P::RUNTIME,
+                    {P::ZERO_POINTS | P::SRC | P::PER_N | P::RUNTIME, P::NONE,
+                            P::ZERO_POINTS | P::DST | P::PER_N | P::RUNTIME}}});
     // post-ops
     cases.push_back({{{{10, 1}, src_dt, tag::ab},
                              {{1, 20}, data_type::s8, tag::ab},

@@ -20,6 +20,9 @@ where *eltwise-knobs* are:
             Refer to ``Floating point arguments`` below.
  - `--beta=FLOAT` -- float value corresponding to algorithm operation.
             Refer to ``Floating point arguments`` below.
+ - `--attr-post-ops="STRING"` -- post operation primitive attribute. No post
+            operations are set by default. Refer to [attributes](knobs_attr.md)
+            for details.
  - `--mb=INT` -- override minibatch size specified in the problem description.
              When set to `0`, use minibatch size as defined by the individual
              problem descriptor. The default is `0`.
@@ -37,9 +40,9 @@ the end to specify fewer dimensions.
 
 
 ## Floating point arguments
-Some operations support `alpha` argument such as `BRELU`, `CLIP`, `ELU`,
-`LINEAR`, `POW` and `RELU`. `CLIP`, `LINEAR` and `POW` also support `beta`
-argument.
+Some operations support `alpha` argument such as `BRELU`, `CLIP`, `CLIP_V2`,
+ `ELU`, `LINEAR`, `POW` and `RELU`. `CLIP`, `CLIP_V2`, `LINEAR` and `POW` also
+support `beta` argument.
 
 The `alpha` and `beta` parameters should meet algorithm requirements, otherwise
 the problem will be silently skipped. For instance:
@@ -67,7 +70,7 @@ everywhere. That is why there are some special cases. For details, refer to
 
 Run the eltwise set from an input file with the default settings:
 ``` sh
-    ./benchdnn --eltwise --batch=inputs/eltwise/test_eltwise_all
+    ./benchdnn --eltwise --batch=inputs/eltwise/shapes_ci
 ```
 
 Run a specific eltwise problem with the f32 data type and in-place memory mode,
@@ -78,5 +81,5 @@ iterating over memory layouts and forward and backward prop kinds:
 ```
 
 More examples with different driver options can be found at
-inputs/eltwise/test_eltwise_all. Examples with different benchdnn options can be
-found at driver_conv.md.
+inputs/eltwise/test_eltwise_all. Examples with different benchdnn common options
+can be found at driver_conv.md.

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@
 #include "cpu/x64/gemm_bf16_inner_product.hpp"
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 
+#include "cpu/binary_injector_utils.hpp"
+
 namespace dnnl {
 namespace impl {
 namespace cpu {
@@ -44,6 +46,9 @@ status_t gemm_bf16_inner_product_fwd_t<dst_data_type>::execute_forward(
     auto weights = CTX_IN_MEM(const wei_data_t *, DNNL_ARG_WEIGHTS);
     auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
     auto dst = CTX_OUT_MEM(dst_data_t *, DNNL_ARG_DST);
+    const auto post_ops_binary_rhs_arg_vec
+            = binary_injector_utils::prepare_binary_args(
+                    this->pd()->attr()->post_ops_, ctx);
 
     const dim_t M = pd()->OC();
     const dim_t N = pd()->MB();
@@ -69,7 +74,9 @@ status_t gemm_bf16_inner_product_fwd_t<dst_data_type>::execute_forward(
             size_t start = 0, end = 0;
             size_t work_size = M * N;
             balance211(work_size, nthr, ithr, start, end);
-            (*pp_kernel_)(dst, acc, bias, scales, start, end, 0, nullptr);
+            (*pp_kernel_)(dst, acc, bias, scales, start, end, 0, 0, nullptr,
+                    post_ops_binary_rhs_arg_vec.data(), dst, ctx,
+                    *pd()->dst_md());
         });
     }
 
@@ -223,9 +230,8 @@ void gemm_bf16_inner_product_bwd_weights_t<diff_wei_data_type>::
             for (dim_t oc = 0; oc < oc_len; ++oc)
                 db[oc] = 0;
 
-            bias_reduction_->jit_ker(db,
-                    &((bfloat16_t *)diff_dst)[mb_s * OC + oc_s], (size_t)oc_len,
-                    (size_t)mb_len);
+            (*bias_reduction_)(db, &((bfloat16_t *)diff_dst)[mb_s * OC + oc_s],
+                    (size_t)oc_len, (size_t)mb_len);
 
             if (!diff_bias_is_acc && nthr_MB == 1)
                 cvt_float_to_bfloat16(

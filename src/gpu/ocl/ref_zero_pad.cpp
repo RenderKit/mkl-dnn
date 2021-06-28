@@ -36,6 +36,11 @@ status_t ref_zero_pad_t::execute(const exec_ctx_t &ctx) const {
     const auto &pdims = mdw.padded_dims();
     const blocking_desc_t blocking_desc = mdw.blocking_desc();
     const ptrdiff_t nelems = (ptrdiff_t)mdw.nelems(true);
+    const unsigned int hw_threads
+            = utils::downcast<compute::compute_engine_t *>(
+                    ctx.stream()->engine())
+                      ->device_info()
+                      ->hw_threads();
 
     // Setup Initial parameters used in opencl kernel computation
     dims_t blk_size;
@@ -49,25 +54,38 @@ status_t ref_zero_pad_t::execute(const exec_ctx_t &ctx) const {
         blk_size[blocking_desc.inner_idxs[i]] *= blocking_desc.inner_blks[i];
     }
 
+    // This constant needs to be the same as DEFAULT_NELEMS_BLOCK in
+    // ref_zero_pad.cl
+    const int default_nelems_block = 8;
+
+    // This divisibility condition cannot be changed without some modifications
+    // to use of DEFAULT_NELEMS_BLOCK in ref_zero_pad.cl
+    size_t nelems_block = 1;
+    while (nelems_block < default_nelems_block
+            && step_nelems % (nelems_block * 2) == 0)
+        nelems_block *= 2;
+
     arg_list.set(0, *mem_storage);
     arg_list.set(1, mdw.data_type_size());
     arg_list.set(2, step_nelems);
+    arg_list.set(3, nelems_block);
 
     for (int i = 0; i < ndims; i++) {
         if (dims[i] == pdims[i]) continue;
         cl_ulong stride = 1;
         cl_ulong step_count = 1;
-        for (int j = 0; j < ndims; j++) {
-            if (j < i) {
-                stride *= blk_size[j];
-            } else if (i == j) {
-                stride *= pdims[j];
-            } else {
-                step_count *= pdims[j] / blk_size[j];
-                stride *= pdims[j];
-            }
-        }
+
+        step_count = blocking_desc.strides[i] / step_nelems;
+        stride = blocking_desc.strides[i] * (pdims[i] / blk_size[i]);
         size_t npsteps = (nelems / stride) * step_count;
+
+        // Balance work unit size with parallelism
+        cl_ulong step_block = 1;
+        while (step_nelems / nelems_block * step_block < 4 * 1024
+                && step_count % (step_block * 2) == 0
+                && npsteps / step_block > 2 * hw_threads) {
+            step_block *= 2;
+        }
 
         dim_t tail_start = dims[i] % blk_size[i];
         dims_t pos;
@@ -97,12 +115,14 @@ status_t ref_zero_pad_t::execute(const exec_ctx_t &ctx) const {
             }
         }
 
-        arg_list.set(3, step_count);
-        arg_list.set(4, stride);
-        arg_list.set(5, bitmask);
+        arg_list.set(4, step_block);
+        arg_list.set(5, step_count);
+        arg_list.set(6, stride);
+        arg_list.set(7, bitmask);
 
-        const size_t gws[1] = {npsteps};
-        const compute::nd_range_t nd_range = compute::nd_range_t(1, gws);
+        const size_t gws[3]
+                = {nelems_block, step_count / step_block, npsteps / step_count};
+        const compute::nd_range_t nd_range = compute::nd_range_t(3, gws);
         status_t status = parallel_for(ctx, nd_range, kernel_, arg_list);
         if (status != status::success) return status;
     }
