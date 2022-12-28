@@ -145,7 +145,6 @@ struct isa_info_t {
 };
 
 static isa_info_t get_isa_info_t(void) {
-#ifdef DNNL_ENABLE_MAX_CPU_ISA
     // descending order due to mayiuse check
 #define HANDLE_CASE(cpu_isa) \
     if (mayiuse(cpu_isa)) return isa_info_t(cpu_isa);
@@ -162,7 +161,6 @@ static isa_info_t get_isa_info_t(void) {
     HANDLE_CASE(avx);
     HANDLE_CASE(sse41);
 #undef HANDLE_CASE
-#endif
     return isa_info_t(isa_undef);
 }
 
