@@ -24,38 +24,40 @@
 
 #include "cpu/cpu_engine.hpp"
 
+/*
 #include "cpu/gemm_convolution.hpp"
 #include "cpu/gemm_x8s8s32x_convolution.hpp"
 #include "cpu/ref_convolution.hpp"
 #include "cpu/ref_convolution_int8.hpp"
 #include "cpu/ref_fused_convolution.hpp"
+*/
 
 #if DNNL_X64
-#include "cpu/x64/gemm_bf16_convolution.hpp"
-#include "cpu/x64/ip_convolution.hpp"
-#include "cpu/x64/jit_avx2_1x1_convolution.hpp"
+//#include "cpu/x64/gemm_bf16_convolution.hpp"
+//#include "cpu/x64/ip_convolution.hpp"
+//#include "cpu/x64/jit_avx2_1x1_convolution.hpp"
 #include "cpu/x64/jit_avx2_convolution.hpp"
-#include "cpu/x64/jit_avx512_common_1x1_convolution.hpp"
+//#include "cpu/x64/jit_avx512_common_1x1_convolution.hpp"
 #include "cpu/x64/jit_avx512_common_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_amx_1x1_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_amx_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_bf16_1x1_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_bf16_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_f32_wino_conv_2x3.hpp"
-#include "cpu/x64/jit_avx512_core_f32_wino_conv_4x3.hpp"
-#include "cpu/x64/jit_avx512_core_x8s8s32x_1x1_convolution.hpp"
-#include "cpu/x64/jit_avx512_core_x8s8s32x_convolution.hpp"
-#include "cpu/x64/jit_brdgmm_dw_conv.hpp"
-#include "cpu/x64/jit_brgemm_1x1_conv.hpp"
-#include "cpu/x64/jit_brgemm_conv.hpp"
-#include "cpu/x64/jit_brgemm_conv_bwd.hpp"
-#include "cpu/x64/jit_brgemm_conv_bwd_strided.hpp"
-#include "cpu/x64/jit_brgemm_conv_bwd_w.hpp"
-#include "cpu/x64/jit_sse41_1x1_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_amx_1x1_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_amx_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_bf16_1x1_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_bf16_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_f32_wino_conv_2x3.hpp"
+//#include "cpu/x64/jit_avx512_core_f32_wino_conv_4x3.hpp"
+//#include "cpu/x64/jit_avx512_core_x8s8s32x_1x1_convolution.hpp"
+//#include "cpu/x64/jit_avx512_core_x8s8s32x_convolution.hpp"
+//#include "cpu/x64/jit_brdgmm_dw_conv.hpp"
+//#include "cpu/x64/jit_brgemm_1x1_conv.hpp"
+//#include "cpu/x64/jit_brgemm_conv.hpp"
+//#include "cpu/x64/jit_brgemm_conv_bwd.hpp"
+//#include "cpu/x64/jit_brgemm_conv_bwd_strided.hpp"
+//#include "cpu/x64/jit_brgemm_conv_bwd_w.hpp"
+//#include "cpu/x64/jit_sse41_1x1_convolution.hpp"
 #include "cpu/x64/jit_sse41_convolution.hpp"
-#include "cpu/x64/jit_uni_dw_convolution.hpp"
-#include "cpu/x64/jit_uni_x8s8s32x_1x1_convolution.hpp"
-#include "cpu/x64/jit_uni_x8s8s32x_convolution.hpp"
+//#include "cpu/x64/jit_uni_dw_convolution.hpp"
+//#include "cpu/x64/jit_uni_x8s8s32x_1x1_convolution.hpp"
+//#include "cpu/x64/jit_uni_x8s8s32x_convolution.hpp"
 using namespace dnnl::impl::cpu::x64;
 #elif DNNL_AARCH64
 #include "cpu/aarch64/jit_sve_512_1x1_convolution.hpp"
@@ -83,37 +85,38 @@ const std::map<pk_dt_impl_key_t, std::vector<impl_list_item_t>> &impl_list_map()
     static const std::map<pk_dt_impl_key_t, std::vector<impl_list_item_t>> the_map = REG_CONV_P({
         // FWD fp
         {{forward, f32, f32, f32}, {
-            CPU_INSTANCE_AVX512(brdgmm_dw_convolution_fwd_t)
-            CPU_INSTANCE_X64(ip_convolution_fwd_t)
-            CPU_INSTANCE_AMX(brgemm_1x1_convolution_fwd_t<avx512_core_amx>)
-            CPU_INSTANCE_AMX(brgemm_convolution_fwd_t<avx512_core_amx>)
-            CPU_INSTANCE_AVX512(brgemm_1x1_convolution_fwd_t<avx512_core>)
-            CPU_INSTANCE_AVX512(brgemm_convolution_fwd_t<avx512_core>)
-            CPU_INSTANCE_AVX512(jit_avx512_common_dw_convolution_fwd_t)
-            CPU_INSTANCE_AVX512(jit_avx512_common_1x1_convolution_fwd_f32_t)
-            CPU_INSTANCE_AVX512(jit_avx512_core_f32_wino_conv_2x3_fwd_t)
-            CPU_INSTANCE_AVX512(jit_avx512_core_f32_wino_conv_4x3_fwd_t)
+            //CPU_INSTANCE_AVX512(brdgmm_dw_convolution_fwd_t)
+            //CPU_INSTANCE_X64(ip_convolution_fwd_t)
+            //CPU_INSTANCE_AMX(brgemm_1x1_convolution_fwd_t<avx512_core_amx>)
+            //CPU_INSTANCE_AMX(brgemm_convolution_fwd_t<avx512_core_amx>)
+            //CPU_INSTANCE_AVX512(brgemm_1x1_convolution_fwd_t<avx512_core>)
+            //CPU_INSTANCE_AVX512(brgemm_convolution_fwd_t<avx512_core>)
+            //CPU_INSTANCE_AVX512(jit_avx512_common_dw_convolution_fwd_t)
+            //CPU_INSTANCE_AVX512(jit_avx512_common_1x1_convolution_fwd_f32_t)
+            //CPU_INSTANCE_AVX512(jit_avx512_core_f32_wino_conv_2x3_fwd_t)
+            //CPU_INSTANCE_AVX512(jit_avx512_core_f32_wino_conv_4x3_fwd_t)
             CPU_INSTANCE_AVX512(jit_avx512_common_convolution_fwd_t<f32>)
-            CPU_INSTANCE_AVX2(jit_avx2_dw_convolution_fwd_t)
-            CPU_INSTANCE_AVX2(jit_avx2_1x1_convolution_fwd_t)
-            CPU_INSTANCE_SSE41(jit_sse41_dw_convolution_fwd_t)
-            CPU_INSTANCE_SSE41(jit_sse41_1x1_convolution_fwd_t)
+            //CPU_INSTANCE_AVX2(jit_avx2_dw_convolution_fwd_t)
+            //CPU_INSTANCE_AVX2(jit_avx2_1x1_convolution_fwd_t)
+            //CPU_INSTANCE_SSE41(jit_sse41_dw_convolution_fwd_t)
+            //CPU_INSTANCE_SSE41(jit_sse41_1x1_convolution_fwd_t)
             CPU_INSTANCE_AVX2(jit_avx2_convolution_fwd_t)
             CPU_INSTANCE_SSE41(jit_sse41_convolution_fwd_t)
-            CPU_INSTANCE_AARCH64_ACL(acl_wino_convolution_fwd_t)
-            CPU_INSTANCE_AARCH64(jit_sve_512_dw_convolution_fwd_t)
-            CPU_INSTANCE_AARCH64(jit_sve_512_1x1_convolution_fwd_f32_t)
-            CPU_INSTANCE_AARCH64(jit_sve_512_convolution_fwd_t<f32>)
-            CPU_INSTANCE_AARCH64_ACL(acl_indirect_gemm_convolution_fwd_t)
-            CPU_INSTANCE_AARCH64_ACL(acl_gemm_convolution_fwd_t<f32>)
-            CPU_INSTANCE(gemm_convolution_fwd_t)
+            //CPU_INSTANCE_AARCH64_ACL(acl_wino_convolution_fwd_t)
+            //CPU_INSTANCE_AARCH64(jit_sve_512_dw_convolution_fwd_t)
+            //CPU_INSTANCE_AARCH64(jit_sve_512_1x1_convolution_fwd_f32_t)
+            //CPU_INSTANCE_AARCH64(jit_sve_512_convolution_fwd_t<f32>)
+            //CPU_INSTANCE_AARCH64_ACL(acl_indirect_gemm_convolution_fwd_t)
+            //CPU_INSTANCE_AARCH64_ACL(acl_gemm_convolution_fwd_t<f32>)
+            //CPU_INSTANCE(gemm_convolution_fwd_t)
             // TODO: Move-up the brgemm<avx2> after performance study
-            CPU_INSTANCE_AVX2(brgemm_1x1_convolution_fwd_t<avx2>)
-            CPU_INSTANCE_AVX2(brgemm_convolution_fwd_t<avx2>)
-            CPU_INSTANCE(ref_convolution_fwd_t)
-            CPU_INSTANCE(ref_fused_convolution_fwd_t)
+            //CPU_INSTANCE_AVX2(brgemm_1x1_convolution_fwd_t<avx2>)
+            //CPU_INSTANCE_AVX2(brgemm_convolution_fwd_t<avx2>)
+            //CPU_INSTANCE(ref_convolution_fwd_t)
+            //CPU_INSTANCE(ref_fused_convolution_fwd_t)
             nullptr,
         }},
+        /*
         {{forward, bf16, bf16, f32}, {
             CPU_INSTANCE_AVX512(brdgmm_dw_convolution_fwd_t)
             CPU_INSTANCE_X64(ip_convolution_fwd_t)
@@ -538,6 +541,7 @@ const std::map<pk_dt_impl_key_t, std::vector<impl_list_item_t>> &impl_list_map()
             CPU_INSTANCE(ref_convolution_int8_bwd_data_t)
             nullptr,
         })},
+        */
     });
     return the_map;
 }

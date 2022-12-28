@@ -52,22 +52,22 @@ namespace cpu {
 #define DECLARE_IMPL_LIST(kind) \
     const impl_list_item_t *get_##kind##_impl_list(const kind##_desc_t *desc);
 
-DECLARE_IMPL_LIST(batch_normalization);
-DECLARE_IMPL_LIST(binary);
+//DECLARE_IMPL_LIST(batch_normalization);
+//DECLARE_IMPL_LIST(binary);
 DECLARE_IMPL_LIST(convolution);
-DECLARE_IMPL_LIST(deconvolution);
-DECLARE_IMPL_LIST(eltwise);
-DECLARE_IMPL_LIST(inner_product);
-DECLARE_IMPL_LIST(layer_normalization);
-DECLARE_IMPL_LIST(lrn);
-DECLARE_IMPL_LIST(matmul);
-DECLARE_IMPL_LIST(pooling);
-DECLARE_IMPL_LIST(prelu);
-DECLARE_IMPL_LIST(reduction);
-DECLARE_IMPL_LIST(resampling);
-DECLARE_IMPL_LIST(rnn);
-DECLARE_IMPL_LIST(shuffle);
-DECLARE_IMPL_LIST(softmax);
+//DECLARE_IMPL_LIST(deconvolution);
+//DECLARE_IMPL_LIST(eltwise);
+//DECLARE_IMPL_LIST(inner_product);
+//DECLARE_IMPL_LIST(layer_normalization);
+//DECLARE_IMPL_LIST(lrn);
+//DECLARE_IMPL_LIST(matmul);
+//DECLARE_IMPL_LIST(pooling);
+//DECLARE_IMPL_LIST(prelu);
+//DECLARE_IMPL_LIST(reduction);
+//DECLARE_IMPL_LIST(resampling);
+//DECLARE_IMPL_LIST(rnn);
+//DECLARE_IMPL_LIST(shuffle);
+//DECLARE_IMPL_LIST(softmax);
 
 #undef DECLARE_IMPL_LIST
 
@@ -87,22 +87,22 @@ public:
     case primitive_kind::kind: \
         return get_##kind##_impl_list((const kind##_desc_t *)desc);
         switch (desc->kind) {
-            CASE(batch_normalization);
-            CASE(binary);
+            //CASE(batch_normalization);
+            //CASE(binary);
             CASE(convolution);
-            CASE(deconvolution);
-            CASE(eltwise);
-            CASE(inner_product);
-            CASE(layer_normalization);
-            CASE(lrn);
-            CASE(matmul);
-            CASE(pooling);
-            CASE(prelu);
-            CASE(reduction);
-            CASE(resampling);
-            CASE(rnn);
-            CASE(shuffle);
-            CASE(softmax);
+            //CASE(deconvolution);
+            //CASE(eltwise);
+            //CASE(inner_product);
+            //CASE(layer_normalization);
+            //CASE(lrn);
+            //CASE(matmul);
+            //CASE(pooling);
+            //CASE(prelu);
+            //CASE(reduction);
+            //CASE(resampling);
+            //CASE(rnn);
+            //CASE(shuffle);
+            //CASE(softmax);
             default: assert(!"unknown primitive kind"); return empty_list;
         }
 #undef CASE
@@ -133,8 +133,12 @@ public:
     const impl_list_item_t *get_reorder_implementation_list(
             const memory_desc_t *src_md,
             const memory_desc_t *dst_md) const override {
+        /*
         return cpu_engine_impl_list_t::get_reorder_implementation_list(
                 src_md, dst_md);
+        */
+        static const impl_list_item_t empty_list[] = {nullptr};
+        return empty_list;
     }
     const impl_list_item_t *get_sum_implementation_list() const override {
         return cpu_engine_impl_list_t::get_sum_implementation_list();
