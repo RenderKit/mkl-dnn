@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022 Intel Corporation
+* Copyright 2022-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -1051,7 +1051,7 @@ int find_tile_size(const exec_config_t &exec_cfg,
         int total_size = c_size + preload_max_size + po_size;
         int available_size = exec_cfg.regs() * exec_cfg.grf_size()
                 - (int)c_reg_layout.size();
-        if (total_size <= available_size * 0.7) return tile_size;
+        if (total_size <= available_size * 0.8) return tile_size;
     }
     ir_error_not_expected();
     return -1;

@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2019-2022 Intel Corporation
+* Copyright 2019-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -285,12 +285,12 @@ bool xe_hp_systolic_gemm_t::pd_t::set_default_formats(data_type_t dt) {
             d->b_type(), d->c_type(), d->m(), d->n(), d->k(), d->batch(),
             unroll_m_, unroll_n_, alt_);
 
-    format_tag_t a_packed_tag = (unroll_m_ == 64)
-            ? a_packed_tag_64
-            : (unroll_m_ == 32) ? a_packed_tag_32 : a_packed_tag_16;
-    format_tag_t b_packed_tag = (unroll_n_ == 48)
-            ? b_packed_tag_48
-            : (unroll_n_ == 32) ? b_packed_tag_32 : b_packed_tag_16;
+    format_tag_t a_packed_tag = (unroll_m_ == 64) ? a_packed_tag_64
+            : (unroll_m_ == 32)                   ? a_packed_tag_32
+                                                  : a_packed_tag_16;
+    format_tag_t b_packed_tag = (unroll_n_ == 48) ? b_packed_tag_48
+            : (unroll_n_ == 32)                   ? b_packed_tag_32
+                                                  : b_packed_tag_16;
     format_tag_t c_packed_tag = b_packed_tag;
 
     packed_a_ = packed_b_ = packed_c_ = false;
@@ -435,6 +435,7 @@ status_t xe_hp_systolic_gemm_t::init_compute(engine_t *engine) {
     auto c_type = d->c_type();
     auto co_type = pd()->impl_co_type();
     auto acc_type = pd()->impl_acc_type();
+    bool trans_co = pd()->with_bias() && (d->trans_bias() == dnnl_trans);
 
     bool may_k_block
             = (d->k() > kd_t::min_block_k(a_type)) && pd()->allow_k_blocking();
@@ -447,7 +448,7 @@ status_t xe_hp_systolic_gemm_t::init_compute(engine_t *engine) {
     kd_t kd_full;
 
     auto status = kd_full.select_kernel(arch_, eu_count_, pd()->with_batch(),
-            pd()->packed_c(), pd()->with_a_zero_points(),
+            pd()->packed_c(), trans_co, pd()->with_a_zero_points(),
             pd()->with_b_zero_points(), pd()->with_c_zero_points(),
             pd()->with_bias(), pd()->alpha(), pd()->beta(), *post_ops, a_type,
             b_type, c_type, co_type, acc_type, d->m(), d->n(), d->k(),
@@ -482,7 +483,7 @@ status_t xe_hp_systolic_gemm_t::init_compute(engine_t *engine) {
                 kd_t kd;
 
                 auto status = kd.select_kernel(arch_, eu_count_,
-                        pd()->with_batch(), pd()->packed_c(),
+                        pd()->with_batch(), pd()->packed_c(), trans_co,
                         pd()->with_a_zero_points(), pd()->with_b_zero_points(),
                         this_c_offset, pd()->with_bias(), pd()->alpha(),
                         this_beta, *this_post_ops, a_type, b_type, c_type,
@@ -770,6 +771,7 @@ status_t xe_hp_systolic_gemm_t::launch_compute(const gemm_exec_ctx_t &ctx,
     uint32_t flags = 0;
     if (co_kind_ == 'R') flags |= FlagCORow;
     if (co_kind_ == 'C') flags |= FlagCOColumn;
+    if (co_kind_ == 'M') flags |= FlagCORow | FlagCOColumn;
     if (!first_k_block) flags |= FlagNoninitialKBlock;
     if (!last_k_block) flags |= FlagNonfinalKBlock;
     arg_list.set(argn++, flags);

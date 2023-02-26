@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2016-2022 Intel Corporation
+# Copyright 2016-2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -85,6 +85,17 @@ if(DNNL_CPU_SYCL)
     foreach(f ${sources})
         get_filename_component(fname ${f} NAME)
         if(${fname} MATCHES "cpu_")
+            list(REMOVE_ITEM sources "${f}")
+        endif()
+    endforeach()
+endif()
+
+# Do not build C examples for TBB threading runtime because
+# TBB doesn't provide C API to do explicit finalization.
+if (DNNL_CPU_RUNTIME STREQUAL "TBB" OR DNNL_CPU_SYCL)
+    foreach(f ${sources})
+        get_filename_component(fname ${f} NAME)
+        if(${fname} MATCHES ".*\\.c$")
             list(REMOVE_ITEM sources "${f}")
         endif()
     endforeach()

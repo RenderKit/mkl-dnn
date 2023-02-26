@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2021-2022 Intel Corporation
+* Copyright 2021-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -52,6 +52,16 @@ status_t brgemm_convolution_fwd_t<isa, use_inversion>::pd_t::init(
     const auto wei_type = weights_md(0)->data_type;
     const auto dst_type = dst_md(0)->data_type;
     const bool is_int8 = one_of(src_type, u8, s8);
+
+    // The following check will detect if this implementation is being
+    // executed through a BWD_D Convolution call and prevent the primitive from
+    // executing 'use_inversion == true' as FWD. This can only work if the
+    // diff_src_desc and diff_dst_desc are defined in the aforementioned.
+    const convolution_desc_t &cd = *desc();
+    if (use_inversion
+            && one_of(true, types::is_zero_md(&cd.diff_src_desc),
+                    types::is_zero_md(&cd.diff_dst_desc)))
+        return status::unimplemented;
 
     using skip_mask_t = primitive_attr_t::skip_mask_t;
     auto skip_mask = skip_mask_t::post_ops | skip_mask_t::sum_dt
@@ -411,8 +421,7 @@ status_t brgemm_convolution_fwd_t<isa, use_inversion>::add_po_kernel(
     bcfg->LDD = (is_init && jcp.use_buffer) ? jcp.LDC : jcp.LDD;
     bcfg->dt_c = (!is_init && jcp.use_buffer) ? jcp.acc_dt : jcp.dst_dt; // inp
     bcfg->dt_d = (is_init && jcp.use_buffer) ? jcp.acc_dt : jcp.dst_dt; // out
-    bcfg->alpha = (!is_init)
-            && (IMPLICATION(jcp.with_sum, jcp.use_buffer) || jcp.with_eltwise);
+    bcfg->alpha = !is_init && IMPLICATION(jcp.with_sum, jcp.use_buffer);
     bcfg->beta = is_init ? 0 : 1;
     CHECK(safe_ptr_assign(kernels_po_[ker_idx],
             new jit_brgemm_kernel_post_ops<isa>(jcp, *bcfg, *_pd->attr())));
@@ -862,6 +871,7 @@ struct brgemm_convolution_fwd_t<isa, use_inversion>::brgemm_thread_ctx_t {
     int32_t *src_zp_comp_ptr;
     int32_t *dst_zp_vals;
     int32_t *s8s8_comp_ptr;
+    const float *dst_scales {nullptr};
 };
 
 template <cpu_isa_t isa, bool use_inversion>
@@ -875,6 +885,7 @@ status_t brgemm_convolution_fwd_t<isa, use_inversion>::execute(
 
     DEFINE_ARG_SCALES_BUFFER(src_scales, DNNL_ARG_SRC);
     DEFINE_ARG_SCALES_BUFFER(wei_scales, DNNL_ARG_WEIGHTS);
+    DEFINE_ARG_SCALES_BUFFER(dst_scales, DNNL_ARG_DST);
 
     const float *oscales = precompute_scales(ctx.get_scratchpad_grantor(),
             src_scales, wei_scales, _pd->OC(), _pd->attr());
@@ -1003,6 +1014,7 @@ status_t brgemm_convolution_fwd_t<isa, use_inversion>::execute(
             btc.src_zp_comp_ptr
                     = jcp.src_zero_point ? src_zp_comp_base : nullptr;
             btc.s8s8_comp_ptr = jcp.s8s8_avx512 ? s8s8_comp_base : nullptr;
+            btc.dst_scales = dst_scales;
 
             if (jcp.exec_type == exec_trans && (last_n != n || last_g != g)) {
                 if (!jcp.copy_block_only)
@@ -1124,7 +1136,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::perform_outwork(
         int kd_l, int kh_l, const void *post_ops_binary_rhs_arg_vec,
         const float *oscales, int32_t src_zp_vals, int32_t *src_zp_ptr,
         int32_t *dst_zp_ptr, int32_t *s8s8_compensation, bool maybe_do_init,
-        bool do_postwork, bool do_post_comp) const {
+        bool do_postwork, bool do_post_comp, const float *dst_scales) const {
 
     const auto _pd = pd();
     const auto &jcp = _pd->jcp_;
@@ -1151,6 +1163,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::perform_outwork(
         p.dst_orig = dst;
         p.c_zp_values = dst_zp_ptr;
         p.a_comp_val = src_zp_vals;
+        p.ptr_dst_scales = (void *)dst_scales;
     }
 
     auto call_outwork_ker = [&](bool is_postwork, bool has_postcomp,
@@ -1237,7 +1250,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::call_brgemm_kernel(
                 static_cast<size_t>(g_oc), 0, btc.brgemm_ctx.dst, 0,
                 static_cast<void *>(src_zp_ptr), nullptr,
                 static_cast<void *>(dst_zp_ptr), false, src_zp_vals,
-                do_only_comp, do_only_pass_comp};
+                do_only_comp, do_only_pass_comp, btc.dst_scales};
 
         void *scratch = is_amx ? static_cast<void *>(btc.wsp_tile)
                                : static_cast<void *>(s8s8_comp);
@@ -1572,7 +1585,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::ker_base(
                 g_oc, is_oc_tail, ow_b, ow_e, kd_l, kh_l,
                 post_ops_binary_rhs_arg_vec.data(), btc.oscales,
                 btc.src_zp_vals, btc.src_zp_comp_ptr, btc.dst_zp_vals,
-                btc.s8s8_comp_ptr, do_init, do_postwork, false);
+                btc.s8s8_comp_ptr, do_init, do_postwork, false, btc.dst_scales);
     };
 
     if (kd_f > kd_s && kh_f > kh_s && kw_f > kw_s) {
@@ -1627,7 +1640,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::ker_base(
                 g_oc, is_oc_tail, ow, ow, kd_l, kh_l,
                 post_ops_binary_rhs_arg_vec.data(), btc.oscales,
                 btc.src_zp_vals, btc.src_zp_comp_ptr, btc.dst_zp_vals,
-                btc.s8s8_comp_ptr, do_init, do_postwork, false);
+                btc.s8s8_comp_ptr, do_init, do_postwork, false, btc.dst_scales);
     }
 }
 
@@ -1783,7 +1796,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::ker_trans(
                 g_oc, is_oc_tail, ow, ow, kd_l, kh_l,
                 post_ops_binary_rhs_arg_vec.data(), btc.oscales,
                 btc.src_zp_vals, btc.src_zp_comp_ptr, btc.dst_zp_vals,
-                btc.s8s8_comp_ptr, do_init, do_postwork, false);
+                btc.s8s8_comp_ptr, do_init, do_postwork, false, btc.dst_scales);
     }
 }
 
@@ -1935,7 +1948,7 @@ void brgemm_convolution_fwd_t<isa, use_inversion>::ker_vpad(
                 g_oc, is_oc_tail, ow, ow, kd_l, kh_l,
                 post_ops_binary_rhs_arg_vec.data(), btc.oscales,
                 btc.src_zp_vals, btc.src_zp_comp_ptr, btc.dst_zp_vals,
-                btc.s8s8_comp_ptr, do_init, do_postwork, false);
+                btc.s8s8_comp_ptr, do_init, do_postwork, false, btc.dst_scales);
     }
 }
 

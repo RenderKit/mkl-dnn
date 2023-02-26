@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022 Intel Corporation
+* Copyright 2022-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -51,11 +51,16 @@ void set_default_format(memory_desc_t &md, const std::string &tag) {
     md = make_layout(md, tag).to_dnnl(md.dims);
 }
 
-bool matches_tag(const layout_t &layout, const std::string &tag) {
+bool matches_tag(const layout_t &layout, const std::string &tag,
+        const std::vector<dim_t> &dims) {
     if (layout.is_empty()) return false;
-    auto tag_layout = make_layout(layout.type(), layout.dims(), tag);
+    auto tag_layout = make_layout(layout.type(), dims, tag);
     if (layout != tag_layout) return false;
     return true;
+}
+
+bool matches_tag(const layout_t &layout, const std::string &tag) {
+    return matches_tag(layout, tag, layout.dims());
 }
 
 bool matches_tag_strict(const layout_t &layout, const std::string &tag) {
@@ -67,7 +72,8 @@ bool matches_tag_strict(const layout_t &layout, const std::string &tag) {
 
 bool matches_tag(const memory_desc_t &md, const std::string &tag) {
     if (md.format_kind == format_kind::any) return false;
-    return matches_tag(make_layout(md), tag);
+    std::vector<dim_t> dims(md.dims, md.dims + md.ndims);
+    return matches_tag(make_layout(md), tag, dims);
 }
 
 bool matches_tag_strict(const memory_desc_t &md, const std::string &tag) {
@@ -586,11 +592,18 @@ bool can_use_2d_send(const conv_config_t &cfg, const layout_t &l, bool is_a) {
     // 2D messages does not support vnni format with 4 byte elements
     if (type_t(prb.b_data_type).size() >= 4) return false;
 
+    auto is_plain_wei_ok = [&]() {
+        if (l.is_empty()) return true;
+        for (auto *t : {"xba", "xab", "axb"}) {
+            if (matches_tag_strict(l, t)) return true;
+        }
+        return false;
+    };
+
     auto is_plain_ok = [&]() {
         if (is_a || prb.is_bwd_w) return matches_tag_strict(l, "axb");
-        if (is_b && l.is_empty()) return true;
-        if (is_b && prb.is_fwd) return matches_tag_strict(l, "xba");
-        if (is_b && prb.is_bwd_d) return matches_tag_strict(l, "xab");
+        bool is_wei = (is_b && prb.is_fwd) || (is_b && prb.is_bwd_d);
+        if (is_wei) return is_plain_wei_ok();
         return false;
     };
 
@@ -775,10 +788,12 @@ status_t init_tensor_layouts(conv_config_t &cfg, convolution_pd_t *pd) {
         if (!matches_tag(dst_md, dst_tag)) user_dst_tag = "axb";
     }
 
-    // Allow internal reorder from oihw/ohwi to more optimal weights layout.
-    if (allow_wei_reorder) {
-        if (matches_tag(wei_md, "abx")) user_wei_tag = "abx";
-        if (matches_tag(wei_md, "axb")) user_wei_tag = "axb";
+    // Allow internal reorder for plain weights.
+    for (auto *t : {"abx", "axb"}) {
+        if (matches_tag(wei_md, t)) {
+            user_wei_tag = t;
+            break;
+        }
     }
 
     if (user_src_tag.empty()) user_src_tag = src_tag;

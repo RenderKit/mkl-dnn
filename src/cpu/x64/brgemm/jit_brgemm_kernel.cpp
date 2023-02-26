@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020-2022 Intel Corporation
+* Copyright 2020-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -161,6 +161,7 @@ private:
     const reg64_t reg_bias = reg_rdb_loop;
     const reg64_t reg_scales = reg_rdb_loop;
     const reg64_t reg_aux_bias = reg_rdb_loop;
+    const reg64_t reg_dst_scales = reg_rdb_loop;
     const reg64_t reg_binary_postops_oc_l = reg_rdb_loop;
     const reg64_t reg_aux_binary_postops_oc_l = reg_rdb_loop;
     const reg64_t reg_aux_binary_postops_sp = reg_rdb_loop;
@@ -173,6 +174,7 @@ private:
     const reg64_t reg_aux_zp_c_values = reg_rdb_loop;
 
     const reg64_t reg_aux_scales = reg_aux_B;
+    const reg64_t reg_aux_dst_scales = reg_aux_B;
     const reg64_t reg_do_post_ops = reg_rdb_loop;
     const reg64_t reg_do_comp = reg_rdb_loop;
     const reg64_t reg_skip_accm = reg_rdb_loop;
@@ -220,7 +222,8 @@ private:
     constexpr static int reg_skip_accm_offs_ = 192;
     constexpr static int reg_zp_a_val_offs_ = 200;
     constexpr static int reg_do_comp_offs_ = 208;
-    constexpr static int stack_space_needed_ = 216;
+    constexpr static int reg_dst_scales_offs_ = 216;
+    constexpr static int stack_space_needed_ = 224;
 
     bool is_ldb_loop_ = false;
     bool handle_binary_po_offset_ = false;
@@ -358,15 +361,15 @@ private:
 };
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::A_offset(int bd, int rd, bool is_amx) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::A_offset(
+        int bd, int rd, bool is_amx) const noexcept {
     return (is_amx) ? brg.typesize_A * (bd * brg.bd_block * brg.LDA)
                     : brg.typesize_A * (bd * brg.LDA + rd);
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::B_offset(int ld, int rd, bool is_amx) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::B_offset(
+        int ld, int rd, bool is_amx) const noexcept {
     if (is_amx) {
         return brg.typesize_B * (brg.rd_step * ld * brg.ld_block);
     } else {
@@ -454,15 +457,15 @@ int jit_brgemm_kernel_t<isa, Wmm>::bdb_po_offset(int bd_block2) const noexcept {
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::bias_offset(int ld, bool is_tail) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::bias_offset(
+        int ld, bool is_tail) const noexcept {
     return (is_tail) ? brg.typesize_bias * brg.ldb_tail
                      : brg.typesize_bias * ld * brg.ld_block;
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::oc_logical_offset(int ld, bool is_tail) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::oc_logical_offset(
+        int ld, bool is_tail) const noexcept {
     return (is_tail) ? brg.ldb_tail : ld * brg.ld_block;
 }
 
@@ -474,8 +477,8 @@ int jit_brgemm_kernel_t<isa, Wmm>::compensations_offset(
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::bdb_compensation_offset(int bd_block2) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::bdb_compensation_offset(
+        int bd_block2) const noexcept {
     return sizeof(int32_t) * bd_block2 * brg.bd_block * brg.LDB;
 }
 
@@ -486,28 +489,28 @@ int jit_brgemm_kernel_t<isa, Wmm>::compensation_vpad_offset(
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::scales_offset(int ld, bool is_tail) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::scales_offset(
+        int ld, bool is_tail) const noexcept {
     return (is_tail) ? brg.is_oc_scale * sizeof(float) * brg.ldb_tail
                      : brg.is_oc_scale * sizeof(float) * ld * brg.ld_block;
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::zp_comp_a_offset(int ld, bool is_tail) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::zp_comp_a_offset(
+        int ld, bool is_tail) const noexcept {
     return (is_tail) ? sizeof(int32_t) * brg.ldb_tail
                      : sizeof(int32_t) * ld * brg.ld_block;
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::bdb_zp_comp_a_offset(int bd_block2) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::bdb_zp_comp_a_offset(
+        int bd_block2) const noexcept {
     return sizeof(int32_t) * bd_block2 * brg.bd_block * brg.LDB;
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::zp_comp_a_vpad_offset(int ld, int bd) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::zp_comp_a_vpad_offset(
+        int ld, int bd) const noexcept {
     return sizeof(int32_t) * (ld * brg.ld_block + bd * brg.LDB);
 }
 
@@ -517,8 +520,8 @@ int jit_brgemm_kernel_t<isa, Wmm>::zp_comp_b_offset(int bd) const noexcept {
 }
 
 template <cpu_isa_t isa, typename Wmm>
-int jit_brgemm_kernel_t<isa, Wmm>::bdb_zp_comp_b_offset(int bd_block2) const
-        noexcept {
+int jit_brgemm_kernel_t<isa, Wmm>::bdb_zp_comp_b_offset(
+        int bd_block2) const noexcept {
     return zp_comp_b_offset(bd_block2 * brg.bd_block);
 }
 
@@ -907,6 +910,11 @@ void jit_brgemm_kernel_t<isa, Wmm>::read_params() {
         mov(ptr[rsp + reg_zp_c_values_offs_], reg_zp_c_values);
     }
 
+    if (brg.with_dst_scales) {
+        mov(reg_dst_scales, ptr[param1 + GET_OFF(ptr_dst_scales)]);
+        mov(ptr[rsp + reg_dst_scales_offs_], reg_dst_scales);
+    }
+
     mov(reg_do_post_ops, ptr[param1 + GET_OFF(do_post_ops)]);
     mov(ptr[rsp + reg_do_post_ops_offs_], reg_do_post_ops);
 
@@ -1142,6 +1150,19 @@ void jit_brgemm_kernel_t<isa, Wmm>::store_accumulators_apply_post_ops(
     if (postops_injector_)
         apply_post_ops(bd_block, ld_block2, ldb_and_bdb_offset, is_ld_tail);
 
+    if (brg.with_dst_scales) {
+        mov(reg_aux_dst_scales, ptr[rsp + reg_dst_scales_offs_]);
+        auto vmm_dst_scales = vmm_tmp_1();
+        vbroadcastss(vmm_dst_scales, ptr[reg_aux_dst_scales]);
+
+        for (int ld = 0; ld < ld_block2; ld++) {
+            for (int bd = 0; bd < bd_block; bd++) {
+                auto vmm = accm(ld_block2, bd, ld);
+                vmulps(vmm, vmm, vmm_dst_scales);
+            }
+        }
+    }
+
     if (brg.zp_type_c != brgemm_broadcast_t::none) {
         mov(reg_aux_zp_c_values, ptr[rsp + reg_aux_zp_c_values_offs_]);
         auto vmm_zp_c = vmm_tmp_1();
@@ -1348,7 +1369,8 @@ void jit_brgemm_kernel_t<isa, Wmm>::store_accumulators(int bd_block2,
             brg.zp_type_a, brg.zp_type_b, brg.zp_type_c);
     const bool are_post_ops_applicable = one_of(true, brg.with_eltwise,
             brg.with_binary, brg.with_scales, brg.with_bias, brg.with_sum,
-            brg.dt_d != brg.dt_c, brg.req_s8s8_compensation, has_zero_points);
+            brg.dt_d != brg.dt_c, brg.req_s8s8_compensation, has_zero_points,
+            brg.with_dst_scales);
     const bool need_to_apply_alpha_beta = brg.beta != 0.f || brg.alpha != 1.f;
 
     if (brg.is_tmm) {
@@ -1420,7 +1442,8 @@ void jit_brgemm_kernel_t<isa, Wmm>::store_accumulators(int bd_block2,
                         post_processed |= utils::one_of(true, brg.with_bias,
                                 brg.with_scales, with_binary_per_oc_bcast_,
                                 brg.zp_type_a != brgemm_broadcast_t::none,
-                                brg.zp_type_c == brgemm_broadcast_t::per_n);
+                                brg.zp_type_c == brgemm_broadcast_t::per_n,
+                                brg.with_dst_scales);
                     }
                     if (bdb < bd_block2 - 1) {
                         advance_bdb_post_op_regs(adj_bd_block);
@@ -2170,7 +2193,9 @@ void jit_brgemm_kernel_t<isa, Wmm>::bdb_loop() {
             // first bd_block --------------
             auto bdblocks = brg.bdb;
             if (bdblocks >= 1) {
-                bdb_loop_body(1, false, true, brg.bdb == 1 && brg.bdb_tail == 0,
+                bdb_loop_body(1, false, true,
+                        (brg.bcast_dim - brg.brgattr.max_bottom_vpad)
+                                < brg.bd_block,
                         brg.bdb - bd_blocks_for_rd_tail > 0 ? 0
                                                             : rows_for_rd_tail,
                         skip_accumulation);

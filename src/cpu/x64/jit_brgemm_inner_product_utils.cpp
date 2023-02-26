@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020-2022 Intel Corporation
+* Copyright 2020-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -299,6 +299,7 @@ status_t init_ip_conf_fwd(jit_brgemm_primitive_conf_t &jbgp,
         const auto &wei_scales = attr.scales_.get(DNNL_ARG_WEIGHTS);
         jbgp.is_oc_scale = wei_scales.mask_ != 0;
     }
+
     const int min_ic_divisor = is_amx_int8 ? 4 : is_amx_xf16 ? 2 : 1;
 
     jbgp.use_buffer_a = jbgp.ic % min_ic_divisor != 0;
@@ -306,7 +307,8 @@ status_t init_ip_conf_fwd(jit_brgemm_primitive_conf_t &jbgp,
     constexpr int amx_int8_row = 64;
     constexpr int amx_xf16_row = 32;
     jbgp.ic_block = (is_amx_int8) ? amx_int8_row
-                                  : (is_amx_xf16) ? amx_xf16_row : jbgp.simd_w;
+            : (is_amx_xf16)       ? amx_xf16_row
+                                  : jbgp.simd_w;
     jbgp.nb_ic = div_up(jbgp.ic, jbgp.ic_block);
 
     // gemm-based inner product performs better when oc = 1
@@ -485,7 +487,8 @@ status_t init_ip_conf_bwd_d(jit_brgemm_primitive_conf_t &jbgp) {
     jbgp.ic_block = !avoid_max_ic_block
                     && jbgp.ic >= (is_f32 && !jbgp.is_bf32 ? 512 : 64)
             ? 64
-            : jbgp.ic >= 32 ? 32 : 16;
+            : jbgp.ic >= 32 ? 32
+                            : 16;
 
     jbgp.nb_ic = div_up(jbgp.ic, jbgp.ic_block);
     jbgp.nb_ic_blocking = 1;
@@ -782,9 +785,9 @@ status_t init_ip_conf_bwd_w(jit_brgemm_primitive_conf_t &jbgp) {
     const int amx_xf16_row = 64;
     const bool big_ic_blk_ok
             = is_f32 && jbgp.ic % (4 * jbgp.simd_w) == 0 && jbgp.mb <= 128;
-    jbgp.ic_block = big_ic_blk_ok && !is_amx_xf16
-            ? 4 * jbgp.simd_w
-            : (is_amx_xf16 && has_weights_buffer) ? amx_xf16_row : jbgp.simd_w;
+    jbgp.ic_block = big_ic_blk_ok && !is_amx_xf16 ? 4 * jbgp.simd_w
+            : (is_amx_xf16 && has_weights_buffer) ? amx_xf16_row
+                                                  : jbgp.simd_w;
     jbgp.ic_block_ext
             = is_amx_xf16 || (jbgp.wei_dt == dnnl::impl::data_type::bf16) ? 32
                                                                           : 16;
@@ -993,6 +996,7 @@ status_t init_ip_conf(cpu_isa_t isa, jit_brgemm_primitive_conf_t &jbgp,
     if (is_int8) {
         jbgp.acc_dt = s32;
         jbgp.with_scales = true;
+        jbgp.with_dst_scales = true;
     } else
         jbgp.acc_dt = f32;
 

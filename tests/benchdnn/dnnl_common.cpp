@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2017-2022 Intel Corporation
+* Copyright 2017-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -354,6 +354,11 @@ void get_gpu_profiling_info(uint64_t &nsec, double &freq, int mode) {
     if (!is_bench_mode(PROF)) return;
     DNN_SAFE_V(dnnl_impl_gpu_get_profile_info(nsec, freq, mode));
 #endif
+}
+
+void finalize() {
+    reset_gpu_profiling();
+    finalize_tbb();
 }
 
 inline bool should_stop(const timer::timer_t &t) {

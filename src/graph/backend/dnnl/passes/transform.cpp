@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2021-2022 Intel Corporation
+ * Copyright 2021-2023 Intel Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -166,8 +166,8 @@ status_t replace_quant_data_with_binary_post_op(
             auto algo = (quant_data_op->get_kind() == op_kind::dnnl_mul_scales)
                     ? dnnl::algorithm::binary_mul
                     : quant_data_op->get_kind() == op_kind::dnnl_add_zps
-                            ? dnnl::algorithm::binary_add
-                            : dnnl::algorithm::binary_sub;
+                    ? dnnl::algorithm::binary_add
+                    : dnnl::algorithm::binary_sub;
             op_ptr bin_op = std::make_shared<op_t>(op_kind::dnnl_binary);
             bin_op->set_attr<int64_t>(
                     op_attr::alg_kind, static_cast<int64_t>(algo));
@@ -458,88 +458,6 @@ status_t fold_mul_scales(std::shared_ptr<subgraph_t> &sg) {
     do {
         changed = fold_mul_scales_func();
     } while (changed);
-    return status::success;
-}
-
-status_t fold_sum_scales(std::shared_ptr<subgraph_t> &sg) {
-    std::set<op_t *> visited;
-    subgraph_rewriter_t rewriter(sg);
-
-    for (auto &cur_op : sg->get_ops()) {
-        if (!(cur_op->get_kind() == op_kind::dnnl_binary
-                    && static_cast<dnnl::algorithm>(
-                               cur_op->get_attr<int64_t>(op_attr::alg_kind))
-                            == dnnl::algorithm::binary_add)
-                || visited.count(cur_op.get()))
-            continue;
-
-        visited.insert(cur_op.get());
-        size_t mul_scale_op_offset = 2;
-        auto lhs_val = cur_op->get_input_value(0);
-        auto rhs_val = cur_op->get_input_value(1);
-
-        if (!lhs_val->has_producer() || !rhs_val->has_producer()) { continue; }
-        const auto &l_op = lhs_val->get_producer();
-        const auto &r_op = rhs_val->get_producer();
-
-        auto consumers = cur_op->get_output_values()[0]->get_consumers();
-        if (consumers.empty()
-                || consumers[0].get_op().get_kind()
-                        != op_kind::dnnl_mul_scales) {
-            continue;
-        }
-
-        if (l_op.get_kind() != op_kind::dnnl_mul_scales
-                || r_op.get_kind() != op_kind::dnnl_mul_scales) {
-            continue;
-        }
-        if (l_op.num_inputs() > 0 && l_op.get_input_value(0)->has_producer()
-                && l_op.get_input_value(0)->get_producer().get_kind()
-                        == op_kind::dnnl_reorder) {
-            mul_scale_op_offset = 1;
-        } else if (r_op.num_inputs() > 0
-                && r_op.get_input_value(0)->has_producer()
-                && r_op.get_input_value(0)->get_producer().get_kind()
-                        == op_kind::dnnl_reorder) {
-            mul_scale_op_offset = 0;
-        }
-
-        if (mul_scale_op_offset != 2
-                && ltw(lhs_val->get_logical_tensor()).vdims()
-                        == ltw(rhs_val->get_logical_tensor()).vdims()) {
-            auto in_val = cur_op->get_input_value(mul_scale_op_offset);
-            auto &mul_scale_op = in_val->get_producer();
-            auto scales = mul_scale_op.get_attr<std::vector<float>>(
-                    op_attr::scales);
-            assert(scales.size() == 1); // per tensor
-
-            auto tmp = mul_scale_op.get_input_value(0);
-            auto &add_zps_op = tmp->get_producer();
-            auto zps = add_zps_op.get_attr<std::vector<int64_t>>(op_attr::zps);
-            assert(scales.size() == zps.size());
-
-            auto out_val = cur_op->get_output_values()[0];
-            auto consumers = out_val->get_consumers();
-            auto &next_op = consumers[0].get_op();
-            // set sum post-ops' second input scale
-            float tmp_scale
-                    = next_op.get_attr<std::vector<float>>(op_attr::scales)[0];
-            scales[0] *= tmp_scale;
-            mul_scale_op.set_attr<std::vector<float>>(op_attr::scales, scales);
-
-            // update the output scales
-            auto other_val = cur_op->get_input_value(1 - mul_scale_op_offset);
-            auto &oscales_op = other_val->get_producer();
-            auto oscales
-                    = oscales_op.get_attr<std::vector<float>>(op_attr::scales);
-            for (auto &v : oscales)
-                v *= tmp_scale;
-            oscales_op.set_attr<std::vector<float>>(op_attr::scales, oscales);
-            rewriter.fuse_op_to_predecessor(next_op.shared_from_this());
-        }
-    }
-
-    rewriter.run();
     return status::success;
 }
 
@@ -937,57 +855,12 @@ status_t fuse_post_ops(std::shared_ptr<subgraph_t> &sg) {
                     rewriter.fuse_op_to_successor(
                             mul_scale_op.shared_from_this());
 
-                    fusion_info.append_post_sum(post_op->shared_from_this(),
+                    fusion_info.append_post_binary(post_op->shared_from_this(),
                             std::vector<size_t> {base_op->num_inputs()},
                             scales[0], zp);
-                    assertm(!base_op->has_attr(op_attr::with_sum)
-                                    || !base_op->get_attr<bool>(
-                                            op_attr::with_sum),
-                            "not support multiple post sum ops "
-                            "currently.");
-                    base_op->set_attr<bool>(op_attr::with_sum, true);
                 } else {
-                    // - the add operation may need broadcast
-                    auto fused_in = post_op->get_input_value(
-                            fuse_op_predecessor_offset);
-                    auto other_in = post_op->get_input_value(
-                            1 - fuse_op_predecessor_offset);
-                    auto dst = post_op->get_output_value(0);
-
-                    if (ltw(fused_in->get_logical_tensor()).vdims()
-                            == ltw(other_in->get_logical_tensor()).vdims()) {
-                        if (base_op->get_kind() == op_kind::dnnl_eltwise
-                                || base_op->get_kind() == op_kind::dnnl_pool) {
-                            fusion_info.append_post_binary(
-                                    post_op->shared_from_this(),
-                                    std::vector<size_t> {
-                                            base_op->num_inputs()});
-                        } else {
-                            // use sum post-ops for no-broadcast add
-                            // map non-first post-sum to post-binary_add
-                            if (base_op->has_attr(op_attr::with_sum)
-                                    && base_op->get_attr<bool>(
-                                            op_attr::with_sum)) {
-                                fusion_info.append_post_binary(
-                                        post_op->shared_from_this(),
-                                        std::vector<size_t> {
-                                                base_op->num_inputs()});
-                            } else {
-                                fusion_info.append_post_sum(
-                                        post_op->shared_from_this(),
-                                        std::vector<size_t> {
-                                                base_op->num_inputs()},
-                                        1.0f, 0);
-                                base_op->set_attr<bool>(
-                                        op_attr::with_sum, true);
-                            }
-                        }
-                    } else {
-                        // use binary post-ops for broadcast add
-                        fusion_info.append_post_binary(
-                                post_op->shared_from_this(),
-                                std::vector<size_t> {base_op->num_inputs()});
-                    }
+                    fusion_info.append_post_binary(post_op->shared_from_this(),
+                            std::vector<size_t> {base_op->num_inputs()});
                 }
             } else if (post_op->get_kind() == op_kind::dnnl_binary
                     && static_cast<dnnl::algorithm>(

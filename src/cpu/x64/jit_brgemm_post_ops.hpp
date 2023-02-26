@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020-2022 Intel Corporation
+* Copyright 2020-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -322,6 +322,7 @@ struct brgemm_kernel_post_ops_t {
     int32_t *c_zp_values;
     int32_t *s8s8_compensation;
     const void *dst_orig;
+    void *ptr_dst_scales;
 };
 
 template <cpu_isa_t isa>
@@ -340,8 +341,7 @@ struct jit_brgemm_kernel_post_ops : public jit_generator {
                                   brg.attr->post_ops_,
                                   memory_desc_wrapper(brg.dst_md))) {
 
-        if ((jcp.with_sum && brg.beta != 0)
-                || ((jcp.with_binary || jcp.with_eltwise) && brg.alpha != 0)) {
+        if (brg.beta != 0) {
             static constexpr bool preserve_gpr = true;
             static constexpr bool preserve_vmm = true;
             static constexpr bool use_exact_tail_scalar_bcast = false;
@@ -355,7 +355,7 @@ struct jit_brgemm_kernel_post_ops : public jit_generator {
                     k_tail_mask, use_exact_tail_scalar_bcast};
             const binary_injector::static_params_t bsp {this->param1, rhs_sp};
 
-            const bool save_state = (brg.alpha != 0) && jcp.with_eltwise;
+            const bool save_state = jcp.with_eltwise;
             const auto &reserved_eltwise_gpr = reg_reserved_eltwise;
             const auto reserved_eltwise_maskr = Xbyak::Opmask(1);
 
@@ -446,6 +446,8 @@ private:
     const reg64_t aux_reg_s8s8_comp = rbx;
     const reg64_t reg_zp_a_val = rbx;
     const reg64_t reg_apply_comp = rbx;
+    const reg64_t reg_dst_scales = rbx;
+    const reg64_t aux_reg_dst_scales = rbx;
     const reg64_t reg_tmp = abi_not_param1;
 
     constexpr static int reg_zp_c_values_offs_ = 0;
@@ -456,7 +458,8 @@ private:
     constexpr static int aux_reg_s8s8_comp_offs_ = 40;
     constexpr static int reg_zp_a_val_offs_ = 48;
     constexpr static int reg_apply_comp_offs_ = 56;
-    constexpr static int stack_space_needed_ = 64;
+    constexpr static int reg_dst_scales_offs_ = 64;
+    constexpr static int stack_space_needed_ = 72;
 
     /* bf16 emulation */
     Xbyak::Zmm bf16_emu_reserv_1 = Xbyak::Zmm(27);
@@ -480,16 +483,16 @@ private:
 
         return 0;
     }
-    int zp_comp_a_vpad_offset(int n, int m, bool is_tail = false) const
-            noexcept {
+    int zp_comp_a_vpad_offset(
+            int n, int m, bool is_tail = false) const noexcept {
         return (is_tail) ? sizeof(int32_t) * (brg.ldb_tail + m * brg.LDB)
                          : sizeof(int32_t) * (n * brg.ld_block + m * brg.LDB);
     }
     int mb_zp_comp_a_offset(int m_block) const noexcept {
         return sizeof(int32_t) * m_block * brg.LDB;
     }
-    int compensation_vpad_offset(int n, int m, bool is_tail = false) const
-            noexcept {
+    int compensation_vpad_offset(
+            int n, int m, bool is_tail = false) const noexcept {
         return (is_tail) ? sizeof(int32_t) * (brg.ldb_tail + m * brg.LDB)
                          : sizeof(int32_t) * (n * brg.ld_block + m * brg.LDB);
     }
@@ -579,7 +582,7 @@ private:
             }
         };
 
-        if (jcp.with_sum && brg.beta != 0) {
+        if (jcp.with_sum) {
             postops_injector_->set_lambda_injector(
                     primitive_kind::sum, sum_injector);
         }
@@ -607,7 +610,7 @@ private:
     void apply_comp(int m_block, int n_block, int tail = 0) {
         auto k_mask = (tail == 0) ? k_full_mask : k_tail_mask;
 
-        if (brg.alpha != 0 && brg.zp_type_a != brgemm_broadcast_t::none) {
+        if (brg.zp_type_a != brgemm_broadcast_t::none) {
             auto vmm_zp_a_val = vmm_tmp(1);
             mov(reg_zp_a_val, ptr[rsp + reg_zp_a_val_offs_]);
             vpbroadcastd(vmm_zp_a_val, reg_zp_a_val.cvt32());
@@ -629,7 +632,7 @@ private:
             }
         }
 
-        if (brg.alpha != 0 && brg.req_s8s8_compensation) {
+        if (brg.req_s8s8_compensation) {
             mov(aux_reg_s8s8_comp, ptr[rsp + aux_reg_s8s8_comp_offs_]);
             for (int n = 0; n < n_block; n++) {
                 auto vmm_comp = vmm_tmp(0);
@@ -663,25 +666,20 @@ private:
     void apply_post_ops(int m_block, int n_block, int tail = 0) {
         const auto vector = [=](int m, int n) { return Vmm(m * n_block + n); };
         auto k_mask = (tail == 0) ? k_full_mask : k_tail_mask;
-        const auto &p = attr.post_ops_;
-        const int sum_idx = p.find(primitive_kind::sum);
-        const auto req_comp = brg.is_int8 && brg.alpha != 0
+        const auto req_comp = brg.is_int8 && brg.beta != 0
                 && (brg.req_s8s8_compensation
                         || brg.zp_type_a != brgemm_broadcast_t::none);
 
-        // brg.alpha == 0 means no read from input, no bias, no eltwise - just
-        // initialize registers by zero at the beginning of kernel
-        // brg.beta == 0 means no sum - just registers write to output
+        // brg.alpha == 0 means initialize registers, 1 means read from input
+        // brg.beta == 0 means skip postwork, 1 means do postwork
         // req_comp == true -> convert accumulated values to f32 after applying
         // compensation to avoid the loss of accuracy when converting s32 to f32
         for_(int m = 0; m < m_block; m++)
         for (int n = 0; n < n_block; n++) {
-            if (brg.alpha == 0) {
-                if (sum_idx != -1 && brg.beta != 0) {
-                    // if sum then have to init vmm each time
-                    uni_vpxor(vector(m, n), vector(m, n), vector(m, n));
-                }
-            } else {
+            if (brg.alpha == 0 && brg.beta != 0) {
+                // if postwork then have to init vmm each time
+                uni_vpxor(vector(m, n), vector(m, n), vector(m, n));
+            } else if (brg.alpha != 0) {
                 auto inp_addr = ptr[aux_reg_in
                         + inp_typesize_ * (m * brg.LDC + n * brg.ld_block)];
                 cvt2ps(inp_dt_, vector(m, n), inp_addr, tail, false, k_mask,
@@ -691,19 +689,7 @@ private:
 
         if (req_comp) maybe_apply_comp(m_block, n_block, tail);
 
-        if (brg.alpha != 0 && jcp.with_bias) {
-            for_(int m = 0; m < m_block; m++)
-            for (int n = 0; n < n_block; n++) {
-                auto vmm_bias = vmm_tmp(0);
-                auto bias_addr = ptr[aux_reg_bias
-                        + bia_typesize_ * (n * brg.ld_block)];
-
-                cvt2ps(bia_dt_, vmm_bias, bias_addr, tail, false, k_mask);
-                vaddps(vector(m, n), vmm_bias);
-            }
-        }
-
-        if (brg.alpha != 0) {
+        if (brg.beta != 0) {
             for_(int m = 0; m < m_block; m++)
             for (int n = 0; n < n_block; n++) {
                 const auto addr = ptr[aux_reg_scales
@@ -720,9 +706,39 @@ private:
             }
         }
 
+        if (brg.beta != 0 && jcp.with_bias) {
+            for (int n = 0; n < n_block; n++) {
+                auto vmm_bias = vmm_tmp(0);
+                auto bias_addr = ptr[aux_reg_bias
+                        + bia_typesize_ * (n * brg.ld_block)];
+                cvt2ps(bia_dt_, vmm_bias, bias_addr, tail, false, k_mask);
+                for (int m = 0; m < m_block; m++) {
+                    vaddps(vector(m, n), vmm_bias);
+                }
+            }
+        }
+
         if (postops_injector_) inject_attr_postops(m_block, n_block, tail);
 
-        if (brg.alpha != 0 && brg.zp_type_c != brgemm_broadcast_t::none) {
+        if (brg.beta != 0 && brg.with_dst_scales) {
+            mov(aux_reg_dst_scales, ptr[rsp + reg_dst_scales_offs_]);
+            const auto addr = ptr[aux_reg_dst_scales];
+            auto vmm_scales = vmm_tmp(0);
+            if (!isa_has_masks(isa)) vmovups(vmm_scales, addr);
+
+            for_(int m = 0; m < m_block; m++)
+            for (int n = 0; n < n_block; n++) {
+                auto vmm = vector(m, n);
+                if (isa_has_masks(isa)) {
+                    vmm = maybe_mask(vector(m, n), tail > 0, false, k_mask);
+                    vmulps(vmm, vmm, addr);
+                } else {
+                    vmulps(vmm, vmm, vmm_scales);
+                }
+            }
+        }
+
+        if (brg.beta != 0 && brg.zp_type_c != brgemm_broadcast_t::none) {
             mov(aux_reg_zp_c_values, ptr[rsp + aux_reg_zp_c_values_offs_]);
             auto vmm_zp_c = vmm_tmp(0);
             if (brg.zp_type_c == brgemm_broadcast_t::per_tensor) {
@@ -803,8 +819,8 @@ private:
 
     void loop_by_N(int m_block, int nb2, int nb2_tail, int nb_tail) {
 
-        if (brg.alpha) {
-            mov(aux_reg_in, reg_in);
+        if (brg.alpha) { mov(aux_reg_in, reg_in); }
+        if (brg.beta != 0) {
             if (jcp.with_bias) mov(aux_reg_bias, reg_bias);
             if (brg.zp_type_c != brgemm_broadcast_t::none) {
                 mov(aux_reg_zp_c_values, ptr[rsp + reg_zp_c_values_offs_]);
@@ -830,7 +846,8 @@ private:
             add(aux_reg_out, out_typesize_ * oc_l_offset);
             if (brg.alpha != 0) {
                 add(aux_reg_in, inp_typesize_ * oc_l_offset);
-
+            }
+            if (brg.beta != 0) {
                 if (jcp.with_bias)
                     add(aux_reg_bias, bia_typesize_ * oc_l_offset);
                 if (brg.zp_type_c != brgemm_broadcast_t::none) {
@@ -861,6 +878,8 @@ private:
             add(aux_reg_out, out_typesize_ * oc_l_offset);
             if (brg.alpha != 0) {
                 add(aux_reg_in, inp_typesize_ * oc_l_offset);
+            }
+            if (brg.beta != 0) {
                 if (jcp.with_bias)
                     add(aux_reg_bias, bia_typesize_ * oc_l_offset);
                 if (brg.zp_type_c != brgemm_broadcast_t::none) {
@@ -887,8 +906,8 @@ private:
         if (nb_tail > 0) {
             apply_post_ops(m_block, 1, nb_tail);
 
-            if (brg.alpha != 0) {
-                add(aux_reg_in, inp_typesize_ * (nb_tail));
+            if (brg.alpha != 0) { add(aux_reg_in, inp_typesize_ * (nb_tail)); }
+            if (brg.beta != 0) {
                 if (jcp.with_bias) add(aux_reg_bias, bia_typesize_ * (nb_tail));
                 if (brg.zp_type_c != brgemm_broadcast_t::none) {
                     mov(aux_reg_zp_c_values,
@@ -943,8 +962,8 @@ private:
             kmovq(k_tail_mask, reg_mask);
         }
 
-        if (brg.alpha != 0) {
-            mov(reg_in, ptr[param1 + GET_OFF(ptr_in)]);
+        if (brg.alpha != 0) { mov(reg_in, ptr[param1 + GET_OFF(ptr_in)]); }
+        if (brg.beta != 0) {
             mov(reg_scales, ptr[param1 + GET_OFF(ptr_scales)]);
             mov(reg_apply_comp, ptr[param1 + GET_OFF(apply_comp)]);
             mov(ptr[rsp + reg_apply_comp_offs_], reg_apply_comp);
@@ -965,13 +984,16 @@ private:
                 mov(reg_s8s8_comp, ptr[param1 + GET_OFF(s8s8_compensation)]);
                 mov(ptr[rsp + reg_s8s8_comp_offs_], reg_s8s8_comp);
             }
+            if (brg.with_dst_scales) {
+                mov(reg_dst_scales, ptr[param1 + GET_OFF(ptr_dst_scales)]);
+                mov(ptr[rsp + reg_dst_scales_offs_], reg_dst_scales);
+            }
         }
         mov(reg_out, ptr[param1 + GET_OFF(ptr_out)]);
 
-        // brg.alpha == 0 means no read from input, no bias, no eltwise - just
-        // initialize registers by zero
-        // brg.beta == 0 means no sum - just registers write to output
-        if (brg.alpha == 0) {
+        // brg.alpha == 0 means initialize registers, 1 means read from input
+        // brg.beta == 0 means skip postwork, 1 means do postwork
+        if (brg.alpha == 0 && brg.beta == 0) {
             for_(int m = 0; m < m_block; m++)
             for (int n = 0; n < n_block; n++) {
                 auto vmm = Vmm(m * n_block + n);
@@ -992,8 +1014,7 @@ private:
 
         postamble();
 
-        if (brg.alpha != 0 && jcp.with_eltwise)
-            postops_injector_->prepare_table();
+        if (postops_injector_) postops_injector_->prepare_table();
     }
 };
 

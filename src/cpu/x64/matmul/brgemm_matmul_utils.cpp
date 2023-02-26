@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2021-2022 Intel Corporation
+* Copyright 2021-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -729,7 +729,8 @@ status_t compute_blocking_heuristic(brgemm_matmul_conf_t &bgmmc,
                 = bgmmc.K % bgmmc.wei_k_blk > 0 && bgmmc.K > bgmmc.wei_k_blk;
         bgmmc.K_blk = bgmmc.K < bgmmc.wei_k_blk
                 ? rnd_up(bgmmc.K, bgmmc.required_k_granularity)
-                : fixed_K_tail_size ? bgmmc.wei_k_blk : bgmmc.K;
+                : fixed_K_tail_size ? bgmmc.wei_k_blk
+                                    : bgmmc.K;
         bgmmc.brgemm_batch_size
                 = nstl::max(bgmmc.K / bgmmc.K_blk, static_cast<dim_t>(1));
 
@@ -865,6 +866,12 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
         const bool oscales_ok = wei_scales.mask_ == 0 || bgmmc.is_oscale_per_n;
         if (!oscales_ok) return status::unimplemented;
     }
+
+    const auto &dst_scales = attr.scales_.get(DNNL_ARG_DST);
+    bgmmc.with_dst_scales = !dst_scales.has_default_values();
+    // only common scales are supported
+    if (bgmmc.with_dst_scales && dst_scales.mask_ != 0)
+        return status::unimplemented;
 
     const auto &p = attr.post_ops_;
     bgmmc.with_sum = p.find(primitive_kind::sum) != -1;
@@ -1087,7 +1094,7 @@ void init_aux_values(brgemm_matmul_conf_t &bgmmc,
             bgmmc.with_scales, bgmmc.with_eltwise, bgmmc.with_binary,
             bgmmc.acc_dt != bgmmc.dst_dt, bgmmc.s8s8_compensation_required,
             bgmmc.has_zero_point_a, bgmmc.has_zero_point_b,
-            bgmmc.has_zero_point_c);
+            bgmmc.has_zero_point_c, bgmmc.with_dst_scales);
 
     bgmmc.zp_a_comp_shift_n = bgmmc.wei_n_blk;
     bgmmc.zp_a_comp_elems_per_thr

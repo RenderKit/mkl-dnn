@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022 Intel Corporation
+* Copyright 2022-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -95,7 +95,8 @@ status_t brgemm_convolution_bwd_weights_t::pd_t::init(engine_t *engine) {
         auto M = (i) ? jcp_.M_tail : jcp_.M;
         if (M <= 0) continue;
         // init only needed brgemm descriptors
-        for (int bs = 0; bs <= jcp_.max_batch; bs++) {
+        const auto bs_end = jcp_.var_bs ? 1 : jcp_.max_batch;
+        for (int bs = 0; bs <= bs_end; bs++) {
             if (batchsizes[bs] == -1) continue;
             for_(int i_init = init_begin; i_init < init_end; i_init++)
             for_(int i_N = N_begin; i_N < N_end; i_N++)
@@ -271,7 +272,8 @@ status_t brgemm_convolution_bwd_weights_t::init(engine_t *engine) {
     int init_begin = 0;
     int init_end = 2;
 
-    for (int bs = 0; bs <= jcp.max_batch; bs++) {
+    const auto bs_end = jcp.var_bs ? 1 : jcp.max_batch;
+    for (int bs = 0; bs <= bs_end; bs++) {
         if (_pd->batchsizes[bs] == -1) continue;
 
         for_(int i_N = N_begin; i_N < N_end; i_N++)
@@ -480,7 +482,7 @@ struct brgemm_convolution_bwd_weights_t::thread_info_t {
 
     void trans_src_nxc(src_data_t *tr_src, const src_data_t *src_base,
             int spatial_start, dim_t spatial_start_offset, int icb_start,
-            dim_t chb_stride, int row_count) const {
+            dim_t chb_stride, int row_count, int ih_s) const {
         const int src_stride = jcp.iw * jcp.ngroups * jcp.ic;
         const int tr_src_stride = jcp.tr_iw * jcp.ic_block;
 
@@ -494,7 +496,8 @@ struct brgemm_convolution_bwd_weights_t::thread_info_t {
             for (int iwork = 0; iwork < sp_work; iwork++) {
                 // For 1x1 convolutions with strides we transpose only
                 // needed lines
-                if (IMPLICATION(jcp.kh == 1, iwork % jcp.stride_h == 0)) {
+                if (IMPLICATION(
+                            jcp.kh == 1, (ih_s + iwork) % jcp.stride_h == 0)) {
                     auto ctx = jit_trans_src_t::ctx_t();
                     ctx.src = src;
                     ctx.tr_src = tr_src;
@@ -603,7 +606,8 @@ struct brgemm_convolution_bwd_weights_t::thread_info_t {
 
                 src_data_t *p_tr_src = &tr_src[tr_src_off(
                         g_, ic_b_, jd_s - id_s, jh_s - ih_s)];
-                trans_src_nxc(p_tr_src, p_src, 0, 0, ic_b_, 0, jh_e - jh_s);
+                trans_src_nxc(
+                        p_tr_src, p_src, 0, 0, ic_b_, 0, jh_e - jh_s, jh_s);
 
                 nd_iterator_jump(tr_start, tr_end, g, g_work, ic_b, icb_work,
                         jd, idb_e - idb_s, jh, ihb_e - ihb_s);
@@ -705,7 +709,7 @@ struct brgemm_convolution_bwd_weights_t::thread_info_t {
             } else
                 assert(!"Invalid harness type");
             trans_src_nxc(tr_src_local, p_raw_src, 0, 0, (ic_b + icb), 0,
-                    (ihb_e - ihb_s));
+                    (ihb_e - ihb_s), ihb_s);
         }
 
         p_src = &tr_src[tr_src_off(0, 0, 0, 0)]; // p_tr_src;

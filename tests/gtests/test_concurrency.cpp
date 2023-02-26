@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022 Intel Corporation
+* Copyright 2022-2023 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -200,9 +200,9 @@ public:
         memory::dims strides = {SH, SW};
         memory::dims padding_l = {PH, PW};
         memory::dims padding_r = {PH, PW};
-        auto src_md = memory::desc(src_dims, dt::f32, tag::nhwc);
+        auto src_md = memory::desc(src_dims, dt::f32, tag::nchw);
         auto wei_md = memory::desc(wei_dims, dt::f32, tag::oihw);
-        auto dst_md = memory::desc(dst_dims, dt::f32, tag::nhwc);
+        auto dst_md = memory::desc(dst_dims, dt::f32, tag::nchw);
 
         primitive_attr attr;
         attr.set_scratchpad_mode(scratchpad_mode::user);
@@ -285,7 +285,7 @@ protected:
         for (int i = 0; i < ntasks; i++) {
             auto task = std::make_shared<conv_fwd_task_t>(i);
 
-            task->set_reuse_engine(i % 2 == 0);
+            task->set_reuse_engine(i % 100 != 0);
             task->set_reuse_stream(i % 3 == 0);
             task->set_reuse_primitive(i % 5 == 0);
 
