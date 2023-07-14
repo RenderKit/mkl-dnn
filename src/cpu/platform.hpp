@@ -39,7 +39,7 @@
         == 0
 #if defined(__x86_64__) || defined(_M_X64)
 #define DNNL_X64 1
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(_M_ARM64)
 #define DNNL_AARCH64 1
 #elif defined(__powerpc64__) || defined(__PPC64__) || defined(_ARCH_PPC64)
 #define DNNL_PPC64 1
